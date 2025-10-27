@@ -1,0 +1,14 @@
+{
+  "server_port": 4000,
+  "log_file": "server_log.txt",
+  "enable_console_log": true,
+  "enable_tls": true,
+  "tls_cert_subject": "CN=OblivionServer",
+  "enable_hmac_auth": true,
+  "require_tls_for_hmac": true,
+  "protected_modules": "C:\\Games\\RRO\\;D:\\RRO\\bin\\;game.exe",
+  "protected_module_basenames": "rro.exe;rro64.exe",
+  "escalation_log_file": "escalations.csv",
+  "rate_limit_window_ms": 10000,
+  "rate_limit_max_events": 50
+}
