@@ -12,6 +12,40 @@
 #include <cwchar>
 #pragma comment(lib, "tdh.lib")
 
+// Check if ETW functions are hooked/patched
+static bool CheckEtwIntegrity()
+{
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+    
+    // Check EtwEventWrite for hooks
+    BYTE* etwWrite = (BYTE*)GetProcAddress(ntdll, "EtwEventWrite");
+    if (!etwWrite) return false;
+    
+    __try {
+        // Check for common hook patterns
+        // RET at start (C3) - ETW disabled
+        if (etwWrite[0] == 0xC3) return false;
+        
+        // JMP at start (E9 xx xx xx xx) - hooked
+        if (etwWrite[0] == 0xE9) return false;
+        
+        // XOR eax,eax + RET (33 C0 C3) - common patch to disable ETW
+        if (etwWrite[0] == 0x33 && etwWrite[1] == 0xC0 && etwWrite[2] == 0xC3) return false;
+        
+        // Check EtwEventRegister as well
+        BYTE* etwReg = (BYTE*)GetProcAddress(ntdll, "EtwEventRegister");
+        if (etwReg) {
+            if (etwReg[0] == 0xC3 || etwReg[0] == 0xE9) return false;
+        }
+        
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    
+    return true; // ETW appears intact
+}
+
 // GUIDs for kernel providers (Classic kernel providers on NT Kernel Logger)
 static const GUID GUID_KERNEL_PROCESS = {0x3D6FA8D0,0xFE05,0x11D0,{0x9E,0xFB,0x00,0xAA,0x00,0x61,0xB0,0x6C}};
 static const GUID GUID_KERNEL_THREAD  = {0x3D6FA8D1,0xFE05,0x11D0,{0x9E,0xFB,0x00,0xAA,0x00,0x61,0xB0,0x6C}};
@@ -21,7 +55,15 @@ static const GUID GUID_KERNEL_FILE    = {0xEDD08927,0x9CC4,0x4E65,{0xB9,0x70,0xC
 
 struct Counter { ULONG count=0; ULONGLONG start=0; };
 
-struct SeqState { ULONGLONG lastOpen=0; ULONGLONG lastMem=0; ULONGLONG lastMap=0; ULONGLONG lastThr=0; ULONGLONG lastReport=0; };
+struct SeqState { 
+    ULONGLONG lastOpen=0; 
+    ULONGLONG lastMem=0; 
+    ULONGLONG lastMap=0; 
+    ULONGLONG lastThr=0; 
+    ULONGLONG lastApc=0;    // APC queue
+    ULONGLONG lastResume=0; // Thread resume
+    ULONGLONG lastReport=0; 
+};
 
 struct EtwState {
     TRACEHANDLE trace = 0;
@@ -36,6 +78,7 @@ struct EtwState {
     std::unordered_map<ULONG, Counter> procByPid; // process API events per PID (OpenProcess, etc.)
     std::unordered_map<ULONG, SeqState> seq; // sequence correlation per PID
     NetworkClient* net = nullptr;
+    bool etwIntact = true; // ETW integrity status
 };
 
 static void SendEtwBurst(NetworkClient* net, DWORD targetPid, const wchar_t* what, ULONG count)
@@ -89,15 +132,34 @@ static void MaybeTriggerSeq(EtwState* st, ULONG pid, ULONGLONG now)
     bool haveMem = inwin(ss.lastMem);
     bool haveMap = inwin(ss.lastMap);
     bool haveThr = inwin(ss.lastThr);
+    bool haveApc = inwin(ss.lastApc);
+    bool haveResume = inwin(ss.lastResume);
 
+    // Classic injection: OpenProcess + WriteMemory + CreateThread
     if (haveOpen && haveMem && haveThr) {
         ss.lastReport = now;
         SendEtwSeq(st->net, pid, L"OpenProcess + Write/ReadVirtual + CreateThread");
         return;
     }
+    
+    // Map injection: OpenProcess + MapView + CreateThread
     if (haveOpen && haveMap && haveThr) {
         ss.lastReport = now;
         SendEtwSeq(st->net, pid, L"OpenProcess + MapView + CreateThread");
+        return;
+    }
+    
+    // APC injection: OpenProcess + QueueUserAPC + ResumeThread
+    if (haveOpen && haveApc && haveResume) {
+        ss.lastReport = now;
+        SendEtwSeq(st->net, pid, L"OpenProcess + QueueUserAPC + ResumeThread");
+        return;
+    }
+    
+    // Advanced: OpenProcess + WriteMemory + QueueUserAPC
+    if (haveOpen && haveMem && haveApc) {
+        ss.lastReport = now;
+        SendEtwSeq(st->net, pid, L"OpenProcess + WriteMemory + QueueUserAPC");
         return;
     }
 }
@@ -183,6 +245,18 @@ static void CALLBACK OnEvent(PEVENT_RECORD rec)
             st->seq[pid].lastThr = now; MaybeTriggerSeq(st, pid, now);
             return;
         }
+        // QueueUserAPC detection
+        if (WcsContainsInsensitive(ev, L"QueueUserAPC") || WcsContainsInsensitive(task, L"QueueUserAPC") || WcsContainsInsensitive(opc, L"APC")) {
+            bump(st->procByPid, pid, L"QueueUserAPC");
+            st->seq[pid].lastApc = now; MaybeTriggerSeq(st, pid, now);
+            return;
+        }
+        // ResumeThread detection
+        if (WcsContainsInsensitive(ev, L"ResumeThread") || WcsContainsInsensitive(task, L"ResumeThread") || WcsContainsInsensitive(opc, L"Resume")) {
+            bump(st->thrByPid, pid, L"ResumeThread");
+            st->seq[pid].lastResume = now; MaybeTriggerSeq(st, pid, now);
+            return;
+        }
     }
 }
 
@@ -217,12 +291,37 @@ void EtwHeuristics::ThreadMain(EtwHeuristics* self)
 
 void EtwHeuristics::Run()
 {
+    // Check ETW integrity first
+    if (!CheckEtwIntegrity()) {
+        // ETW is patched/hooked - report this
+        if (m_net) {
+            std::string json = JsonBuilder::BuildDetectionReport(
+                GetCurrentProcessId(), 
+                L"<etw>", 
+                L"ETW functions are hooked/patched", 
+                "etw", 
+                1, 
+                GetHWID(), 
+                OBLIVION_CLIENT_VERSION, 
+                5
+            );
+            m_net->SendMessage(json);
+        }
+    }
+
     // Try to consume the NT Kernel Logger real-time session.
     EVENT_TRACE_LOGFILEW log = {0};
     log.LoggerName = (LPWSTR)KERNEL_LOGGER_NAME; // L"NT Kernel Logger"
     log.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
 
-    EtwState st{}; st.run = &m_run; st.pid = GetCurrentProcessId(); st.threshold = max(5, m_threshold.load()); st.windowMs = m_windowMs.load(); st.net = m_net;
+    EtwState st{}; 
+    st.run = &m_run; 
+    st.pid = GetCurrentProcessId(); 
+    st.threshold = max(5, m_threshold.load()); 
+    st.windowMs = m_windowMs.load(); 
+    st.net = m_net;
+    st.etwIntact = CheckEtwIntegrity();
+    
     log.EventRecordCallback = OnEvent;
     log.Context = &st;
 

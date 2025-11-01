@@ -1,8 +1,102 @@
 #include "../pch.h"
 #include "MemorySignatureScanner.h"
 #include <psapi.h>
+#include <cmath>
 
 #pragma comment(lib, "psapi.lib")
+
+// Calculate Shannon entropy for shellcode detection
+static float CalculateEntropy(const BYTE* data, SIZE_T len)
+{
+    if (!data || len == 0) return 0.0f;
+    
+    int freq[256] = {0};
+    for (SIZE_T i = 0; i < len; ++i) {
+        freq[data[i]]++;
+    }
+    
+    float H = 0.0f;
+    for (int i = 0; i < 256; ++i) {
+        if (freq[i] > 0) {
+            float p = (float)freq[i] / (float)len;
+            H -= p * log2f(p);
+        }
+    }
+    
+    return H; // Returns 0-8, shellcode typically > 5.5
+}
+
+// Detect ROP chain by counting gadgets
+static bool DetectRopChain(const BYTE* region, SIZE_T size, int& gadgetCount)
+{
+    gadgetCount = 0;
+    const SIZE_T maxScan = (size > 0x10000) ? 0x10000 : size; // Limit to 64KB
+    
+    __try {
+        for (SIZE_T i = 0; i < maxScan - 1; ++i) {
+            // RET instructions (C3, C2 xx xx)
+            if (region[i] == 0xC3) {
+                gadgetCount++;
+            } else if (region[i] == 0xC2 && i + 2 < maxScan) {
+                gadgetCount++;
+                i += 2;
+            }
+            // POP reg (58-5F)
+            else if (region[i] >= 0x58 && region[i] <= 0x5F) {
+                gadgetCount++;
+            }
+            // Short conditional jumps (common in ROP)
+            else if (region[i] >= 0x70 && region[i] <= 0x7F) {
+                gadgetCount++;
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    
+    // High density of gadgets (>150 per 64KB) is very suspicious
+    float density = (float)gadgetCount / (float)maxScan;
+    return density > 0.0023f; // ~150/64K
+}
+
+// Detect polymorphic/metamorphic patterns
+static bool DetectPolymorphicCode(const BYTE* data, SIZE_T len)
+{
+    if (len < 100) return false;
+    
+    __try {
+        // Count instruction prefixes and NOPs (common in polymorphic engines)
+        int nopCount = 0;
+        int prefixCount = 0;
+        int xorCount = 0;
+        
+        for (SIZE_T i = 0; i < len - 2; ++i) {
+            // NOP variations
+            if (data[i] == 0x90) nopCount++;
+            
+            // Instruction prefixes (66, 67, F2, F3, etc.)
+            if (data[i] == 0x66 || data[i] == 0x67 || 
+                data[i] == 0xF2 || data[i] == 0xF3) {
+                prefixCount++;
+            }
+            
+            // XOR patterns (common in decoders)
+            if (data[i] == 0x31 || data[i] == 0x33) { // XOR r/m32, r32
+                xorCount++;
+            }
+        }
+        
+        // High ratio of NOPs/prefixes/XORs indicates polymorphic code
+        float nopRatio = (float)nopCount / (float)len;
+        float prefixRatio = (float)prefixCount / (float)len;
+        float xorRatio = (float)xorCount / (float)len;
+        
+        return (nopRatio > 0.1f) || (prefixRatio > 0.05f) || (xorRatio > 0.05f);
+        
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 static bool IsReadable(const MEMORY_BASIC_INFORMATION& mbi)
 {
@@ -32,6 +126,7 @@ bool MemorySignatureScanner::MatchAt(BYTE* p, SIZE_T size, const MemSigPattern& 
 
 bool MemorySignatureScanner::ScanRegion(BYTE* base, SIZE_T size, const std::wstring* regionModule, MemorySignatureFinding& outFinding, int& score)
 {
+    // Perform signature matching
     for (SIZE_T i=0;i<size; ++i) {
         for (const auto& pat : m_patterns) {
             if (MatchAt(base + i, size - i, pat)) {
@@ -43,6 +138,41 @@ bool MemorySignatureScanner::ScanRegion(BYTE* base, SIZE_T size, const std::wstr
             }
         }
     }
+    
+    // Advanced heuristics for pattern-less detection
+    SIZE_T sampleSize = (size > 4096) ? 4096 : size;
+    
+    // Entropy analysis
+    float entropy = CalculateEntropy(base, sampleSize);
+    if (entropy > 6.5f) { // High entropy shellcode
+        score += 2;
+        outFinding.address = base;
+        outFinding.patternName = L"High-entropy shellcode";
+        if (regionModule) outFinding.moduleName = *regionModule;
+        if (score >= m_threshold) return true;
+    }
+    
+    // ROP chain detection
+    int gadgetCount = 0;
+    if (DetectRopChain(base, size, gadgetCount)) {
+        score += 3;
+        outFinding.address = base;
+        wchar_t buf[128];
+        swprintf_s(buf, L"ROP chain (%d gadgets)", gadgetCount);
+        outFinding.patternName = buf;
+        if (regionModule) outFinding.moduleName = *regionModule;
+        if (score >= m_threshold) return true;
+    }
+    
+    // Polymorphic code detection
+    if (DetectPolymorphicCode(base, sampleSize)) {
+        score += 2;
+        outFinding.address = base;
+        outFinding.patternName = L"Polymorphic code patterns";
+        if (regionModule) outFinding.moduleName = *regionModule;
+        if (score >= m_threshold) return true;
+    }
+    
     return false;
 }
 

@@ -5,6 +5,8 @@
 #include <windows.h>
 #include <wincrypt.h>
 #include <vector>
+#include <atomic>
+#include <sstream>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -72,6 +74,42 @@ static bool HmacSha256(const BYTE* key, DWORD keyLen, const BYTE* data, DWORD da
     return true;
 }
 
+static bool GenRandomBytes(BYTE* buf, DWORD len)
+{
+    HCRYPTPROV hProv{};
+    if (!CryptAcquireContext(&hProv, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) return false;
+    BOOL ok = CryptGenRandom(hProv, len, buf);
+    CryptReleaseContext(hProv, 0);
+    return !!ok;
+}
+
+static std::string InjectSecurityFields(const std::string& json, uint64_t seq, uint64_t ts_ms, const std::string& nonceHex, const std::string& hmacHex)
+{
+    // Insert at the end before the closing '}': add comma if needed
+    size_t pos = json.find_last_of('}');
+    if (pos == std::string::npos) return json; // fallback
+    std::ostringstream extra;
+    extra << ",\n  \"seq\": " << seq
+          << ",\n  \"ts_ms\": " << ts_ms
+          << ",\n  \"nonce\": \"" << nonceHex << "\"";
+    if (!hmacHex.empty()) {
+        extra << ",\n  \"hmac\": \"" << hmacHex << "\"";
+    }
+    std::string out = json;
+    out.insert(pos, extra.str());
+    return out;
+}
+
+static std::string BytesToHex(const BYTE* b, size_t n)
+{
+    static const char* hex = "0123456789abcdef";
+    std::string s; s.resize(n*2);
+    for (size_t i=0;i<n;++i){ s[2*i]=hex[(b[i]>>4)&0xF]; s[2*i+1]=hex[b[i]&0xF]; }
+    return s;
+}
+
+static std::atomic<uint64_t> g_msgSeq{0};
+
 static bool SendOnceAndAck(const std::string& ip, int port, const std::string& payload, const std::string& hmacSecret)
 {
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -93,14 +131,30 @@ static bool SendOnceAndAck(const std::string& ip, int port, const std::string& p
         return false;
     }
 
-    std::string msg;
+    // Prepare security metadata
+    uint64_t seq = ++g_msgSeq;
+    uint64_t ts = GetTickCount64();
+    BYTE nonce[16]; GenRandomBytes(nonce, sizeof(nonce));
+    std::string nonceHex = BytesToHex(nonce, sizeof(nonce));
+
+    // Compute HMAC over (seq|ts|nonce|payload)
+    std::string hardened = payload;
+    std::string mac;
     if (!hmacSecret.empty()) {
-        std::string mac;
-        if (HmacSha256(reinterpret_cast<const BYTE*>(hmacSecret.data()), (DWORD)hmacSecret.size(), reinterpret_cast<const BYTE*>(payload.data()), (DWORD)payload.size(), mac)) {
-            msg = std::string("Auth: HMAC-SHA256 ") + mac + "\r\n";
+        std::ostringstream ss;
+        ss << seq << '|' << ts << '|' << nonceHex << '|';
+        const std::string prefix = ss.str();
+        std::vector<BYTE> buf(prefix.size() + payload.size());
+        memcpy(buf.data(), prefix.data(), prefix.size());
+        memcpy(buf.data()+prefix.size(), payload.data(), payload.size());
+        if (HmacSha256(reinterpret_cast<const BYTE*>(hmacSecret.data()), (DWORD)hmacSecret.size(), buf.data(), (DWORD)buf.size(), mac)) {
+            // ok
         }
     }
-    msg += payload + "\r\n";
+    // Inject fields into JSON
+    hardened = InjectSecurityFields(payload, seq, ts, nonceHex, mac);
+
+    std::string msg = hardened + "\r\n";
 
     int sent = send(sock, msg.c_str(), static_cast<int>(msg.length()), 0);
     if (sent <= 0) { closesocket(sock); return false; }

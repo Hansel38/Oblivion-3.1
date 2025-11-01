@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "IATHookScanner.h"
+#include "../include/InlineHookScanner.h"
 #include <Psapi.h>
 #include <algorithm>
 

@@ -5,6 +5,11 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 
+#ifdef _M_X64
+#include <intrin.h>
+#pragma intrinsic(__readmsr)
+#endif
+
 // Simple Anti-Debug scanner (header-only to avoid project file edits)
 // Uses multiple indicators and requires threshold to trigger.
 class AntiDebug {
@@ -49,6 +54,15 @@ public:
 
         // 10) DBK/CE driver artifacts (renamed/custom CE)
         if (CheckDbkDriverArtifacts()) { score += 2; appendreason(reason, L"DBK/CE driver artifact"); }
+
+        // 11) Kernel debugger detection via MSR
+        if (CheckKernelDebugger()) { score += 3; appendreason(reason, L"Kernel debugger active"); }
+
+        // 12) Anti-debug hiding drivers (ScyllaHide, TitanHide, HyperHide)
+        if (DetectHideDrivers()) { score += 3; appendreason(reason, L"Anti-debug driver detected"); }
+
+        // 13) VEH chain integrity check
+        if (CheckVehChainAnomalies()) { score += 2; appendreason(reason, L"VEH chain anomaly"); }
 
         if (score >= m_threshold) {
             out.detected = true;
@@ -266,6 +280,133 @@ private:
         double ratio = dqpc_ms / dgtc_ms; // expect ~1.0
         // Allow generous tolerance (+/-15%) for system variance
         return (ratio < 0.85 || ratio > 1.15);
+    }
+
+    bool CheckKernelDebugger() {
+        // Check kernel debugger presence via multiple methods
+        
+        // Method 1: NtQuerySystemInformation - SystemKernelDebuggerInformation (0x23)
+        typedef LONG (NTAPI *PFN_NtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+        HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+        if (!hNt) return false;
+        
+        auto NtQuerySystemInformation = (PFN_NtQuerySystemInformation)GetProcAddress(hNt, "NtQuerySystemInformation");
+        if (NtQuerySystemInformation) {
+            struct { BOOLEAN KernelDebuggerEnabled; BOOLEAN KernelDebuggerNotPresent; } kdi = {0};
+            ULONG retLen = 0;
+            if (NtQuerySystemInformation(0x23, &kdi, sizeof(kdi), &retLen) == 0) {
+                if (kdi.KernelDebuggerEnabled || !kdi.KernelDebuggerNotPresent) {
+                    return true;
+                }
+            }
+        }
+
+        // Method 2: Check for common kernel debugger artifacts
+        // Try to open kernel debugger device (WinDbg/Kd)
+        HANDLE h = CreateFileW(L"\\\\.\\KdDebuggerDevice", GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            return true;
+        }
+
+        // Method 3: MSR check (x64 only, privileged - will fail but detection of access is signal)
+        // Note: Reading MSR from user-mode will fail, but some debugger drivers allow it
+#ifdef _M_X64
+        __try {
+            // Attempt to read IA32_DEBUGCTL MSR (0x1D9)
+            // This will normally trigger exception unless kernel debugger driver loaded
+            unsigned __int64 msr = __readmsr(0x1D9);
+            (void)msr;
+            // If we get here without exception, suspicious driver present
+            return true;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            // Expected behavior - user-mode cannot read MSR
+        }
+#endif
+
+        return false;
+    }
+
+    bool DetectHideDrivers() {
+        // Detect anti-debug hiding drivers by probing device names
+        const wchar_t* hideDevices[] = {
+            L"\\\\.\\ScyllaHide",
+            L"\\\\.\\ScyllaHideEngine", 
+            L"\\\\.\\TitanHide",
+            L"\\\\.\\HyperHide",
+            L"\\\\.\\HyperHideDrv",
+            L"\\\\.\\PROCEXP152",      // Process Explorer driver (can be abused)
+            L"\\\\.\\KProcessHacker3", // Process Hacker driver
+            L"\\\\.\\KProcessHacker2"
+        };
+
+        for (auto devName : hideDevices) {
+            HANDLE h = CreateFileW(devName, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                CloseHandle(h);
+                return true;
+            }
+        }
+
+        // Check loaded driver list for known names
+        LPVOID drivers[512]; DWORD cbNeeded = 0;
+        if (EnumDeviceDrivers(drivers, sizeof(drivers), &cbNeeded)) {
+            int count = (int)(cbNeeded / sizeof(drivers[0]));
+            wchar_t nameBuf[260];
+            for (int i = 0; i < count; ++i) {
+                if (GetDeviceDriverBaseNameW(drivers[i], nameBuf, 260)) {
+                    std::wstring base = nameBuf; 
+                    for (auto& c : base) c = towlower(c);
+                    
+                    if (base.find(L"scylla") != std::wstring::npos ||
+                        base.find(L"titan") != std::wstring::npos ||
+                        base.find(L"hyperhide") != std::wstring::npos ||
+                        base.find(L"processhacker") != std::wstring::npos) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool CheckVehChainAnomalies() {
+        // VEH (Vectored Exception Handler) chain integrity check
+        // Technique: Register a VEH, check if chain is abnormally long or contains suspicious handlers
+        
+        __try {
+            // Method 1: Check for abnormal exception handling behavior
+            // Debuggers often hook VEH chain for breakpoint handling
+            bool abnormal = false;
+            
+            // Register a test VEH
+            auto dummyHandler = [](PEXCEPTION_POINTERS) -> LONG { return EXCEPTION_CONTINUE_SEARCH; };
+            PVOID hVeh = AddVectoredExceptionHandler(1, dummyHandler);
+            
+            if (hVeh) {
+                // Trigger a handled exception and check timing
+                ULONGLONG t1 = GetTickCount64();
+                __try {
+                    int zero = 0;
+                    volatile int result = 1 / zero; // div by zero
+                    (void)result;
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    ULONGLONG t2 = GetTickCount64();
+                    // If exception handling takes abnormally long, suspicious
+                    if (t2 - t1 > 100) abnormal = true;
+                }
+                
+                RemoveVectoredExceptionHandler(hVeh);
+            }
+            
+            return abnormal;
+            
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            // Unexpected exception during check
+            return true;
+        }
     }
 
     bool CheckDbkDriverArtifacts() {

@@ -11,6 +11,14 @@
 
 #pragma comment(lib, "psapi.lib")
 
+// Extended structures for VAD walking
+typedef struct _MEMORY_REGION_INFORMATION {
+    PVOID AllocationBase;
+    ULONG AllocationProtect;
+    ULONG RegionType;
+    SIZE_T RegionSize;
+} MEMORY_REGION_INFORMATION, *PMEMORY_REGION_INFORMATION;
+
 CodeIntegrityScanner::CodeIntegrityScanner() {}
 
 // Minimal helpers we can use without private APIs. This is not true VAD-walk, but covers practical checks:
@@ -192,6 +200,133 @@ static double EstimateEntropySample(const BYTE* data, size_t len)
     return H; // max 8
 }
 
+static bool DetectProcessHollowing(HMODULE mainModule, std::wstring& reason)
+{
+    // Process hollowing detection: Compare PEB ImageBaseAddress with actual module base
+    // Get PEB via NtQueryInformationProcess
+    typedef LONG (NTAPI *PFN_NtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    typedef struct _PROCESS_BASIC_INFORMATION {
+        PVOID Reserved1[2];
+        PVOID PebBaseAddress;
+        PVOID Reserved2[4];
+        ULONG_PTR UniqueProcessId;
+        PVOID Reserved3;
+    } PROCESS_BASIC_INFORMATION;
+    
+    HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+    if (!hNt) return false;
+    
+    auto NtQueryInformationProcess = (PFN_NtQueryInformationProcess)GetProcAddress(hNt, "NtQueryInformationProcess");
+    if (!NtQueryInformationProcess) return false;
+    
+    PROCESS_BASIC_INFORMATION pbi = {0};
+    ULONG retLen = 0;
+    if (NtQueryInformationProcess(GetCurrentProcess(), 0, &pbi, sizeof(pbi), &retLen) != 0) 
+        return false;
+    
+    if (!pbi.PebBaseAddress) return false;
+    
+    __try {
+        // Read ImageBaseAddress from PEB (offset 0x10 on x64, 0x8 on x86)
+#ifdef _M_X64
+        PVOID* pImageBase = (PVOID*)((BYTE*)pbi.PebBaseAddress + 0x10);
+#else
+        PVOID* pImageBase = (PVOID*)((BYTE*)pbi.PebBaseAddress + 0x8);
+#endif
+        PVOID pebImageBase = *pImageBase;
+        
+        // Compare with actual main module base
+        if (pebImageBase != (PVOID)mainModule) {
+            reason = L"PEB ImageBase mismatch (process hollowing)";
+            return true;
+        }
+        
+        // Additional check: Verify PE header integrity
+        auto dos = (IMAGE_DOS_HEADER*)mainModule;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+            reason = L"Invalid DOS signature (hollowed)";
+            return true;
+        }
+        
+        auto nt = (IMAGE_NT_HEADERS*)((BYTE*)mainModule + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) {
+            reason = L"Invalid NT signature (hollowed)";
+            return true;
+        }
+        
+        // Check if entry point is within image
+        DWORD entryRva = nt->OptionalHeader.AddressOfEntryPoint;
+        DWORD imageSize = nt->OptionalHeader.SizeOfImage;
+        if (entryRva >= imageSize) {
+            reason = L"Entry point outside image (hollowed)";
+            return true;
+        }
+        
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        reason = L"Exception accessing PEB (hollowing)";
+        return true;
+    }
+    
+    return false;
+}
+
+static bool ScanForROPChain(BYTE* region, SIZE_T size, int& gadgetCount)
+{
+    // Simple ROP chain detection: count RET/POP gadgets
+    gadgetCount = 0;
+    const SIZE_T maxScan = std::min<SIZE_T>(size, 0x10000); // Limit scan to 64KB
+    
+    __try {
+        for (SIZE_T i = 0; i < maxScan; ++i) {
+            // RET (C3, C2 xx xx)
+            if (region[i] == 0xC3) {
+                gadgetCount++;
+            } else if (region[i] == 0xC2 && i + 2 < maxScan) {
+                gadgetCount++;
+                i += 2;
+            }
+            // POP reg (58-5F for x86/x64)
+            else if (region[i] >= 0x58 && region[i] <= 0x5F) {
+                gadgetCount++;
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    
+    // High density of gadgets is suspicious (>100 in 64KB)
+    return gadgetCount > 100;
+}
+
+static bool EnumerateVADs(std::vector<MEMORY_REGION_INFORMATION>& regions)
+{
+    // True VAD walk using VirtualQuery
+    SYSTEM_INFO si = {0};
+    GetSystemInfo(&si);
+    
+    BYTE* addr = (BYTE*)si.lpMinimumApplicationAddress;
+    BYTE* maxAddr = (BYTE*)si.lpMaximumApplicationAddress;
+    
+    while (addr < maxAddr) {
+        MEMORY_BASIC_INFORMATION mbi = {0};
+        if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) 
+            break;
+        
+        if (mbi.State == MEM_COMMIT) {
+            MEMORY_REGION_INFORMATION mri = {0};
+            mri.AllocationBase = mbi.AllocationBase;
+            mri.AllocationProtect = mbi.AllocationProtect;
+            mri.RegionType = mbi.Type;
+            mri.RegionSize = mbi.RegionSize;
+            regions.push_back(mri);
+        }
+        
+        addr += mbi.RegionSize;
+    }
+    
+    return !regions.empty();
+}
+
 static bool WcsEndsWithInsensitive(const std::wstring& s, const std::wstring& suf)
 {
     if (s.size() < suf.size()) return false;
@@ -204,6 +339,18 @@ static bool WcsEndsWithInsensitive(const std::wstring& s, const std::wstring& su
 bool CodeIntegrityScanner::RunOnceScan(DetectionResult& out)
 {
     out.detected = false; out.pid = GetCurrentProcessId(); out.processName = L""; out.reason = L""; out.indicatorCount = 0;
+
+    // 0) Check for process hollowing
+    HMODULE mainModule = GetModuleHandleW(nullptr);
+    if (mainModule) {
+        std::wstring hollowReason;
+        if (DetectProcessHollowing(mainModule, hollowReason)) {
+            out.detected = true;
+            out.processName = L"<main>";
+            out.reason = hollowReason;
+            out.indicatorCount += 5; // Very high score for hollowing
+        }
+    }
 
     // 1) Enumerate modules and hash .text; compare with on-disk image mapping
     HMODULE mods[1024]; DWORD needed=0;
@@ -263,7 +410,56 @@ bool CodeIntegrityScanner::RunOnceScan(DetectionResult& out)
         }
     }
 
-    // 2) Walk virtual memory, flag RX/RWX private regions with simple entropy check
+    // 2) True VAD walk - enumerate all committed memory regions
+    std::vector<MEMORY_REGION_INFORMATION> vads;
+    if (EnumerateVADs(vads)) {
+        for (const auto& vad : vads) {
+            // Check for suspicious RWX private regions
+            bool isPrivate = (vad.RegionType == MEM_PRIVATE);
+            bool isRWX = (vad.AllocationProtect & PAGE_EXECUTE_READWRITE) != 0;
+            
+            if (isPrivate && isRWX && vad.RegionSize >= 0x1000) {
+                // Scan for ROP chain patterns
+                int gadgetCount = 0;
+                if (ScanForROPChain((BYTE*)vad.AllocationBase, vad.RegionSize, gadgetCount)) {
+                    out.detected = true;
+                    wchar_t buf[128];
+                    swprintf_s(buf, L"ROP chain detected at 0x%p (%d gadgets)", vad.AllocationBase, gadgetCount);
+                    if (!out.reason.empty()) out.reason += L"; ";
+                    out.reason += buf;
+                    out.indicatorCount += 2;
+                }
+                
+                // High entropy check for shellcode
+                if (vad.RegionSize >= 512) {
+                    double H = EstimateEntropySample((BYTE*)vad.AllocationBase, 
+                                                     std::min<SIZE_T>(vad.RegionSize, 4096));
+                    if (H > 6.5) { // High entropy shellcode
+                        out.detected = true;
+                        wchar_t buf[128];
+                        swprintf_s(buf, L"High-entropy RWX region at 0x%p (H=%.2f)", vad.AllocationBase, H);
+                        if (!out.reason.empty()) out.reason += L"; ";
+                        out.reason += buf;
+                        out.indicatorCount += 2;
+                    }
+                }
+            }
+            
+            // Check for execute-only private regions (very suspicious)
+            bool isExecuteOnly = (vad.AllocationProtect & PAGE_EXECUTE) && 
+                               !(vad.AllocationProtect & (PAGE_READWRITE | PAGE_READONLY));
+            if (isPrivate && isExecuteOnly && vad.RegionSize >= 0x1000) {
+                out.detected = true;
+                wchar_t buf[128];
+                swprintf_s(buf, L"Execute-only private region at 0x%p", vad.AllocationBase);
+                if (!out.reason.empty()) out.reason += L"; ";
+                out.reason += buf;
+                out.indicatorCount += 3;
+            }
+        }
+    }
+
+    // 3) Legacy walk for additional coverage (kept for compatibility)
     SYSTEM_INFO si{}; GetSystemInfo(&si);
     BYTE* p = (BYTE*)si.lpMinimumApplicationAddress; BYTE* maxp = (BYTE*)si.lpMaximumApplicationAddress;
     MEMORY_BASIC_INFORMATION mbi{};

@@ -60,6 +60,12 @@ static void Loop()
             if (st.Events & KAC_EVENT_DBK_DRIVER_DETECTED) reason += L"DBK driver detected; ";
             if (st.Events & KAC_EVENT_BLOCKED_HANDLE_RIGHTS) reason += L"Blocked suspicious handle rights; ";
             if (st.Events & KAC_EVENT_SUSPICIOUS_IMAGE) reason += L"Suspicious image load; ";
+            if (st.Events & KAC_EVENT_REG_TAMPER) reason += L"Registry tamper under service key; ";
+            if (st.Events & KAC_EVENT_DRIVER_HASH_MISMATCH) reason += L"Driver self-hash mismatch; ";
+            if (st.Events & KAC_EVENT_CI_TAMPER) reason += L"Code Integrity/test signing enabled; ";
+            if (st.Events & KAC_EVENT_THREAD_ACTIVITY) reason += L"Thread activity in protected process; ";
+            if (st.Events & KAC_EVENT_TIME_DILATION) reason += L"Time dilation/speedhack suspected by kernel; ";
+            if (st.Events & KAC_EVENT_DEBUG_SUSPEND_ATTEMPT) reason += L"Debugger-specific suspend rights attempt; ";
             if (!reason.empty()) {
                 std::string msg = JsonBuilder::BuildDetectionReport(GetCurrentProcessId(), L"<kernel>", reason, "kernel", 1, "", "");
                 g_kbNet->SendMessage(msg);

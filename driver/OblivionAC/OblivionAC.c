@@ -12,8 +12,21 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL OblivionAC_EvtIoDeviceControl;
 
 static PDEVICE_CONTEXT g_Ctx = NULL;
-static PVOID g_ObRegHandle = NULL;
+static PVOID g_ObRegHandle = NULL; // OB callbacks cookie
+static REGHANDLE g_RegCb = NULL;   // Registry callback cookie
 static BOOLEAN g_ImageNotifyRegistered = FALSE;
+static BOOLEAN g_ThreadNotifyRegistered = FALSE;
+static WDFTIMER g_TimeMonTimer = NULL; // periodic time monitor
+
+// Pending events before ctx available
+static ULONG g_PendingEvents = 0;
+
+// Expected driver hash read from registry (FNV-1a 64-bit)
+static ULONGLONG g_ExpectedDriverHash = 0;
+static UNICODE_STRING g_DriverImagePath = {0}; // allocated
+
+typedef VOID (NTAPI *PFN_KeQuerySystemTimePrecise)(PLARGE_INTEGER);
+static PFN_KeQuerySystemTimePrecise g_pKeQuerySystemTimePrecise = NULL;
 
 // Registry-driven config
 static UNICODE_STRING* g_AllowPrefixes = NULL; static ULONG g_AllowPrefixCount = 0;
@@ -37,6 +50,15 @@ static VOID SetEventFlag(PDEVICE_CONTEXT ctx, ULONG flag)
     ExAcquireFastMutex(&ctx->Lock);
     ctx->Events |= flag;
     ExReleaseFastMutex(&ctx->Lock);
+}
+
+static VOID SetOrQueueEvent(ULONG flag)
+{
+    if (g_Ctx) {
+        SetEventFlag(g_Ctx, flag);
+    } else {
+        InterlockedOr((volatile LONG*)&g_PendingEvents, (LONG)flag);
+    }
 }
 
 static BOOLEAN StartsWithInsensitive(const UNICODE_STRING* s, const UNICODE_STRING* p)
@@ -96,7 +118,7 @@ static VOID ParseSemicolonList(PWCHAR data, ULONG bytes, UNICODE_STRING** arrOut
 static VOID LoadRegistryConfig(_In_ PUNICODE_STRING ServiceKeyPath)
 {
     UNICODE_STRING paramsPath; WCHAR buf[512]; paramsPath.Buffer = buf; paramsPath.MaximumLength = sizeof(buf); paramsPath.Length = 0;
-    RtlStringCchCopyUnicodeString(buf, RTL_NUMBER_OF(buf)/sizeof(WCHAR), ServiceKeyPath);
+    RtlStringCchCopyUnicodeString(buf, RTL_NUMBER_OF(buf), ServiceKeyPath);
     paramsPath.Length = (USHORT)wcslen(buf)*sizeof(WCHAR);
     RtlStringCchCatW(buf, RTL_NUMBER_OF(buf), L"\\Parameters");
     paramsPath.Length = (USHORT)wcslen(buf)*sizeof(WCHAR);
@@ -161,6 +183,138 @@ static VOID LoadRegistryConfig(_In_ PUNICODE_STRING ServiceKeyPath)
     ZwClose(hKey);
 }
 
+static VOID FreeDriverImagePath()
+{
+    if (g_DriverImagePath.Buffer) { ExFreePoolWithTag(g_DriverImagePath.Buffer, 'CADO'); g_DriverImagePath.Buffer=NULL; g_DriverImagePath.Length=0; g_DriverImagePath.MaximumLength=0; }
+}
+
+static VOID LoadDriverImagePath(_In_ PUNICODE_STRING ServiceKeyPath)
+{
+    OBJECT_ATTRIBUTES oa; InitializeObjectAttributes(&oa, (PUNICODE_STRING)ServiceKeyPath, OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE, NULL, NULL);
+    HANDLE hKey; NTSTATUS status = ZwOpenKey(&hKey, KEY_QUERY_VALUE, &oa);
+    if (!NT_SUCCESS(status)) return;
+
+    ULONG size=0; UNICODE_STRING valName; RtlInitUnicodeString(&valName, L"ImagePath");
+    ZwQueryValueKey(hKey, &valName, KeyValuePartialInformation, NULL, 0, &size);
+    if (size) {
+        PKEY_VALUE_PARTIAL_INFORMATION kv = (PKEY_VALUE_PARTIAL_INFORMATION)ExAllocatePoolWithTag(NonPagedPoolNx, size, 'CADO');
+        if (kv && NT_SUCCESS(ZwQueryValueKey(hKey, &valName, KeyValuePartialInformation, kv, size, &size))) {
+            if ((kv->Type == REG_SZ || kv->Type == REG_EXPAND_SZ) && kv->DataLength >= sizeof(WCHAR)) {
+                USHORT len = (USHORT)kv->DataLength; USHORT chars = (USHORT)(len/sizeof(WCHAR));
+                PWCHAR buf = (PWCHAR)ExAllocatePoolWithTag(NonPagedPoolNx, len, 'CADO');
+                if (buf) {
+                    RtlCopyMemory(buf, kv->Data, len);
+                    // Lowercase in-place
+                    ToLowerInplace(buf, chars);
+                    FreeDriverImagePath();
+                    g_DriverImagePath.Buffer = buf;
+                    g_DriverImagePath.Length = len - sizeof(WCHAR); // exclude NUL
+                    g_DriverImagePath.MaximumLength = len;
+                }
+            }
+        }
+        if (kv) ExFreePoolWithTag(kv, 'CADO');
+    }
+
+    ZwClose(hKey);
+}
+
+static ULONGLONG Fnv1a64(_In_reads_bytes_(len) const BYTE* data, _In_ SIZE_T len)
+{
+    const ULONGLONG FNV_OFFSET = 1469598103934665603ULL;
+    const ULONGLONG FNV_PRIME  = 1099511628211ULL;
+    ULONGLONG h = FNV_OFFSET;
+    for (SIZE_T i=0;i<len;++i) { h ^= data[i]; h *= FNV_PRIME; }
+    return h;
+}
+
+static BOOLEAN ParseHexU64(_In_reads_bytes_(len) const CHAR* s, _In_ SIZE_T len, _Out_ ULONGLONG* out)
+{
+    ULONGLONG v=0; SIZE_T i=0; if (len>=2 && s[0]=='0' && (s[1]=='x'||s[1]=='X')) { i=2; }
+    for (; i<len; ++i) {
+        CHAR c=s[i]; if (c=='\0') break; v <<= 4;
+        if (c>='0'&&c<='9') v |= (c - '0');
+        else if (c>='a'&&c<='f') v |= (c - 'a' + 10);
+        else if (c>='A'&&c<='F') v |= (c - 'A' + 10);
+        else return FALSE;
+    }
+    *out = v; return TRUE;
+}
+
+static VOID LoadExpectedDriverHash(_In_ PUNICODE_STRING ServiceKeyPath)
+{
+    // Parameters\DriverExpectedFNV (REG_SZ)
+    UNICODE_STRING paramsPath; WCHAR buf[512]; paramsPath.Buffer = buf; paramsPath.MaximumLength = sizeof(buf); paramsPath.Length = 0;
+    RtlStringCchCopyUnicodeString(buf, RTL_NUMBER_OF(buf), ServiceKeyPath);
+    paramsPath.Length = (USHORT)wcslen(buf)*sizeof(WCHAR);
+    RtlStringCchCatW(buf, RTL_NUMBER_OF(buf), L"\\Parameters");
+    paramsPath.Length = (USHORT)wcslen(buf)*sizeof(WCHAR);
+
+    OBJECT_ATTRIBUTES oa; InitializeObjectAttributes(&oa, &paramsPath, OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE, NULL, NULL);
+    HANDLE hKey; NTSTATUS status = ZwOpenKey(&hKey, KEY_QUERY_VALUE, &oa);
+    if (!NT_SUCCESS(status)) return;
+
+    ULONG size=0; UNICODE_STRING valName; RtlInitUnicodeString(&valName, L"DriverExpectedFNV");
+    ZwQueryValueKey(hKey, &valName, KeyValuePartialInformation, NULL, 0, &size);
+    if (size) {
+        PKEY_VALUE_PARTIAL_INFORMATION kv = (PKEY_VALUE_PARTIAL_INFORMATION)ExAllocatePoolWithTag(NonPagedPoolNx, size, 'CADO');
+        if (kv && NT_SUCCESS(ZwQueryValueKey(hKey, &valName, KeyValuePartialInformation, kv, size, &size))) {
+            if ((kv->Type == REG_SZ || kv->Type == REG_EXPAND_SZ) && kv->DataLength > 2) {
+                // Convert to ANSI for simple parse; buffer is UNICODE
+                ANSI_STRING as{}; UNICODE_STRING us; us.Buffer=(PWCHAR)kv->Data; us.Length=(USHORT)kv->DataLength - sizeof(WCHAR); us.MaximumLength=(USHORT)kv->DataLength;
+                if (NT_SUCCESS(RtlUnicodeStringToAnsiString(&as, &us, TRUE))) {
+                    ULONGLONG tmp=0; if (ParseHexU64(as.Buffer, as.Length, &tmp)) g_ExpectedDriverHash = tmp;
+                    RtlFreeAnsiString(&as);
+                }
+            }
+        }
+        if (kv) ExFreePoolWithTag(kv, 'CADO');
+    }
+    ZwClose(hKey);
+}
+
+static VOID VerifySelfIntegrityIfConfigured()
+{
+    if (!g_ExpectedDriverHash || g_DriverImagePath.Length == 0) return;
+    // Open image path as provided (\SystemRoot\... supported)
+    OBJECT_ATTRIBUTES oa; IO_STATUS_BLOCK iosb; HANDLE hFile;
+    InitializeObjectAttributes(&oa, &g_DriverImagePath, OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = ZwCreateFile(&hFile, GENERIC_READ|SYNCHRONIZE, &oa, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                                   FILE_SHARE_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE|FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+    if (!NT_SUCCESS(status)) return;
+    BYTE* buf = (BYTE*)ExAllocatePoolWithTag(NonPagedPoolNx, 64*1024, 'CADO');
+    if (!buf) { ZwClose(hFile); return; }
+    ULONGLONG h = 1469598103934665603ULL; // init
+    for (;;) {
+        status = ZwReadFile(hFile, NULL, NULL, NULL, &iosb, buf, 64*1024, NULL, NULL);
+        if (status == STATUS_END_OF_FILE) break;
+        if (!NT_SUCCESS(status)) break;
+        if (iosb.Information == 0) break;
+        h = Fnv1a64(buf, iosb.Information) ^ (h<<1);
+    }
+    ExFreePoolWithTag(buf, 'CADO'); ZwClose(hFile);
+    if (h && h != g_ExpectedDriverHash) {
+        SetOrQueueEvent(KAC_EVENT_DRIVER_HASH_MISMATCH);
+    }
+}
+
+typedef struct _SYSTEM_CODEINTEGRITY_INFORMATION {
+    ULONG Length;
+    ULONG CodeIntegrityOptions;
+} SYSTEM_CODEINTEGRITY_INFORMATION, *PSYSTEM_CODEINTEGRITY_INFORMATION;
+
+static VOID CheckCodeIntegrityStatus()
+{
+    SYSTEM_CODEINTEGRITY_INFORMATION ci = {0}; ci.Length = sizeof(ci);
+    NTSTATUS status = ZwQuerySystemInformation((SYSTEM_INFORMATION_CLASS)103 /*SystemCodeIntegrityInformation*/, &ci, sizeof(ci), NULL);
+    if (NT_SUCCESS(status)) {
+        // Flags documented partially; test signing bit (0x02), etc.
+        if (ci.CodeIntegrityOptions & 0x02 /*TestSigning*/) {
+            SetOrQueueEvent(KAC_EVENT_CI_TAMPER);
+        }
+    }
+}
+
 // Very minimal DBK driver detection by name
 static VOID ScanForDbkDriver(PDEVICE_CONTEXT ctx)
 {
@@ -194,6 +348,29 @@ static VOID ScanForDbkDriver(PDEVICE_CONTEXT ctx)
 #define BAD_PROC_RIGHTS (PROCESS_VM_READ|PROCESS_VM_WRITE|PROCESS_VM_OPERATION|PROCESS_CREATE_THREAD|PROCESS_SUSPEND_RESUME)
 #define BAD_THR_RIGHTS  (THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME)
 
+static BOOLEAN IsCallerDebuggerish()
+{
+    // Check SeDebugPrivilege
+    if (SeSinglePrivilegeCheck(RtlConvertLongToLuid(SE_DEBUG_PRIVILEGE), KeGetPreviousMode())) {
+        return TRUE;
+    }
+    // Check image name
+    PEPROCESS caller = PsGetCurrentProcess();
+    const char* name = PsGetProcessImageFileName(caller);
+    if (!name) return FALSE;
+    // Compare lowercased ASCII against a small set
+    char buf[16] = {0};
+    size_t i=0; for (; i<sizeof(buf)-1 && name[i]; ++i) { char c=name[i]; if (c>='A'&&c<='Z') c=(char)(c+32); buf[i]=c; }
+    buf[i]='\0';
+    const char* dbg[] = { "x64dbg.exe", "x32dbg.exe", "windbg.exe", "ida64.exe", "ida.exe", "ollydbg.exe", "cheatengine.exe", "scylla.exe" };
+    for (int k=0;k<(int)(sizeof(dbg)/sizeof(dbg[0]));++k) {
+        // suffix compare: endswith
+        size_t bl = strlen(buf), dl = strlen(dbg[k]);
+        if (bl>=dl && memcmp(buf+(bl-dl), dbg[k], dl)==0) return TRUE;
+    }
+    return FALSE;
+}
+
 static OB_PREOP_CALLBACK_STATUS PreOpCallbackProcess(_In_ PVOID RegistrationContext, _In_ POB_PRE_OPERATION_INFORMATION Info)
 {
     UNREFERENCED_PARAMETER(RegistrationContext);
@@ -205,6 +382,11 @@ static OB_PREOP_CALLBACK_STATUS PreOpCallbackProcess(_In_ PVOID RegistrationCont
         if (pid == g_Ctx->ProtectedPid) {
             ACCESS_MASK* desired = &Info->Parameters->CreateHandleInformation.DesiredAccess;
             ACCESS_MASK before = *desired;
+            if (before & PROCESS_SUSPEND_RESUME) {
+                if (IsCallerDebuggerish()) {
+                    if (g_Ctx) SetEventFlag(g_Ctx, KAC_EVENT_DEBUG_SUSPEND_ATTEMPT); else InterlockedOr((volatile LONG*)&g_PendingEvents, (LONG)KAC_EVENT_DEBUG_SUSPEND_ATTEMPT);
+                }
+            }
             *desired &= ~BAD_PROC_RIGHTS;
             if (*desired != before) {
                 SetEventFlag(g_Ctx, KAC_EVENT_BLOCKED_HANDLE_RIGHTS);
@@ -226,6 +408,11 @@ static OB_PREOP_CALLBACK_STATUS PreOpCallbackThread(_In_ PVOID RegistrationConte
         if (pid == g_Ctx->ProtectedPid) {
             ACCESS_MASK* desired = &Info->Parameters->CreateHandleInformation.DesiredAccess;
             ACCESS_MASK before = *desired;
+            if (before & THREAD_SUSPEND_RESUME) {
+                if (IsCallerDebuggerish()) {
+                    if (g_Ctx) SetEventFlag(g_Ctx, KAC_EVENT_DEBUG_SUSPEND_ATTEMPT); else InterlockedOr((volatile LONG*)&g_PendingEvents, (LONG)KAC_EVENT_DEBUG_SUSPEND_ATTEMPT);
+                }
+            }
             *desired &= ~BAD_THR_RIGHTS;
             if (*desired != before) {
                 SetEventFlag(g_Ctx, KAC_EVENT_BLOCKED_HANDLE_RIGHTS);
@@ -269,6 +456,61 @@ static VOID UnregisterObCallbacks()
     }
 }
 
+// === Registry callback to detect tampering ===
+EX_CALLBACK_FUNCTION OblivionAC_RegCallback;
+
+static VOID RegisterRegistryCallback(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING ServiceKeyPath)
+{
+    UNICODE_STRING altitude; RtlInitUnicodeString(&altitude, L"321000"); // arbitrary altitude
+    NTSTATUS status = CmRegisterCallbackEx(OblivionAC_RegCallback, &altitude, DriverObject, NULL, &g_RegCb, ServiceKeyPath);
+    UNREFERENCED_PARAMETER(status);
+}
+
+static VOID UnregisterRegistryCallback()
+{
+    if (g_RegCb) { CmUnRegisterCallback(g_RegCb); g_RegCb = NULL; }
+}
+
+// === Timer: time dilation/speedhack detection ===
+_Use_decl_annotations_
+EVT_WDF_TIMER TimeMon_EvtTimer;
+
+_Use_decl_annotations_
+VOID TimeMon_EvtTimer(WDFTIMER Timer)
+{
+    UNREFERENCED_PARAMETER(Timer);
+    static LARGE_INTEGER lastQpc = {0};
+    static LARGE_INTEGER lastSys = {0};
+    static ULONGLONG lastFreq = 0;
+    static int badCount = 0;
+
+    LARGE_INTEGER freq; LARGE_INTEGER qpc = KeQueryPerformanceCounter(&freq);
+    LARGE_INTEGER sys;
+    if (g_pKeQuerySystemTimePrecise) g_pKeQuerySystemTimePrecise(&sys); else KeQuerySystemTime(&sys);
+
+    if (lastQpc.QuadPart == 0 || lastFreq == 0) { lastQpc = qpc; lastSys = sys; lastFreq = (ULONGLONG)freq.QuadPart; return; }
+
+    LONGLONG dqpc = qpc.QuadPart - lastQpc.QuadPart;
+    LONGLONG dsys = sys.QuadPart - lastSys.QuadPart; // 100ns units
+    if (dqpc <= 0 || dsys <= 0 || lastFreq == 0) { lastQpc = qpc; lastSys = sys; return; }
+
+    double secQpc = (double)dqpc / (double)lastFreq;
+    double secSys = (double)dsys / 10000000.0; // 1e7 100ns per second
+    double ratio = (secSys > 0.0) ? (secQpc / secSys) : 1.0;
+
+    // Expect ratio ~1.0; allow generous jitter 0.7..1.3
+    if (ratio < 0.7 || ratio > 1.3) {
+        if (++badCount >= 5) { // sustained anomaly
+            if (g_Ctx) SetEventFlag(g_Ctx, KAC_EVENT_TIME_DILATION); else InterlockedOr((volatile LONG*)&g_PendingEvents, (LONG)KAC_EVENT_TIME_DILATION);
+            badCount = 0; // rate limit
+        }
+    } else if (badCount > 0) {
+        --badCount;
+    }
+
+    lastQpc = qpc; lastSys = sys; lastFreq = (ULONGLONG)freq.QuadPart;
+}
+
 // === Image load notify to flag suspicious images in protected process ===
 static VOID ImageLoadNotify(_In_opt_ PUNICODE_STRING FullImageName, _In_ HANDLE ProcessId, _In_ PIMAGE_INFO ImageInfo)
 {
@@ -298,6 +540,16 @@ static VOID ImageLoadNotify(_In_opt_ PUNICODE_STRING FullImageName, _In_ HANDLE 
     SetEventFlag(g_Ctx, KAC_EVENT_SUSPICIOUS_IMAGE);
 }
 
+// Thread notify for anti-suspend/monitoring
+static VOID ThreadNotifyCallback(_In_ HANDLE ProcessId, _In_ HANDLE ThreadId, _In_ BOOLEAN Create)
+{
+    UNREFERENCED_PARAMETER(ThreadId);
+    UNREFERENCED_PARAMETER(Create);
+    if (!g_Ctx || !g_Ctx->ProtectedPid) return;
+    if ((ULONG)(ULONG_PTR)ProcessId != g_Ctx->ProtectedPid) return;
+    SetEventFlag(g_Ctx, KAC_EVENT_THREAD_ACTIVITY);
+}
+
 NTSTATUS OblivionAC_EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 {
     UNREFERENCED_PARAMETER(Driver);
@@ -311,6 +563,14 @@ NTSTATUS OblivionAC_EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT 
     PDEVICE_CONTEXT ctx = DeviceGetContext(device);
     ctx->Events = 0; ctx->ProtectedPid = 0; ExInitializeFastMutex(&ctx->Lock);
     g_Ctx = ctx;
+
+    // Flush any pending pre-init events
+    if (g_PendingEvents) {
+        ExAcquireFastMutex(&ctx->Lock);
+        ctx->Events |= g_PendingEvents;
+        g_PendingEvents = 0;
+        ExReleaseFastMutex(&ctx->Lock);
+    }
 
     WDF_IO_QUEUE_CONFIG ioQueueConfig; WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&ioQueueConfig, WdfIoQueueDispatchSequential);
     ioQueueConfig.EvtIoDeviceControl = OblivionAC_EvtIoDeviceControl;
@@ -327,6 +587,16 @@ NTSTATUS OblivionAC_EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT 
     if (NT_SUCCESS(PsSetLoadImageNotifyRoutine(ImageLoadNotify))) {
         g_ImageNotifyRegistered = TRUE;
     }
+    if (NT_SUCCESS(PsSetCreateThreadNotifyRoutine(ThreadNotifyCallback))) {
+        g_ThreadNotifyRegistered = TRUE;
+    }
+    // Create periodic timer for time dilation monitor (~1s)
+    WDF_TIMER_CONFIG tcfg; WDF_TIMER_CONFIG_INIT_PERIODIC(&tcfg, TimeMon_EvtTimer, 1000);
+    WDF_OBJECT_ATTRIBUTES ta; WDF_OBJECT_ATTRIBUTES_INIT(&ta);
+    ta.ParentObject = device; // auto-cleanup with device
+    if (NT_SUCCESS(WdfTimerCreate(&tcfg, &ta, &g_TimeMonTimer))) {
+        WdfTimerStart(g_TimeMonTimer, WDF_REL_TIMEOUT_IN_MS(1000));
+    }
     return STATUS_SUCCESS;
 }
 
@@ -338,7 +608,12 @@ VOID OblivionAC_EvtDriverContextCleanup(WDFOBJECT DriverObject)
         PsRemoveLoadImageNotifyRoutine(ImageLoadNotify);
         g_ImageNotifyRegistered = FALSE;
     }
+    if (g_ThreadNotifyRegistered) {
+        PsRemoveCreateThreadNotifyRoutine(ThreadNotifyCallback);
+        g_ThreadNotifyRegistered = FALSE;
+    }
     UnregisterObCallbacks();
+    UnregisterRegistryCallback();
     FreeAllowLists();
     g_Ctx = NULL;
 }
@@ -384,10 +659,43 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 {
     // Load Parameters from registry
     LoadRegistryConfig(RegistryPath);
+    // Register registry callback to detect tampering under our service key
+    RegisterRegistryCallback(DriverObject, RegistryPath);
+    // Record driver image path and expected hash
+    LoadDriverImagePath(RegistryPath);
+    LoadExpectedDriverHash(RegistryPath);
+    // Check CI status and self-integrity (queue events until device add)
+    CheckCodeIntegrityStatus();
+    VerifySelfIntegrityIfConfigured();
+    // Resolve KeQuerySystemTimePrecise if available
+    {
+        UNICODE_STRING fn; RtlInitUnicodeString(&fn, L"KeQuerySystemTimePrecise");
+        g_pKeQuerySystemTimePrecise = (PFN_KeQuerySystemTimePrecise)MmGetSystemRoutineAddress(&fn);
+    }
 
     WDF_DRIVER_CONFIG config; WDF_DRIVER_CONFIG_INIT(&config, OblivionAC_EvtDeviceAdd);
     config.EvtDriverUnload = NULL;
 
     NTSTATUS status = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
     return status;
+}
+
+_Use_decl_annotations_
+EX_CALLBACK_FUNCTION OblivionAC_RegCallback
+{
+    UNREFERENCED_PARAMETER(Arg2);
+    if (!g_Ctx) return STATUS_SUCCESS;
+    REG_NOTIFY_CLASS cls = (REG_NOTIFY_CLASS)Reason;
+    switch (cls) {
+    case RegNtPreSetValueKey:
+    case RegNtPreDeleteKey:
+    case RegNtPreDeleteValueKey:
+    case RegNtPreSetInformationKey:
+    case RegNtPreRenameKey:
+        SetEventFlag(g_Ctx, KAC_EVENT_REG_TAMPER);
+        break;
+    default:
+        break;
+    }
+    return STATUS_SUCCESS;
 }
