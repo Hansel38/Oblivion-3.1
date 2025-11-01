@@ -15,4 +15,6 @@
 #include <string>
 #include <algorithm>
 
+// (ConfigLoader.h is included in translation units that need it)
+
 #endif //PCH_H

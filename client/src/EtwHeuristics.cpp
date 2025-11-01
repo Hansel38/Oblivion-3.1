@@ -9,7 +9,9 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <deque>
 #include <cwchar>
+#include <cstring>
 #pragma comment(lib, "tdh.lib")
 
 // Check if ETW functions are hooked/patched
@@ -79,6 +81,9 @@ struct EtwState {
     std::unordered_map<ULONG, SeqState> seq; // sequence correlation per PID
     NetworkClient* net = nullptr;
     bool etwIntact = true; // ETW integrity status
+    // Memory address samples for step-pattern detection
+    std::unordered_map<ULONG, std::deque<ULONGLONG>> addrByPid; // last N addresses
+    int memscanMinStreak = 4;
 };
 
 static void SendEtwBurst(NetworkClient* net, DWORD targetPid, const wchar_t* what, ULONG count)
@@ -164,6 +169,61 @@ static void MaybeTriggerSeq(EtwState* st, ULONG pid, ULONGLONG now)
     }
 }
 
+// Helper: case-insensitive contains
+static bool WcsContainsInsensitive(const std::wstring& hay, const wchar_t* needle);
+
+// Try extract a ULONGLONG property from event payload by name (best-effort)
+static bool TryGetPropertyU64(PEVENT_RECORD rec, const wchar_t* propName, ULONGLONG& outVal)
+{
+    outVal = 0;
+    if (!rec || !propName || !*propName) return false;
+
+    PROPERTY_DATA_DESCRIPTOR desc{};
+    desc.PropertyName = (ULONGLONG)propName;
+    desc.ArrayIndex = 0; // not an array
+
+    ULONG size = 0;
+    auto st = TdhGetPropertySize(rec, 0, nullptr, 1, &desc, &size);
+    if (st != ERROR_SUCCESS || size == 0 || size > 64) return false;
+
+    std::vector<BYTE> buf(size);
+    st = TdhGetProperty(rec, 0, nullptr, 1, &desc, size, buf.data());
+    if (st != ERROR_SUCCESS) return false;
+
+    // Interpret as 64-bit little-endian if size>=8, otherwise 32-bit
+    if (size >= sizeof(ULONGLONG)) {
+        ULONGLONG v = 0; memcpy(&v, buf.data(), sizeof(ULONGLONG)); outVal = v; return true;
+    } else if (size >= sizeof(ULONG)) {
+        ULONG v32 = 0; memcpy(&v32, buf.data(), sizeof(ULONG)); outVal = v32; return true;
+    }
+    return false;
+}
+
+// Check if a deque of addresses shows consistent step pattern within window
+static bool HasSequentialStepPattern(const std::deque<ULONGLONG>& addrs, SIZE_T& stepOut, int minStreak)
+{
+    stepOut = 0;
+    if (addrs.size() < 6) return false; // need several points
+    // Candidate steps (bytes): common for CE scans
+    static const SIZE_T steps[] = { 4, 8, 16, 32, 64 };
+    for (SIZE_T cand : steps) {
+        int ok = 0;
+        for (size_t i = 1; i < addrs.size(); ++i) {
+            ULONGLONG a = addrs[i - 1]; ULONGLONG b = addrs[i];
+            if (b >= a && (b - a) == cand) ok++; else ok = 0;
+            if (ok >= max(1, minStreak - 1)) { stepOut = cand; return true; }
+        }
+    }
+    return false;
+}
+
+static void MaybeReportMemScan(EtwState* st, ULONG pid, SIZE_T step)
+{
+    std::wstring reason = L"Sequential memory scanning pattern (step=" + std::to_wstring((unsigned)step) + L" bytes)";
+    std::string json = JsonBuilder::BuildDetectionReport(pid, L"<etw>", reason, "etw", 1, GetHWID(), OBLIVION_CLIENT_VERSION, 3);
+    if (st->net) st->net->SendMessage(json);
+}
+
 static void CALLBACK OnEvent(PEVENT_RECORD rec)
 {
     EtwState* st = reinterpret_cast<EtwState*>(rec->UserContext);
@@ -228,11 +288,26 @@ static void CALLBACK OnEvent(PEVENT_RECORD rec)
         if (WcsContainsInsensitive(ev, L"ReadVirtual") || WcsContainsInsensitive(task, L"ReadVirtual") || WcsContainsInsensitive(opc, L"ReadVirtual")) {
             bump(st->memByPid, pid, L"ReadVirtualMemory");
             st->seq[pid].lastMem = now; MaybeTriggerSeq(st, pid, now);
+            // Try to collect address for step-pattern detection
+            ULONGLONG addr = 0;
+            if (TryGetPropertyU64(rec, L"Address", addr) ||
+                TryGetPropertyU64(rec, L"VirtualAddress", addr) ||
+                TryGetPropertyU64(rec, L"BaseAddress", addr)) {
+                auto& dq = st->addrByPid[pid]; dq.push_back(addr); if (dq.size() > 20) dq.pop_front();
+                SIZE_T step = 0; if (HasSequentialStepPattern(dq, step, st->memscanMinStreak)) { MaybeReportMemScan(st, pid, step); dq.clear(); }
+            }
             return;
         }
         if (WcsContainsInsensitive(ev, L"WriteVirtual") || WcsContainsInsensitive(task, L"WriteVirtual") || WcsContainsInsensitive(opc, L"WriteVirtual")) {
             bump(st->memByPid, pid, L"WriteVirtualMemory");
             st->seq[pid].lastMem = now; MaybeTriggerSeq(st, pid, now);
+            ULONGLONG addr = 0;
+            if (TryGetPropertyU64(rec, L"Address", addr) ||
+                TryGetPropertyU64(rec, L"VirtualAddress", addr) ||
+                TryGetPropertyU64(rec, L"BaseAddress", addr)) {
+                auto& dq = st->addrByPid[pid]; dq.push_back(addr); if (dq.size() > 20) dq.pop_front();
+                SIZE_T step = 0; if (HasSequentialStepPattern(dq, step, st->memscanMinStreak)) { MaybeReportMemScan(st, pid, step); dq.clear(); }
+            }
             return;
         }
         if (WcsContainsInsensitive(ev, L"MapView") || WcsContainsInsensitive(task, L"MapView") || WcsContainsInsensitive(opc, L"MapView")) {
@@ -321,6 +396,7 @@ void EtwHeuristics::Run()
     st.windowMs = m_windowMs.load(); 
     st.net = m_net;
     st.etwIntact = CheckEtwIntegrity();
+    st.memscanMinStreak = max(3, m_memscanMinStreak.load());
     
     log.EventRecordCallback = OnEvent;
     log.Context = &st;

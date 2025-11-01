@@ -558,3 +558,54 @@
 [Wed Oct 22 02:04:47 2025] [DETECTION v1] subtype=heartbeat, pid=17688, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
 [Wed Oct 22 02:04:47 2025] [REASON] heartbeat
 [Sat Nov  1 14:23:58 2025] Server started on port 4000
+[Sat Nov  1 15:18:27 2025] Server started on port 4000
+[Sat Nov  1 15:18:48 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:18:48 2025] [DETECTION v1] subtype=process, pid=11912, process='process', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=5 [HMAC=OK]
+[Sat Nov  1 15:18:48 2025] [REASON] Cheat Engine artifact: module 'cheatengine-i386.exe' in 'C:\Program Files\Cheat Engine\cheatengine-i386.exe'
+[Sat Nov  1 15:19:30 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:19:30 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:19:30 2025] [REASON] heartbeat
+[Sat Nov  1 15:20:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:20:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:20:00 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:20:00 2025] [REASON] heartbeat
+[Sat Nov  1 15:20:30 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:20:30 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:20:30 2025] [REASON] heartbeat
+[Sat Nov  1 15:21:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:21:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:21:00 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:21:00 2025] [REASON] heartbeat
+[Sat Nov  1 15:21:30 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:21:30 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:21:30 2025] [REASON] heartbeat
+[Sat Nov  1 15:22:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:22:00 2025] Client connected from 127.0.0.1
+[Sat Nov  1 15:22:00 2025] [DETECTION v1] subtype=heartbeat, pid=22764, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 15:22:00 2025] [REASON] heartbeat
+[Sat Nov  1 19:57:54 2025] Server started on port 4000
+[Sat Nov  1 19:58:16 2025] Client connected from 127.0.0.1
+[Sat Nov  1 19:58:16 2025] [DETECTION v1] subtype=process, pid=15268, process='process', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=5 [HMAC=OK]
+[Sat Nov  1 19:58:16 2025] [REASON] Cheat Engine artifact: module 'cheatengine-i386.exe' in 'C:\Program Files\Cheat Engine\cheatengine-i386.exe'
+[Sat Nov  1 19:58:52 2025] Client connected from 127.0.0.1
+[Sat Nov  1 19:58:53 2025] [DETECTION v1] subtype=heartbeat, pid=24728, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 19:58:53 2025] [REASON] heartbeat
+[Sat Nov  1 19:59:22 2025] Client connected from 127.0.0.1
+[Sat Nov  1 19:59:23 2025] Client connected from 127.0.0.1
+[Sat Nov  1 19:59:23 2025] [DETECTION v1] subtype=heartbeat, pid=24728, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 19:59:23 2025] [REASON] heartbeat
+[Sat Nov  1 19:59:55 2025] Server started on port 4000
+[Sat Nov  1 20:00:28 2025] Client connected from 127.0.0.1
+[Sat Nov  1 20:00:28 2025] [DETECTION v1] subtype=heartbeat, pid=22320, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 20:00:28 2025] [REASON] heartbeat
+[Sat Nov  1 20:00:58 2025] Client connected from 127.0.0.1
+[Sat Nov  1 20:00:58 2025] Client connected from 127.0.0.1
+[Sat Nov  1 20:00:58 2025] [DETECTION v1] subtype=heartbeat, pid=22320, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Sat Nov  1 20:00:58 2025] [REASON] heartbeat
+[Sat Nov  1 20:24:32 2025] Server started on port 4000
+[Sat Nov  1 20:24:46 2025] Client connected from 127.0.0.1
+[Sat Nov  1 20:24:46 2025] [DETECTION v1] subtype=process, pid=20860, process='process', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=5 [HMAC=OK]
+[Sat Nov  1 20:24:46 2025] [REASON] Cheat Engine artifact: module 'cheatengine-i386.exe' in 'C:\Program Files\Cheat Engine\cheatengine-i386.exe'
+[Sat Nov  1 20:25:10 2025] Client connected from 127.0.0.1
+[Sat Nov  1 20:25:10 2025] [DETECTION v1] subtype=process, pid=23420, process='process', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=5 [HMAC=OK]
+[Sat Nov  1 20:25:10 2025] [REASON] Cheat Engine artifact: module 'cheatengine-i386.exe' in 'C:\Program Files\Cheat Engine\cheatengine-i386.exe'

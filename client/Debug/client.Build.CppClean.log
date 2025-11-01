@@ -22,6 +22,10 @@ h:\oblivion\client\debug\configloader.obj
 h:\oblivion\client\debug\codeintegrityscanner.obj
 h:\oblivion\client\debug\antisuspend.obj
 h:\oblivion\client\debug\dllmain.obj
+h:\oblivion\client\debug\speedhackdetector.obj
+h:\oblivion\client\debug\cewindowscanner.obj
+h:\oblivion\client\debug\ceregistryscanner.obj
+h:\oblivion\client\debug\cebehaviormonitor.obj
 h:\oblivion\client\debug\signaturepackmanager.obj
 h:\oblivion\debug\client.dll
 h:\oblivion\debug\client.pdb

@@ -2,18 +2,24 @@
 #include <windows.h>
 #include <string>
 
+// Configuration for the client module. Keep this header simple ASCII to avoid
+// IntelliSense parsing issues. Only add fields; do not remove/rename existing ones
+// without updating all call sites.
 struct ClientConfig {
+    // Networking
     std::string serverIp = "127.0.0.1";
     int serverPort = 4000;
+
+    // Runtime
     DWORD pollingIntervalMs = 2000;
     int closeThreshold = 2;
     std::wstring detectionMessage = L"Oblivion AntiCheat: Suspicious software detected (%s). The game will close to protect integrity.";
-    bool enableBackgroundWatcher = true; // enable by default for proactive monitoring
-    bool enableLogging = false;           // OutputDebugString logging
+    bool enableBackgroundWatcher = true;
+    bool enableLogging = false;
 
-    // Optional TLS for client->server
+    // TLS (optional)
     bool enableTlsClient = false;
-    std::string tlsServerName; // SNI/hostname for server cert validation
+    std::string tlsServerName;
 
     // Overlay Scanner
     bool enableOverlayScanner = true;
@@ -26,20 +32,18 @@ struct ClientConfig {
     // Injection Scanner
     bool enableInjectionScanner = true;
     int injectionThreshold = 2;
-    // Semicolon-separated whitelist prefixes, e.g. "C:\\Windows\\;C:\\Program Files\\RRO\\"
     std::wstring moduleWhitelistPrefixes;
 
     // Digital Signature Validator
     bool enableSignatureValidator = true;
     int signatureThreshold = 2;
-    // Semicolon-separated module names to skip sigcheck, e.g. "rro.exe;myclient.exe"
-    std::wstring signatureSkipNames; // names to skip in signature validator (semicolon-delimited)
+    std::wstring signatureSkipNames;
 
     // Anti-Suspend Threads
     bool enableAntiSuspend = true;
-    DWORD antiSuspendHeartbeatMs = 200;        // beat interval
-    DWORD antiSuspendStallWindowMs = 3000;   // window to consider stalled
-    int antiSuspendMissesThreshold = 2;      // consecutive misses to trigger
+    DWORD antiSuspendHeartbeatMs = 200;
+    DWORD antiSuspendStallWindowMs = 3000;
+    int antiSuspendMissesThreshold = 2;
 
     // Hijacked Thread Scanner
     bool enableHijackedThreadScanner = true;
@@ -51,38 +55,61 @@ struct ClientConfig {
 
     // File Integrity Check
     bool enableFileIntegrityCheck = true;
-    // Semicolon-separated list of items: "path[=expectedhex]"; relative paths are resolved to DLL directory
-    std::wstring integrityItems;
+    std::wstring integrityItems; // path[=expectedhex]; semicolon-delimited
 
     // Memory Signature Scanner
-    bool enableMemorySignatureScanner = true; // enabled by default
+    bool enableMemorySignatureScanner = true;
     int memorySignatureThreshold = 1;
-    std::wstring memorySignatures; // format: name@w=AA BB ?? CC;name2@w=DE AD BE EF
-    std::wstring memoryModuleWhitelistPrefixes; // optional, override generic module whitelist for memsig
-    bool memoryImagesOnly = true; // scan only MEM_IMAGE regions
+    std::wstring memorySignatures; // name=AA BB ?? CC;name2=...
+    std::wstring memoryModuleWhitelistPrefixes;
+    bool memoryImagesOnly = true;
 
-    // Cheat Engine artifact tokens (semicolon-delimited), case-insensitive contains match
-    // Expanded to cover common CE UI/classes/driver names
+    // Cheat Engine artifact tokens (semicolon-delimited)
     std::wstring ceArtifactTokens =
         L"cheatengine;cheat engine;dark byte;ce.exe;cetrainer;speedhack;vehdebug;dbk;cedriver;ceserver;celua;monohelper;"
         L"memscan;symbolhandler;tmainform;frmmemoryviewer;found:;first scan;next scan";
 
-    // HMAC auth for client->server messages
+    // CE Behavior Monitor
+    bool enableCEBehaviorMonitor = true;
+    int ceBehaviorThreshold = 4;
+    DWORD ceBehaviorWindowMs = 5000;
+    DWORD ceBehaviorPollMs = 500;
+
+    // CE Registry Scanner
+    bool enableCERegistryScanner = true;
+
+    // CE Window Scanner
+    bool enableCEWindowScanner = true;
+
+    // Speed Hack Detector
+    bool enableSpeedHackDetector = true;
+    int speedHackSensitivity = 3;
+    DWORD speedHackMonitorIntervalMs = 1000;
+
+    // Aggressive detection profile
+    bool aggressiveDetection = false;
+
+    // ETW tuning
+    int etwBurstThreshold = 6;
+    DWORD etwWindowMs = 3000;
+    int etwMemscanMinStreak = 4;
+
+    // HMAC auth
     bool enableHmacAuth = false;
-    std::string hmacSecret; // keep ASCII/UTF-8
+    std::string hmacSecret;
 
-    // Heartbeat telemetry
+    // Heartbeat
     bool enableHeartbeat = true;
-    DWORD heartbeatIntervalMs = 30000; // 30s
+    DWORD heartbeatIntervalMs = 30000;
 
-    // Periodic scans for all features
+    // Periodic scans
     bool enablePeriodicScans = true;
-    DWORD periodicScanIntervalMs = 15000; // 15s
+    DWORD periodicScanIntervalMs = 15000;
 
-    // Cooldown for duplicate detections (global fallback)
-    DWORD detectionCooldownMs = 10000; // 10s
+    // Global cooldown
+    DWORD detectionCooldownMs = 10000;
 
-    // Per-subtype cooldowns (override global if non-zero)
+    // Per-subtype cooldowns
     DWORD cooldownProcessMs = 10000;
     DWORD cooldownOverlayMs = 10000;
     DWORD cooldownAntiDebugMs = 10000;
@@ -93,10 +120,15 @@ struct ClientConfig {
     DWORD cooldownIntegrityMs = 60000;
     DWORD cooldownMemsigMs = 30000;
 
-    // Kernel bridge (driver) toggle. Default false for safe user-mode only.
+    // New detector cooldowns
+    DWORD cooldownCEBehaviorMs = 15000;
+    DWORD cooldownCERegistryMs = 20000;
+    DWORD cooldownCEWindowMs = 10000;
+    DWORD cooldownSpeedHackMs = 15000;
+
+    // Kernel bridge (driver)
     bool enableKernelBridge = false;
 };
 
-// Load client_config.json from DLL directory (preferred) or current directory as fallback
-// Returns true if file found and at least one field parsed; otherwise false and defaults remain
+// Load client_config.json from DLL directory (preferred) or current directory
 bool LoadClientConfig(ClientConfig& outCfg, const std::wstring& dllDirectory);

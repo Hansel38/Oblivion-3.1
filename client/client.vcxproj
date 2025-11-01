@@ -138,6 +138,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="include\CEBehaviorMonitor.h" />
+    <ClInclude Include="include\CERegistryScanner.h" />
+    <ClInclude Include="include\CEWindowScanner.h" />
     <ClInclude Include="include\AntiDebug.h" />
     <ClInclude Include="include\AntiSuspend.h" />
     <ClInclude Include="include\blacklist_overlay.h" />
@@ -160,6 +163,7 @@
     <ClInclude Include="include\OverlayScanner.h" />
     <ClInclude Include="include\PeriodicScanner.h" />
     <ClInclude Include="include\ProcessThreadWatcher.h" />
+    <ClInclude Include="include\SpeedHackDetector.h" />
     <ClInclude Include="include\SignaturePackManager.h" />
     <ClInclude Include="include\UniqueHandle.h" />
     <ClInclude Include="pch.h" />
@@ -192,6 +196,10 @@
     <ClCompile Include="src\ProcessThreadWatcher.cpp" />
     <ClCompile Include="src\ServiceDriverScanner.cpp" />
     <ClCompile Include="src\SignaturePackManager.cpp" />
+    <ClCompile Include="src\CEBehaviorMonitor.cpp" />
+    <ClCompile Include="src\CERegistryScanner.cpp" />
+    <ClCompile Include="src\CEWindowScanner.cpp" />
+    <ClCompile Include="src\SpeedHackDetector.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="client_config.json" />

@@ -21,6 +21,10 @@
 #include "EtwHeuristics.h"
 #include "CodeIntegrityScanner.h"
 #include "SignaturePackManager.h"
+#include "CEBehaviorMonitor.h"
+#include "CERegistryScanner.h"
+#include "CEWindowScanner.h"
+#include "SpeedHackDetector.h"
 #include <string>
 #include <unordered_map>
 #include <cstring>
@@ -65,6 +69,10 @@ static Heartbeat* g_pHeartbeat = nullptr;
 static PeriodicScanner* g_pPeriodic = nullptr;
 static EtwHeuristics* g_pEtw = nullptr;
 static SignaturePackManager* g_pSigMgr = nullptr;
+static CEBehaviorMonitor* g_pCEBehavior = nullptr;
+static CERegistryScanner* g_pCERegistry = nullptr;
+static CEWindowScanner* g_pCEWindow = nullptr;
+static SpeedHackDetector* g_pSpeedHack = nullptr;
 static std::mutex g_cleanupMutex; // protect cleanup from races
 
 // Runtime configuration
@@ -217,6 +225,10 @@ static bool ShouldSuppressDetection(const DetectionResult& result, const char* s
         else if (strcmp(subtype, "iathook") == 0 && g_cfg.cooldownIatHookMs) cooldown = g_cfg.cooldownIatHookMs;
         else if (strcmp(subtype, "integrity") == 0 && g_cfg.cooldownIntegrityMs) cooldown = g_cfg.cooldownIntegrityMs;
         else if (strcmp(subtype, "memsig") == 0 && g_cfg.cooldownMemsigMs) cooldown = g_cfg.cooldownMemsigMs;
+        else if (strcmp(subtype, "ce_behavior") == 0 && g_cfg.cooldownCEBehaviorMs) cooldown = g_cfg.cooldownCEBehaviorMs;
+        else if (strcmp(subtype, "ce_registry") == 0 && g_cfg.cooldownCERegistryMs) cooldown = g_cfg.cooldownCERegistryMs;
+        else if (strcmp(subtype, "ce_window") == 0 && g_cfg.cooldownCEWindowMs) cooldown = g_cfg.cooldownCEWindowMs;
+        else if (strcmp(subtype, "speed_hack") == 0 && g_cfg.cooldownSpeedHackMs) cooldown = g_cfg.cooldownSpeedHackMs;
     }
 
     // Cap cooldown to 1 hour to avoid overflow and compute safe horizon window (x5)
@@ -507,6 +519,69 @@ static void SchedulePeriodicScans()
  }
  }
 
+ // New: CE Behavior Monitor - detect excessive memory scanning
+ if (g_pCEBehavior) {
+ t0 = GetTickCount64();
+ CEBehaviorMonitor::BehaviorFinding bf{};
+ if (g_pCEBehavior->CheckSuspiciousBehavior(bf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = bf.pid; dr.processName = bf.processName;
+ dr.reason = L"Cheat Engine behavior detected: " + bf.reason;
+ dr.indicatorCount = bf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "ce_behavior"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.CEBehaviorMonitor", GetTickCount64() - t0);
+ }
+
+ // New: CE Registry Scanner - detect CE installation artifacts
+ if (g_pCERegistry) {
+ t0 = GetTickCount64();
+ CERegistryScanner::RegistryFinding rf{};
+ if (g_pCERegistry->RunOnceScan(rf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<registry>";
+ dr.reason = L"Cheat Engine registry artifacts: " + rf.reason;
+ dr.indicatorCount = rf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "ce_registry"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.CERegistryScanner", GetTickCount64() - t0);
+ }
+
+ // New: CE Window Scanner - detect CE UI presence
+ if (g_pCEWindow) {
+ t0 = GetTickCount64();
+ CEWindowScanner::WindowFinding wf{};
+ if (g_pCEWindow->ScanForCEWindows(wf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = wf.pid;
+ dr.processName = wf.windowTitle;
+ dr.reason = L"Cheat Engine window detected: title='" + wf.windowTitle + L"' class='" + wf.className + L"'";
+ dr.indicatorCount = wf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "ce_window"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.CEWindowScanner", GetTickCount64() - t0);
+ }
+
+ // New: Speed Hack Detector - detect timing manipulation
+ if (g_pSpeedHack) {
+ t0 = GetTickCount64();
+ SpeedHackDetector::SpeedHackFinding sf{};
+ if (g_pSpeedHack->CheckSpeedHack(sf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<speed_hack>";
+ dr.reason = sf.reason;
+ dr.indicatorCount = sf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "speed_hack"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.SpeedHackDetector", GetTickCount64() - t0);
+ }
+
  if (g_cfg.enableOverlayScanner) {
  t0 = GetTickCount64();
  OverlayScanner overlay; overlay.SetCloseThreshold(max(g_cfg.overlayThreshold, g_cfg.closeThreshold));
@@ -629,7 +704,9 @@ static void SchedulePeriodicScans()
  }
  return fired;
  };
- g_pPeriodic->Start(g_cfg.periodicScanIntervalMs);
+ DWORD interval = g_cfg.periodicScanIntervalMs;
+ if (g_cfg.aggressiveDetection && interval > 5000) interval = 5000; // faster periodic scans
+ g_pPeriodic->Start(interval);
 }
 
 static DWORD WINAPI InitThreadProc(LPVOID)
@@ -674,14 +751,78 @@ static DWORD WINAPI InitThreadProc(LPVOID)
         g_pSigMgr = nullptr;
     }
 
-    // Start ETW-based heuristics with tunable window (use detectionCooldownMs as base window if set)
+    // Start ETW-based heuristics with configurable thresholds
     try {
-        DWORD etwWindowMs = g_cfg.detectionCooldownMs ? g_cfg.detectionCooldownMs / 2 : 3000; // default 3s window
-        if (etwWindowMs < 500) etwWindowMs = 500; // clamp min
-        g_pEtw = new EtwHeuristics(g_pNetClient, g_cfg.antiDebugThreshold, etwWindowMs);
+        int etwThr = g_cfg.etwBurstThreshold > 0 ? g_cfg.etwBurstThreshold : g_cfg.antiDebugThreshold;
+        DWORD etwWindow = g_cfg.etwWindowMs ? g_cfg.etwWindowMs : (g_cfg.detectionCooldownMs ? g_cfg.detectionCooldownMs/2 : 3000);
+        if (g_cfg.aggressiveDetection) {
+            if (etwThr > 5) etwThr = 5;
+            if (etwWindow > 2000) etwWindow = 2000;
+        }
+        if (etwWindow < 500) etwWindow = 500; // clamp min
+        g_pEtw = new EtwHeuristics(g_pNetClient, etwThr, etwWindow);
+        g_pEtw->SetMemscanMinStreak(g_cfg.aggressiveDetection ? min(g_cfg.etwMemscanMinStreak, 3) : g_cfg.etwMemscanMinStreak);
         g_pEtw->Start();
     } catch (...) {
         g_pEtw = nullptr;
+    }
+
+    // Start CE Behavior Monitor for detecting memory scanning patterns
+    if (g_cfg.enableCEBehaviorMonitor) {
+        try {
+            g_pCEBehavior = new CEBehaviorMonitor();
+            int thr = g_cfg.ceBehaviorThreshold;
+            DWORD win = g_cfg.ceBehaviorWindowMs;
+            DWORD poll = g_cfg.ceBehaviorPollMs;
+            if (g_cfg.aggressiveDetection) {
+                if (thr > 3) thr = 3;
+                if (win > 3000) win = 3000;
+                if (poll > 300) poll = 300;
+            }
+            g_pCEBehavior->SetThreshold(thr);
+            g_pCEBehavior->SetMonitorWindowMs(win);
+            g_pCEBehavior->SetPollingIntervalMs(poll);
+            g_pCEBehavior->Start();
+        } catch (...) {
+            g_pCEBehavior = nullptr;
+        }
+    }
+
+    // Start CE Registry Scanner
+    if (g_cfg.enableCERegistryScanner) {
+        try {
+            g_pCERegistry = new CERegistryScanner();
+            // Registry scanner is passive, scanned on-demand in periodic scans
+        } catch (...) {
+            g_pCERegistry = nullptr;
+        }
+    }
+
+    // Start CE Window Scanner
+    if (g_cfg.enableCEWindowScanner) {
+        try {
+            g_pCEWindow = new CEWindowScanner();
+            // Window scanner is passive, scanned on-demand in periodic scans
+        } catch (...) {
+            g_pCEWindow = nullptr;
+        }
+    }
+
+    // Start Speed Hack Detector
+    if (g_cfg.enableSpeedHackDetector) {
+        try {
+            g_pSpeedHack = new SpeedHackDetector();
+            int sens = g_cfg.speedHackSensitivity;
+            DWORD sInt = g_cfg.speedHackMonitorIntervalMs;
+            if (g_cfg.aggressiveDetection) {
+                if (sInt > 500) sInt = 500;
+            }
+            g_pSpeedHack->SetSensitivity(sens);
+            g_pSpeedHack->SetMonitorIntervalMs(sInt);
+            g_pSpeedHack->Start();
+        } catch (...) {
+            g_pSpeedHack = nullptr;
+        }
     }
 
     SchedulePeriodicScans();
@@ -908,6 +1049,11 @@ static void CleanupGlobals()
     if (g_pEtw) { g_pEtw->Stop(); delete g_pEtw; g_pEtw = nullptr; }
     if (g_pHeartbeat) { g_pHeartbeat->Stop(); delete g_pHeartbeat; g_pHeartbeat = nullptr; }
     if (g_pSigMgr) { g_pSigMgr->Stop(); delete g_pSigMgr; g_pSigMgr = nullptr; }
+    // Cleanup CE detection modules
+    if (g_pCEBehavior) { g_pCEBehavior->Stop(); delete g_pCEBehavior; g_pCEBehavior = nullptr; }
+    if (g_pCERegistry) { delete g_pCERegistry; g_pCERegistry = nullptr; }
+    if (g_pCEWindow) { delete g_pCEWindow; g_pCEWindow = nullptr; }
+    if (g_pSpeedHack) { g_pSpeedHack->Stop(); delete g_pSpeedHack; g_pSpeedHack = nullptr; }
     if (g_cfg.enableKernelBridge) { KernelBridge_Stop(); }
     if (g_pNetClient) { delete g_pNetClient; g_pNetClient = nullptr; }
 }

@@ -15,6 +15,7 @@ public:
     void Stop();
 
     void UpdateParameters(int threshold, DWORD windowMs);
+    void SetMemscanMinStreak(int v) { m_memscanMinStreak.store(v); }
 
 private:
     static void ThreadMain(EtwHeuristics* self);
@@ -26,4 +27,5 @@ private:
     NetworkClient* m_net;
     std::atomic<int> m_threshold;
     std::atomic<DWORD> m_windowMs;
+    std::atomic<int> m_memscanMinStreak{4};
 };

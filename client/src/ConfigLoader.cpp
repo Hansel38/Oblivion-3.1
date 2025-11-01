@@ -76,6 +76,28 @@ static bool LoadJsonFile(const std::wstring& path, ClientConfig& cfg) {
         else if (key=="cooldown_memsig_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownMemsigMs=v; any=true; } }
         else if (key=="enable_kernel_bridge") { bool b; if (ParseBool(val,b)) { cfg.enableKernelBridge=b; any=true; } }
         else if (key=="ce_artifact_tokens") { std::string s; if (ParseString(val, s)) { cfg.ceArtifactTokens = ToW(s); any=true; } }
+    // Aggressive detection profile and ETW tuning
+    else if (key=="aggressive_detection") { bool b; if (ParseBool(val,b)){ cfg.aggressiveDetection=b; any=true; } }
+    else if (key=="etw_burst_threshold") { int v; if (ParseInt(val,v)){ cfg.etwBurstThreshold=v; any=true; } }
+    else if (key=="etw_window_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.etwWindowMs=v; any=true; } }
+    else if (key=="etw_memscan_min_streak") { int v; if (ParseInt(val,v)){ cfg.etwMemscanMinStreak=v; any=true; } }
+        // New: CE Behavior Monitor
+        else if (key=="enable_ce_behavior_monitor") { bool b; if (ParseBool(val,b)){ cfg.enableCEBehaviorMonitor=b; any=true; } }
+        else if (key=="ce_behavior_threshold") { int v; if (ParseInt(val,v)){ cfg.ceBehaviorThreshold=v; any=true; } }
+        else if (key=="ce_behavior_window_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.ceBehaviorWindowMs=v; any=true; } }
+        else if (key=="ce_behavior_poll_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.ceBehaviorPollMs=v; any=true; } }
+        // New: CE Registry & Window scanners
+        else if (key=="enable_ce_registry_scanner") { bool b; if (ParseBool(val,b)){ cfg.enableCERegistryScanner=b; any=true; } }
+        else if (key=="enable_ce_window_scanner") { bool b; if (ParseBool(val,b)){ cfg.enableCEWindowScanner=b; any=true; } }
+        // New: Speed Hack Detector
+        else if (key=="enable_speedhack_detector") { bool b; if (ParseBool(val,b)){ cfg.enableSpeedHackDetector=b; any=true; } }
+        else if (key=="speedhack_sensitivity") { int v; if (ParseInt(val,v)){ cfg.speedHackSensitivity=v; any=true; } }
+        else if (key=="speedhack_monitor_interval_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.speedHackMonitorIntervalMs=v; any=true; } }
+        // New cooldowns
+        else if (key=="cooldown_ce_behavior_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownCEBehaviorMs=v; any=true; } }
+        else if (key=="cooldown_ce_registry_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownCERegistryMs=v; any=true; } }
+        else if (key=="cooldown_ce_window_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownCEWindowMs=v; any=true; } }
+        else if (key=="cooldown_speed_hack_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownSpeedHackMs=v; any=true; } }
     }
     return any;
 }
