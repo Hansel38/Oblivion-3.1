@@ -190,11 +190,31 @@ bool InlineHookScanner::ScanModuleExports(HMODULE hMod, InlineHookFinding& out) 
         if (DetectTrampolinePattern(funcPtr, hookType, target)) {
             int score = 0;
             
+            // ===== PRIORITY 2.1.3: Enhanced detection for JMP to non-image regions =====
             // Check if target is outside module
             HMODULE targetMod = target ? FindModuleByAddress(target) : nullptr;
             
             if (target && !targetMod) {
-                score += 3; // Points to unmapped memory - very suspicious
+                // Target points to unmapped/private memory - VERY suspicious
+                score += 4;
+                
+                // Check if target is in executable non-image memory
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (VirtualQuery(target, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                    bool isImage = (mbi.Type & MEM_IMAGE) != 0;
+                    bool isExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | 
+                                                       PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+                    
+                    if (!isImage && isExecutable) {
+                        // Jump to executable non-image region (code cave!)
+                        score += 3;
+                        
+                        // RWX permission is extremely suspicious
+                        if (mbi.Protect & PAGE_EXECUTE_READWRITE) {
+                            score += 2;
+                        }
+                    }
+                }
             } else if (target && targetMod != hMod) {
                 // Points to different module
                 std::wstring targetPath = tolower_ws(GetModulePath(targetMod));

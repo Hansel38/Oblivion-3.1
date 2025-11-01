@@ -26,3 +26,11 @@ private:
     bool m_initialized;
     std::string m_hmacSecret;
 };
+
+// ===== Hook for packet timing analysis (used by SpeedHackDetector) =====
+// Consumer can set a callback to be notified on send/recv events.
+// timestamp: GetTickCount64() at event time; size: bytes; isOutgoing: true for send, false for recv
+using NetworkPacketHook = void(*)(unsigned long long timestamp, size_t size, bool isOutgoing);
+
+// Set or clear the global packet hook. Thread-safe for simple usage.
+void NetworkClient_SetPacketHook(NetworkPacketHook cb);

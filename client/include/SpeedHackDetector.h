@@ -36,6 +36,13 @@ public:
     // Configure monitoring interval in milliseconds
     void SetMonitorIntervalMs(DWORD intervalMs) { m_monitorIntervalMs = intervalMs; }
 
+    // ===== PRIORITY 2.3.2: Network Packet Timing Analysis =====
+    // Record network packet timestamp for timing correlation
+    void RecordNetworkPacket(ULONGLONG timestamp, size_t packetSize, bool isOutgoing);
+    
+    // Detect speedhack via network packet timing anomalies
+    bool DetectNetworkTimingAnomaly(SpeedHackFinding& outFinding);
+
 private:
     struct TimingSample {
         ULONGLONG tickCount;           // GetTickCount64()
@@ -45,6 +52,16 @@ private:
         double calculatedDelta;        // Time delta in milliseconds
     };
 
+    // ===== PRIORITY 2.3.2: Network packet timing structure =====
+    struct NetworkPacketSample {
+        ULONGLONG timestamp;     // When packet was sent/received
+        ULONGLONG localTime;     // Local GetTickCount64 at that moment
+        LARGE_INTEGER qpcTime;   // QPC value at that moment
+        size_t packetSize;       // Size of packet in bytes
+        bool isOutgoing;         // True if outgoing, false if incoming
+        double intervalMs;       // Interval from previous packet
+    };
+
     std::atomic<bool> m_running{ false };
     int m_sensitivity = 3; // Default medium sensitivity
     DWORD m_monitorIntervalMs = 1000; // Sample every 1 second
@@ -52,6 +69,11 @@ private:
     std::mutex m_samplesMutex;
     std::vector<TimingSample> m_samples;
     ULONGLONG m_lastSampleTime = 0;
+    
+    // ===== PRIORITY 2.3.2: Network packet tracking =====
+    std::mutex m_packetsMutex;
+    std::vector<NetworkPacketSample> m_networkPackets;
+    ULONGLONG m_lastPacketTime = 0;
     
     // Analysis thresholds
     static constexpr double SPEED_TOLERANCE = 0.15; // 15% tolerance for normal variation
@@ -75,4 +97,9 @@ private:
     
     // Check if QPC is behaving normally
     bool IsQPCConsistent();
+    
+    // ===== PRIORITY 2.3.2: Network timing analysis methods =====
+    bool AnalyzeNetworkPacketTiming(SpeedHackFinding& outFinding);
+    bool DetectNetworkTimingInconsistency();
+    double CalculateNetworkPacketRatio();
 };

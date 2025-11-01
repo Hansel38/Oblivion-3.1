@@ -98,6 +98,7 @@ static bool LoadJsonFile(const std::wstring& path, ClientConfig& cfg) {
         else if (key=="cooldown_ce_registry_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownCERegistryMs=v; any=true; } }
         else if (key=="cooldown_ce_window_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownCEWindowMs=v; any=true; } }
         else if (key=="cooldown_speed_hack_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownSpeedHackMs=v; any=true; } }
+    else if (key=="cooldown_memory_scanning_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.cooldownMemoryScanningMs=v; any=true; } }
     }
     return any;
 }

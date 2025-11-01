@@ -22,6 +22,15 @@
 #define KAC_EVENT_TIME_DILATION           0x00000080
 // Debugger-specific suspend attempt observed (SeDebugPrivilege or known debugger image)
 #define KAC_EVENT_DEBUG_SUSPEND_ATTEMPT   0x00000100
+// ===== PRIORITY 2.2.3: Kernel Driver Enhancement Events =====
+// Suspicious device object creation detected (DBK/CEDRIVER patterns)
+#define KAC_EVENT_SUSPICIOUS_DEVICE_OBJECT 0x00000200
+// Suspicious driver object creation detected
+#define KAC_EVENT_SUSPICIOUS_DRIVER_OBJECT 0x00000400
+// DBK-characteristic IOCTL registration detected
+#define KAC_EVENT_DBK_IOCTL_PATTERN        0x00000800
+// Kernel driver load with suspicious characteristics
+#define KAC_EVENT_SUSPICIOUS_DRIVER_LOAD   0x00001000
 
 typedef struct _KAC_STATUS
 {

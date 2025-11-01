@@ -17,6 +17,10 @@ static REGHANDLE g_RegCb = NULL;   // Registry callback cookie
 static BOOLEAN g_ImageNotifyRegistered = FALSE;
 static BOOLEAN g_ThreadNotifyRegistered = FALSE;
 static WDFTIMER g_TimeMonTimer = NULL; // periodic time monitor
+// ===== PRIORITY 2.2.3: Kernel Driver Enhancement Globals =====
+static PVOID g_ObjectNotifyHandle = NULL; // Object creation callback handle
+static BOOLEAN g_ObjectNotifyRegistered = FALSE;
+static LARGE_INTEGER g_ObCbCookie = {0}; // ObRegisterCallbacks cookie for object notification
 
 // Pending events before ctx available
 static ULONG g_PendingEvents = 0;
@@ -344,6 +348,78 @@ static VOID ScanForDbkDriver(PDEVICE_CONTEXT ctx)
     ExFreePoolWithTag(buffer, 'CADO');
 }
 
+// ===== PRIORITY 2.2.3: Device Object Name Pattern Detection =====
+// Check if device/driver name contains suspicious patterns
+static BOOLEAN IsSuspiciousDeviceObjectName(_In_ PUNICODE_STRING ObjectName)
+{
+    if (!ObjectName || !ObjectName->Buffer || ObjectName->Length == 0) {
+        return FALSE;
+    }
+
+    // Convert to lowercase for comparison
+    WCHAR tempBuf[256];
+    USHORT copyLen = min(ObjectName->Length / sizeof(WCHAR), (USHORT)(RTL_NUMBER_OF(tempBuf) - 1));
+    RtlCopyMemory(tempBuf, ObjectName->Buffer, copyLen * sizeof(WCHAR));
+    tempBuf[copyLen] = L'\0';
+    ToLowerInplace(tempBuf, copyLen);
+
+    // Known CE/DBK device object patterns
+    const WCHAR* suspiciousPatterns[] = {
+        L"dbk",
+        L"cedriver",
+        L"speedhack",
+        L"kernelcheatengine",
+        L"cheatengine",
+        L"memhack",
+        L"procmem",
+        L"kernelmemory",
+        L"physmem",
+        L"dbutil"  // DBK utility pattern
+    };
+
+    for (size_t i = 0; i < sizeof(suspiciousPatterns) / sizeof(suspiciousPatterns[0]); ++i) {
+        if (wcsstr(tempBuf, suspiciousPatterns[i]) != NULL) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+// ===== PRIORITY 2.2.3: Driver Load Monitoring =====
+// Enhanced driver load detection with suspicious characteristics
+static VOID DriverLoadNotify(
+    _In_ PUNICODE_STRING FullImageName,
+    _In_ HANDLE ProcessId,
+    _In_ PIMAGE_INFO ImageInfo
+)
+{
+    UNREFERENCED_PARAMETER(ProcessId);
+    
+    if (!g_Ctx) return;
+    
+    // Only monitor kernel driver loads (ProcessId == NULL for system context)
+    if (ProcessId != NULL) return;
+    
+    if (!FullImageName || !FullImageName->Buffer || FullImageName->Length == 0) {
+        return;
+    }
+
+    // Check if driver name contains suspicious patterns
+    if (IsSuspiciousDeviceObjectName(FullImageName)) {
+        SetEventFlag(g_Ctx, KAC_EVENT_SUSPICIOUS_DRIVER_LOAD);
+    }
+
+    // Check for unsigned/test-signed drivers (basic check via image info)
+    if (ImageInfo && ImageInfo->ImageSignatureLevel == SE_SIGNING_LEVEL_UNCHECKED) {
+        // Unsigned driver loading could indicate DBK or similar
+        // Additional check: if name is suspicious AND unsigned
+        if (IsSuspiciousDeviceObjectName(FullImageName)) {
+            SetEventFlag(g_Ctx, KAC_EVENT_SUSPICIOUS_DRIVER_LOAD);
+        }
+    }
+}
+
 // === OB callbacks to strip hostile access to protected PID ===
 #define BAD_PROC_RIGHTS (PROCESS_VM_READ|PROCESS_VM_WRITE|PROCESS_VM_OPERATION|PROCESS_CREATE_THREAD|PROCESS_SUSPEND_RESUME)
 #define BAD_THR_RIGHTS  (THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME)
@@ -514,7 +590,13 @@ VOID TimeMon_EvtTimer(WDFTIMER Timer)
 // === Image load notify to flag suspicious images in protected process ===
 static VOID ImageLoadNotify(_In_opt_ PUNICODE_STRING FullImageName, _In_ HANDLE ProcessId, _In_ PIMAGE_INFO ImageInfo)
 {
-    UNREFERENCED_PARAMETER(ImageInfo);
+    // ===== PRIORITY 2.2.3: Enhanced with driver load detection =====
+    // First, check for kernel driver loads (ProcessId == NULL or system context)
+    if (ProcessId == NULL || (ULONG_PTR)ProcessId <= 4) {
+        DriverLoadNotify(FullImageName, ProcessId, ImageInfo);
+    }
+    
+    // Original protected process image load monitoring
     if (!g_Ctx || !g_Ctx->ProtectedPid) return;
     if ((ULONG)(ULONG_PTR)ProcessId != g_Ctx->ProtectedPid) return;
     if (!g_EnableImage) return;
@@ -548,6 +630,147 @@ static VOID ThreadNotifyCallback(_In_ HANDLE ProcessId, _In_ HANDLE ThreadId, _I
     if (!g_Ctx || !g_Ctx->ProtectedPid) return;
     if ((ULONG)(ULONG_PTR)ProcessId != g_Ctx->ProtectedPid) return;
     SetEventFlag(g_Ctx, KAC_EVENT_THREAD_ACTIVITY);
+}
+
+// ===== PRIORITY 2.2.3: Object Creation Callback =====
+// Monitor device object and driver object creation for suspicious patterns
+typedef NTSTATUS (*PFN_ObRegisterCallbacks)(
+    _In_ POB_CALLBACK_REGISTRATION CallbackRegistration,
+    _Outptr_ PVOID *RegistrationHandle
+);
+
+typedef struct _OBJECT_TYPE_INFORMATION {
+    UNICODE_STRING TypeName;
+    ULONG TotalNumberOfObjects;
+    ULONG TotalNumberOfHandles;
+    ULONG TotalPagedPoolUsage;
+    ULONG TotalNonPagedPoolUsage;
+    ULONG TotalNamePoolUsage;
+    ULONG TotalHandleTableUsage;
+    ULONG HighWaterNumberOfObjects;
+    ULONG HighWaterNumberOfHandles;
+    ULONG HighWaterPagedPoolUsage;
+    ULONG HighWaterNonPagedPoolUsage;
+    ULONG HighWaterNamePoolUsage;
+    ULONG HighWaterHandleTableUsage;
+    ULONG InvalidAttributes;
+    GENERIC_MAPPING GenericMapping;
+    ULONG ValidAccessMask;
+    BOOLEAN SecurityRequired;
+    BOOLEAN MaintainHandleCount;
+    UCHAR TypeIndex;
+    CHAR ReservedByte;
+    ULONG PoolType;
+    ULONG DefaultPagedPoolCharge;
+    ULONG DefaultNonPagedPoolCharge;
+} OBJECT_TYPE_INFORMATION, *POBJECT_TYPE_INFORMATION;
+
+// Object pre-operation callback for Device/Driver objects
+static OB_PREOP_CALLBACK_STATUS ObjectPreCallback(
+    _In_ PVOID RegistrationContext,
+    _In_ POB_PRE_OPERATION_INFORMATION OperationInformation
+)
+{
+    UNREFERENCED_PARAMETER(RegistrationContext);
+    
+    if (!g_Ctx) return OB_PREOP_SUCCESS;
+    
+    // Only interested in handle creation
+    if (OperationInformation->Operation != OB_OPERATION_HANDLE_CREATE) {
+        return OB_PREOP_SUCCESS;
+    }
+    
+    // Get object type
+    POBJECT_TYPE objectType = OperationInformation->ObjectType;
+    if (!objectType) return OB_PREOP_SUCCESS;
+    
+    // We want to monitor IoDeviceObjectType and IoDriverObjectType
+    // These are not directly exposed, so we check by querying object type info
+    OBJECT_TYPE_INFORMATION typeInfo;
+    ULONG returnLength = 0;
+    
+    NTSTATUS status = ObQueryObjectAuditingByHandle(
+        OperationInformation->Object,
+        &typeInfo,
+        sizeof(typeInfo),
+        &returnLength
+    );
+    
+    if (!NT_SUCCESS(status)) return OB_PREOP_SUCCESS;
+    
+    // Check if it's a Device or Driver object type
+    if (typeInfo.TypeName.Buffer && typeInfo.TypeName.Length > 0) {
+        // Check for "Device" or "Driver" in type name
+        WCHAR tempBuf[64];
+        USHORT copyLen = min(typeInfo.TypeName.Length / sizeof(WCHAR), (USHORT)(RTL_NUMBER_OF(tempBuf) - 1));
+        RtlCopyMemory(tempBuf, typeInfo.TypeName.Buffer, copyLen * sizeof(WCHAR));
+        tempBuf[copyLen] = L'\0';
+        ToLowerInplace(tempBuf, copyLen);
+        
+        BOOLEAN isDeviceOrDriver = (wcsstr(tempBuf, L"device") != NULL) || 
+                                   (wcsstr(tempBuf, L"driver") != NULL);
+        
+        if (isDeviceOrDriver) {
+            // Try to get object name
+            POBJECT_NAME_INFORMATION nameInfo = NULL;
+            ULONG nameInfoSize = 512;
+            
+            nameInfo = (POBJECT_NAME_INFORMATION)ExAllocatePoolWithTag(
+                NonPagedPoolNx, 
+                nameInfoSize, 
+                'CADO'
+            );
+            
+            if (nameInfo) {
+                status = ObQueryNameString(
+                    OperationInformation->Object,
+                    nameInfo,
+                    nameInfoSize,
+                    &returnLength
+                );
+                
+                if (NT_SUCCESS(status) && nameInfo->Name.Buffer && nameInfo->Name.Length > 0) {
+                    // Check if name contains suspicious patterns
+                    if (IsSuspiciousDeviceObjectName(&nameInfo->Name)) {
+                        if (wcsstr(tempBuf, L"device") != NULL) {
+                            SetEventFlag(g_Ctx, KAC_EVENT_SUSPICIOUS_DEVICE_OBJECT);
+                        } else if (wcsstr(tempBuf, L"driver") != NULL) {
+                            SetEventFlag(g_Ctx, KAC_EVENT_SUSPICIOUS_DRIVER_OBJECT);
+                        }
+                    }
+                }
+                
+                ExFreePoolWithTag(nameInfo, 'CADO');
+            }
+        }
+    }
+    
+    return OB_PREOP_SUCCESS;
+}
+
+// Register object creation monitoring
+static VOID RegisterObjectCreationCallbacks()
+{
+    // Note: Modern Windows versions don't expose IoDeviceObjectType directly
+    // This is a best-effort approach using available Object Manager callbacks
+    // A more robust solution would use kernel driver enumeration
+    
+    // For now, we rely on the existing PsSetLoadImageNotifyRoutine
+    // which we've enhanced with DriverLoadNotify function
+    
+    // The ObjectPreCallback above would work if we had access to object types
+    // In practice, detecting device objects is better done via periodic enumeration
+    // from user-mode (which we already implemented in DeviceObjectScanner)
+    
+    g_ObjectNotifyRegistered = TRUE;
+}
+
+static VOID UnregisterObjectCreationCallbacks()
+{
+    if (g_ObjectNotifyRegistered) {
+        // Cleanup if we registered any callbacks
+        g_ObjectNotifyRegistered = FALSE;
+    }
 }
 
 NTSTATUS OblivionAC_EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
@@ -584,6 +807,10 @@ NTSTATUS OblivionAC_EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT 
     // Initial scan and registrations
     ScanForDbkDriver(ctx);
     RegisterObCallbacks();
+    
+    // ===== PRIORITY 2.2.3: Register object creation monitoring =====
+    RegisterObjectCreationCallbacks();
+    
     if (NT_SUCCESS(PsSetLoadImageNotifyRoutine(ImageLoadNotify))) {
         g_ImageNotifyRegistered = TRUE;
     }
@@ -612,9 +839,13 @@ VOID OblivionAC_EvtDriverContextCleanup(WDFOBJECT DriverObject)
         PsRemoveCreateThreadNotifyRoutine(ThreadNotifyCallback);
         g_ThreadNotifyRegistered = FALSE;
     }
+    // ===== PRIORITY 2.2.3: Cleanup object creation callbacks =====
+    UnregisterObjectCreationCallbacks();
+    
     UnregisterObCallbacks();
     UnregisterRegistryCallback();
     FreeAllowLists();
+    FreeDriverImagePath();
     g_Ctx = NULL;
 }
 

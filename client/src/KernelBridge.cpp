@@ -66,6 +66,11 @@ static void Loop()
             if (st.Events & KAC_EVENT_THREAD_ACTIVITY) reason += L"Thread activity in protected process; ";
             if (st.Events & KAC_EVENT_TIME_DILATION) reason += L"Time dilation/speedhack suspected by kernel; ";
             if (st.Events & KAC_EVENT_DEBUG_SUSPEND_ATTEMPT) reason += L"Debugger-specific suspend rights attempt; ";
+            // ===== PRIORITY 2.2.3: Kernel driver enhancement events =====
+            if (st.Events & KAC_EVENT_SUSPICIOUS_DEVICE_OBJECT) reason += L"Suspicious device object creation (DBK/CEDRIVER pattern); ";
+            if (st.Events & KAC_EVENT_SUSPICIOUS_DRIVER_OBJECT) reason += L"Suspicious driver object detected; ";
+            if (st.Events & KAC_EVENT_DBK_IOCTL_PATTERN) reason += L"DBK-characteristic IOCTL pattern detected; ";
+            if (st.Events & KAC_EVENT_SUSPICIOUS_DRIVER_LOAD) reason += L"Suspicious kernel driver load detected; ";
             if (!reason.empty()) {
                 std::string msg = JsonBuilder::BuildDetectionReport(GetCurrentProcessId(), L"<kernel>", reason, "kernel", 1, "", "");
                 g_kbNet->SendMessage(msg);

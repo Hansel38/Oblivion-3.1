@@ -138,6 +138,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="include\DeviceObjectScanner.h" />
     <ClInclude Include="include\CEBehaviorMonitor.h" />
     <ClInclude Include="include\CERegistryScanner.h" />
     <ClInclude Include="include\CEWindowScanner.h" />
@@ -158,6 +159,7 @@
     <ClInclude Include="include\InjectionScanner.h" />
     <ClInclude Include="include\JsonBuilder.h" />
     <ClInclude Include="include\KernelBridge.h" />
+  <ClInclude Include="include\NetworkArtifactScanner.h" />
     <ClInclude Include="include\MemorySignatureScanner.h" />
     <ClInclude Include="include\NetworkClient.h" />
     <ClInclude Include="include\OverlayScanner.h" />
@@ -189,7 +191,9 @@
     <ClCompile Include="src\InjectionScanner.cpp" />
     <ClCompile Include="src\JsonBuilder.cpp" />
     <ClCompile Include="src\KernelBridge.cpp" />
+  <ClCompile Include="src\DeviceObjectScanner.cpp" />
     <ClCompile Include="src\MemorySignatureScanner.cpp" />
+  <ClCompile Include="src\NetworkArtifactScanner.cpp" />
     <ClCompile Include="src\NetworkClient.cpp" />
     <ClCompile Include="src\OverlayScanner.cpp" />
     <ClCompile Include="src\PeriodicScanner.cpp" />

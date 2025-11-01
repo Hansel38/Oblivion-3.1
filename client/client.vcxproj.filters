@@ -21,6 +21,9 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\DeviceObjectScanner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\blacklist_process.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -79,6 +82,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\KernelBridge.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\NetworkArtifactScanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\EtwHeuristics.h">
@@ -149,6 +155,9 @@
     <ClCompile Include="src\KernelBridge.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\DeviceObjectScanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\EtwHeuristics.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -159,6 +168,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ServiceDriverScanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\NetworkArtifactScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

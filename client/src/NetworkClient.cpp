@@ -12,6 +12,10 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "crypt32.lib")
 
+// Global packet hook for SpeedHackDetector integration
+static NetworkPacketHook g_packetHook = nullptr;
+void NetworkClient_SetPacketHook(NetworkPacketHook cb) { g_packetHook = cb; }
+
 NetworkClient::NetworkClient()
     : m_serverPort(0), m_initialized(false)
 {
@@ -158,10 +162,17 @@ static bool SendOnceAndAck(const std::string& ip, int port, const std::string& p
 
     int sent = send(sock, msg.c_str(), static_cast<int>(msg.length()), 0);
     if (sent <= 0) { closesocket(sock); return false; }
+    // Notify outgoing packet
+    if (g_packetHook) {
+        g_packetHook(GetTickCount64(), static_cast<size_t>(sent), true);
+    }
 
     char ack[8] = {0};
     int r = recv(sock, ack, sizeof(ack)-1, 0);
     closesocket(sock);
+    if (g_packetHook && r > 0) {
+        g_packetHook(GetTickCount64(), static_cast<size_t>(r), false);
+    }
     if (r <= 0) return false;
     return std::string(ack).find("ok") != std::string::npos;
 }

@@ -15,6 +15,7 @@ public:
         std::wstring processName;
         std::wstring reason;
         int indicators = 0; // weight 1..5
+        bool likelySequential = false; // true if pattern matches high, steady scanning
     };
 
     CEBehaviorMonitor();
@@ -34,7 +35,13 @@ public:
     bool CheckSuspiciousBehavior(BehaviorFinding& outFinding);
 
 private:
-    struct Counter { ULONGLONG first=0, last=0; unsigned burst=0; };
+    struct Counter {
+        ULONGLONG first = 0;   // first observation tick in current window
+        ULONGLONG last = 0;    // last observation tick in current window
+        unsigned  burst = 0;   // count within current window
+        // derived metrics (updated opportunistically):
+        double    avgRatePerSec = 0.0; // burst per second in window
+    };
     std::unordered_map<DWORD, Counter> m_counts; // per offender pid
     std::unordered_map<DWORD, std::wstring> m_names;
     std::mutex m_lock;

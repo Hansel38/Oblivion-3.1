@@ -125,6 +125,8 @@ struct ClientConfig {
     DWORD cooldownCERegistryMs = 20000;
     DWORD cooldownCEWindowMs = 10000;
     DWORD cooldownSpeedHackMs = 15000;
+    // Memory scanning (behavioral) cooldown
+    DWORD cooldownMemoryScanningMs = 15000;
 
     // Kernel bridge (driver)
     bool enableKernelBridge = false;

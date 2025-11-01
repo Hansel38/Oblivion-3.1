@@ -25,6 +25,9 @@
 #include "CERegistryScanner.h"
 #include "CEWindowScanner.h"
 #include "SpeedHackDetector.h"
+// ===== PRIORITY 2: Advanced Pattern Detection Modules =====
+#include "DeviceObjectScanner.h"
+#include "NetworkArtifactScanner.h"
 #include <string>
 #include <unordered_map>
 #include <cstring>
@@ -73,6 +76,9 @@ static CEBehaviorMonitor* g_pCEBehavior = nullptr;
 static CERegistryScanner* g_pCERegistry = nullptr;
 static CEWindowScanner* g_pCEWindow = nullptr;
 static SpeedHackDetector* g_pSpeedHack = nullptr;
+// ===== PRIORITY 2: Advanced Pattern Detection Global Instances =====
+static DeviceObjectScanner* g_pDeviceScanner = nullptr;
+static NetworkArtifactScanner* g_pNetArtifact = nullptr;
 static std::mutex g_cleanupMutex; // protect cleanup from races
 
 // Runtime configuration
@@ -229,6 +235,7 @@ static bool ShouldSuppressDetection(const DetectionResult& result, const char* s
         else if (strcmp(subtype, "ce_registry") == 0 && g_cfg.cooldownCERegistryMs) cooldown = g_cfg.cooldownCERegistryMs;
         else if (strcmp(subtype, "ce_window") == 0 && g_cfg.cooldownCEWindowMs) cooldown = g_cfg.cooldownCEWindowMs;
         else if (strcmp(subtype, "speed_hack") == 0 && g_cfg.cooldownSpeedHackMs) cooldown = g_cfg.cooldownSpeedHackMs;
+        else if (strcmp(subtype, "memory_scanning") == 0 && g_cfg.cooldownMemoryScanningMs) cooldown = g_cfg.cooldownMemoryScanningMs;
     }
 
     // Cap cooldown to 1 hour to avoid overflow and compute safe horizon window (x5)
@@ -528,7 +535,8 @@ static void SchedulePeriodicScans()
  dr.reason = L"Cheat Engine behavior detected: " + bf.reason;
  dr.indicatorCount = bf.indicators;
  if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "ce_behavior"); fired = true;
+ const char* subtype = bf.likelySequential ? "memory_scanning" : "ce_behavior";
+ ProcessDetection(dr, subtype); fired = true;
  }
  }
  LogPerf(L"Periodic.CEBehaviorMonitor", GetTickCount64() - t0);
@@ -579,7 +587,49 @@ static void SchedulePeriodicScans()
  ProcessDetection(dr, "speed_hack"); fired = true;
  }
  }
+ // ===== PRIORITY 2.3.2: Network timing speedhack detection =====
+ if (g_pSpeedHack->DetectNetworkTimingAnomaly(sf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<network_speed_hack>";
+ dr.reason = sf.reason;
+ dr.indicatorCount = sf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "network_speed_hack"); fired = true;
+ }
+ }
  LogPerf(L"Periodic.SpeedHackDetector", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 2.2: Device Object Scanner - DBK/CE driver detection =====
+ if (g_pDeviceScanner) {
+ t0 = GetTickCount64();
+ DeviceObjectFinding dof{};
+ if (g_pDeviceScanner->DetectDBKIoctlPattern(dof)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<dbk_driver>";
+ dr.reason = dof.reason;
+ dr.indicatorCount = dof.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "dbk_driver"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.DeviceObjectScanner", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 2.3.1: Network Artifact Scanner - CE server detection =====
+ if (g_pNetArtifact) {
+ t0 = GetTickCount64();
+ NetworkArtifactFinding naf{};
+ if (g_pNetArtifact->ScanForCEServerPort(naf)) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = naf.processId;
+ dr.processName = naf.processName.empty() ? L"<unknown>" : naf.processName;
+ dr.reason = naf.reason;
+ dr.indicatorCount = naf.indicators;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "ce_network"); fired = true;
+ }
+ }
+ LogPerf(L"Periodic.NetworkArtifactScanner", GetTickCount64() - t0);
  }
 
  if (g_cfg.enableOverlayScanner) {
@@ -820,9 +870,29 @@ static DWORD WINAPI InitThreadProc(LPVOID)
             g_pSpeedHack->SetSensitivity(sens);
             g_pSpeedHack->SetMonitorIntervalMs(sInt);
             g_pSpeedHack->Start();
+            // Wire NetworkClient packet hook to feed network packet timings
+            NetworkClient_SetPacketHook([](unsigned long long ts, size_t sz, bool outgoing){
+                if (g_pSpeedHack) g_pSpeedHack->RecordNetworkPacket(ts, sz, outgoing);
+            });
         } catch (...) {
             g_pSpeedHack = nullptr;
         }
+    }
+
+    // ===== PRIORITY 2.2: Initialize Device Object Scanner =====
+    try {
+        g_pDeviceScanner = new DeviceObjectScanner();
+        g_pDeviceScanner->SetThreshold(2); // Moderate threshold for DBK detection
+    } catch (...) {
+        g_pDeviceScanner = nullptr;
+    }
+
+    // ===== PRIORITY 2.3.1: Initialize Network Artifact Scanner =====
+    try {
+        g_pNetArtifact = new NetworkArtifactScanner();
+        g_pNetArtifact->SetThreshold(2); // Moderate threshold for CE server detection
+    } catch (...) {
+        g_pNetArtifact = nullptr;
     }
 
     SchedulePeriodicScans();
@@ -1054,6 +1124,9 @@ static void CleanupGlobals()
     if (g_pCERegistry) { delete g_pCERegistry; g_pCERegistry = nullptr; }
     if (g_pCEWindow) { delete g_pCEWindow; g_pCEWindow = nullptr; }
     if (g_pSpeedHack) { g_pSpeedHack->Stop(); delete g_pSpeedHack; g_pSpeedHack = nullptr; }
+    // ===== PRIORITY 2: Cleanup Advanced Detection Modules =====
+    if (g_pDeviceScanner) { delete g_pDeviceScanner; g_pDeviceScanner = nullptr; }
+    if (g_pNetArtifact) { delete g_pNetArtifact; g_pNetArtifact = nullptr; }
     if (g_cfg.enableKernelBridge) { KernelBridge_Stop(); }
     if (g_pNetClient) { delete g_pNetClient; g_pNetClient = nullptr; }
 }
@@ -1086,7 +1159,6 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     }
     return TRUE;
 }
-
 
 
 

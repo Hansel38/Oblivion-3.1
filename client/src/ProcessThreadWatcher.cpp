@@ -9,6 +9,8 @@
 #include <vector>
 #include <string>
 #include <winver.h>
+#include <map>
+#include <mutex>
 
 #pragma comment(lib, "version.lib")
 
@@ -356,3 +358,47 @@ std::vector<DWORD> ProcessThreadWatcher::GetCurrentProcessList()
     CloseHandle(hSnapshot);
     return processList;
 }
+
+// Monitoring excessive ReadProcessMemory/WriteProcessMemory
+namespace {
+    struct MemAccessRecord {
+        DWORD pid;
+        DWORD targetPid;
+        size_t readCount = 0;
+        size_t writeCount = 0;
+        ULONGLONG lastAccessTick = 0;
+    };
+    std::map<std::pair<DWORD, DWORD>, MemAccessRecord> g_memAccessMap;
+    std::mutex g_memAccessMutex;
+    const size_t MEM_ACCESS_THRESHOLD = 100; // Example threshold
+    const DWORD GAME_PID = GetCurrentProcessId(); // Assume game process is current
+
+    void RecordReadProcessMemory(DWORD callerPid, DWORD targetPid) {
+        if (targetPid != GAME_PID) return;
+        std::lock_guard<std::mutex> lock(g_memAccessMutex);
+        auto& rec = g_memAccessMap[{callerPid, targetPid}];
+        rec.pid = callerPid;
+        rec.targetPid = targetPid;
+        rec.readCount++;
+        rec.lastAccessTick = GetTickCount64();
+        if (rec.readCount > MEM_ACCESS_THRESHOLD) {
+            // Report excessive ReadProcessMemory
+            // TODO: Integrate with detection reporting system
+        }
+    }
+    void RecordWriteProcessMemory(DWORD callerPid, DWORD targetPid) {
+        if (targetPid != GAME_PID) return;
+        std::lock_guard<std::mutex> lock(g_memAccessMutex);
+        auto& rec = g_memAccessMap[{callerPid, targetPid}];
+        rec.pid = callerPid;
+        rec.targetPid = targetPid;
+        rec.writeCount++;
+        rec.lastAccessTick = GetTickCount64();
+        if (rec.writeCount > MEM_ACCESS_THRESHOLD) {
+            // Report excessive WriteProcessMemory
+            // TODO: Integrate with detection reporting system
+        }
+    }
+}
+
+// Untuk integrasi nyata, perlu hook API ReadProcessMemory/WriteProcessMemory dan panggil RecordReadProcessMemory/RecordWriteProcessMemory di hook tersebut.

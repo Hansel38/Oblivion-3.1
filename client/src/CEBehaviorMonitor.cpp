@@ -89,14 +89,30 @@ bool CEBehaviorMonitor::CheckSuspiciousBehavior(BehaviorFinding& outFinding)
         if (c.burst > bestBurst && (now - c.last) <= m_windowMs) { bestPid = pid; bestBurst = c.burst; }
     }
     if (bestPid && bestBurst >= (unsigned)m_threshold) {
+        const Counter& c = m_counts[bestPid];
+        ULONGLONG windowDur = (c.last > c.first) ? (c.last - c.first) : m_windowMs;
+        double ratePerSec = windowDur ? (1000.0 * (double)c.burst / (double)windowDur) : (double)c.burst;
+
         outFinding.detected = true;
         outFinding.pid = bestPid;
         outFinding.processName = GetProcessName(bestPid);
-        wchar_t buf[256];
-        swprintf_s(buf, L"Excessive remote VM access to our process in %u ms window (burst=%u)", (unsigned)m_windowMs, bestBurst);
+        wchar_t buf[320];
+        // Heuristic tag if the rate is steady and high -> likely sequential scan pattern
+        const bool likelySequential = (ratePerSec >= 50.0) && (bestBurst >= (unsigned)(m_threshold + 2));
+        outFinding.likelySequential = likelySequential;
+        if (likelySequential) {
+            swprintf_s(buf, L"Likely memory scanning pattern (steady remote VM access rate ~%.1f/sec) in %u ms window (burst=%u)", ratePerSec, (unsigned)m_windowMs, bestBurst);
+            outFinding.indicators = 4; // stronger weight when looks like scanning
+            // Lightweight debug logging to aid field tuning
+            wchar_t dbg[256];
+            swprintf_s(dbg, L"[Oblivion] memory_scanning: pid=%u burst=%u windowMs=%u rate=%.1f/sec\n", bestPid, bestBurst, (unsigned)m_windowMs, ratePerSec);
+            OutputDebugStringW(dbg);
+        } else {
+            swprintf_s(buf, L"Excessive remote VM access to our process in %u ms window (burst=%u, rate=~%.1f/sec)", (unsigned)m_windowMs, bestBurst, ratePerSec);
+            // Weight indicators by how big the burst is above threshold
+            outFinding.indicators = 3 + (int)std::min<unsigned>(2, bestBurst - (unsigned)m_threshold);
+        }
         outFinding.reason = buf;
-        // Weight indicators by how big the burst is above threshold
-        outFinding.indicators = 3 + (int)std::min<unsigned>(2, bestBurst - (unsigned)m_threshold);
         return true;
     }
     return false;
@@ -116,6 +132,10 @@ void CEBehaviorMonitor::SampleOnce()
         Counter& c = m_counts[pid];
         if (c.first == 0 || (now - c.first) > m_windowMs) { c.first = now; c.burst = 0; }
         c.last = now; c.burst++;
+        ULONGLONG span = (c.last > c.first) ? (c.last - c.first) : 0ULL;
+        if (span >= 200) { // avoid division noise on very small spans
+            c.avgRatePerSec = 1000.0 * (double)c.burst / (double)span;
+        }
         if (m_names.find(pid) == m_names.end()) m_names[pid] = GetProcessName(pid);
     }
 
