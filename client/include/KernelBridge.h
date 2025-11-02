@@ -10,3 +10,11 @@ void KernelBridge_Start(NetworkClient* netClient);
 
 // Stops the background thread.
 void KernelBridge_Stop();
+
+// Get driver handle for direct IOCTL communication (for Priority 3 modules)
+// Returns INVALID_HANDLE_VALUE if driver not available
+HANDLE KernelBridge_GetDriverHandle();
+
+// Check if kernel driver is available
+bool KernelBridge_IsDriverAvailable();
+

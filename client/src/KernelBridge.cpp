@@ -10,6 +10,7 @@ static std::atomic<bool> g_kbRun{false};
 static std::thread g_kbThread;
 static NetworkClient* g_kbNet = nullptr;
 static std::atomic<bool> g_kbDisabled{false};
+static HANDLE g_kbDriverHandle = INVALID_HANDLE_VALUE;
 
 static std::string WToUtf8(const std::wstring& ws)
 {
@@ -35,6 +36,9 @@ static void Loop()
 {
     HANDLE h = CreateFileW(OBLIVIONAC_USER_SYMLINK, GENERIC_READ|GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) { g_kbDisabled.store(true); return; }
+
+    // Store handle for external use
+    g_kbDriverHandle = h;
 
     // Best-effort: set protected PID = current game proc (ignore failure)
     KAC_PROTECT_CFG cfg{}; cfg.Pid = GetCurrentProcessId(); DWORD bytes = 0;
@@ -78,6 +82,9 @@ static void Loop()
         }
         Sleep(300);
     }
+    
+    // Invalidate handle before closing
+    g_kbDriverHandle = INVALID_HANDLE_VALUE;
     CloseHandle(h);
 }
 
@@ -98,4 +105,14 @@ void KernelBridge_Stop()
 {
     g_kbRun.store(false);
     if (g_kbThread.joinable()) g_kbThread.join();
+}
+
+HANDLE KernelBridge_GetDriverHandle()
+{
+    return g_kbDriverHandle;
+}
+
+bool KernelBridge_IsDriverAvailable()
+{
+    return g_kbDriverHandle != INVALID_HANDLE_VALUE && !g_kbDisabled.load();
 }

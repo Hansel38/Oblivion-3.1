@@ -1,0 +1,163 @@
+// ===== Cheat Engine Detection Rules =====
+// YARA-like rules for detecting CE components
+
+rule CheatEngine_MainExecutable : cheat_engine critical {
+    meta:
+        description = "Detects Cheat Engine main executable in memory"
+        author = "Oblivion AntiCheat"
+        severity = "critical"
+        version = "1.0"
+    
+    strings:
+        $sig1 = { 48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A9 }
+        $sig2 = { 40 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 ?? E8 }
+        $text1 = "Cheat Engine"
+        $text2 = "cheatengine"
+    
+    condition:
+        2 of them
+}
+
+rule CheatEngine_DBK_Driver : cheat_engine kernel_driver critical {
+    meta:
+        description = "Detects DBK kernel driver (Cheat Engine)"
+        author = "Oblivion AntiCheat"
+        severity = "critical"
+        version = "1.0"
+    
+    strings:
+        $device1 = "\\\\.\\DBK64"
+        $device2 = "\\Device\\DBK64"
+        $device3 = "\\\\.\\DBVM"
+        $ioctl = { BA ?? ?? 22 00 48 8D 4C 24 ?? FF 15 }
+    
+    condition:
+        any of them
+}
+
+rule CheatEngine_Speedhack : cheat_engine speedhack critical {
+    meta:
+        description = "Detects Cheat Engine speedhack component"
+        author = "Oblivion AntiCheat"
+        severity = "critical"
+        version = "1.0"
+    
+    strings:
+        $qpc_hook = { 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 8B 05 ?? ?? ?? ?? 48 8B F9 85 C0 }
+        $gtc_hook = { FF 25 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC 48 8B 05 ?? ?? ?? ?? 48 85 C0 }
+        $text = "speedhack"
+    
+    condition:
+        any of them
+}
+
+rule CheatEngine_VEHDebugger : cheat_engine debugger high {
+    meta:
+        description = "Detects Cheat Engine VEH debugger"
+        author = "Oblivion AntiCheat"
+        severity = "high"
+        version = "1.0"
+    
+    strings:
+        $handler = { 48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 33 F6 48 8B F9 40 38 35 }
+        $filter = { 48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 8B 41 04 48 8B F9 }
+        $text = "vehdebug"
+    
+    condition:
+        any of them
+}
+
+rule CheatEngine_LuaEngine : cheat_engine scripting medium {
+    meta:
+        description = "Detects Cheat Engine Lua scripting engine"
+        author = "Oblivion AntiCheat"
+        severity = "medium"
+        version = "1.0"
+    
+    strings:
+        $loader = { 48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B F2 48 8B E9 }
+        $api = { 48 89 5C 24 10 48 89 74 24 18 55 57 41 56 48 8D 6C 24 D9 }
+        $text1 = "lua53.dll"
+        $text2 = "celua"
+    
+    condition:
+        2 of them
+}
+
+rule CheatEngine_AutoAssembler : cheat_engine code_injection high {
+    meta:
+        description = "Detects Cheat Engine auto assembler"
+        author = "Oblivion AntiCheat"
+        severity = "high"
+        version = "1.0"
+    
+    strings:
+        $pattern = { 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B FA 48 8B F1 48 85 D2 0F 84 }
+        $text = "autoassembler"
+    
+    condition:
+        any of them
+}
+
+rule CheatEngine_NetworkServer : cheat_engine network medium {
+    meta:
+        description = "Detects Cheat Engine network server"
+        author = "Oblivion AntiCheat"
+        severity = "medium"
+        version = "1.0"
+    
+    strings:
+        $password = { 43 45 4E 65 74 77 6F 72 6B 50 61 73 73 77 6F 72 64 }
+        $port = "52736"
+    
+    condition:
+        any of them
+}
+
+rule Generic_MemoryScanner : memory_editor suspicious medium {
+    meta:
+        description = "Generic memory scanning pattern"
+        author = "Oblivion AntiCheat"
+        severity = "medium"
+        version = "1.0"
+    
+    strings:
+        $readmem = { 48 8B ?? 48 8B ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 48 8B }
+        $writemem = { 48 8B ?? 48 8B ?? 48 8B ?? E8 ?? ?? ?? ?? 85 C0 }
+        $vquery = { 48 8D ?? 41 B8 ?? ?? ?? ?? 48 8B ?? FF 15 }
+    
+    condition:
+        2 of them
+}
+
+rule Generic_ProcessHacker : tool suspicious low {
+    meta:
+        description = "Detects Process Hacker tool"
+        author = "Oblivion AntiCheat"
+        severity = "low"
+        version = "1.0"
+    
+    strings:
+        $text1 = "Process Hacker"
+        $text2 = "processhacker"
+        $text3 = "KProcessHacker"
+    
+    condition:
+        any of them
+}
+
+rule Generic_APIHook : code_manipulation suspicious high {
+    meta:
+        description = "Detects common API hooking patterns"
+        author = "Oblivion AntiCheat"
+        severity = "high"
+        version = "1.0"
+    
+    strings:
+        $jmp_hook = { E9 ?? ?? ?? ?? 90 }
+        $push_ret = { 68 ?? ?? ?? ?? C3 }
+        $mov_jmp = { 48 B8 ?? ?? ?? ?? ?? ?? ?? ?? FF E0 }
+    
+    condition:
+        any of them
+}

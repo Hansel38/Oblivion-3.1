@@ -1,0 +1,403 @@
+{
+  "database_version": 1,
+  "last_update": "2025-11-02T00:00:00Z",
+  "description": "Comprehensive Cheat Engine signature database covering CE 7.0-7.5, drivers, and components",
+  "categories": [
+    {
+      "name": "Cheat Engine 7.5",
+      "description": "Cheat Engine 7.5 main executable and components",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_75_MAIN_MODULE",
+          "name": "Cheat Engine 7.5 Main Module",
+          "description": "Detects cheatengine-x86_64.exe or cheatengine-i386.exe module",
+          "type": "MODULE_NAME",
+          "severity": "CRITICAL",
+          "pattern": "cheatengine",
+          "tags": ["cheat-engine", "memory-editor", "ce-7.5"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_75_PROCESS",
+          "name": "Cheat Engine 7.5 Process",
+          "description": "Detects Cheat Engine 7.5 process by name",
+          "type": "PROCESS_NAME",
+          "severity": "CRITICAL",
+          "pattern": "cheatengine-x86_64.exe|cheatengine-i386.exe|cheatengine.exe",
+          "tags": ["cheat-engine", "process", "ce-7.5"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_75_WINDOW_CLASS",
+          "name": "Cheat Engine 7.5 Window",
+          "description": "Detects CE 7.5 main window by class name",
+          "type": "WINDOW_CLASS",
+          "severity": "CRITICAL",
+          "pattern": "TMainForm|TCETrainer|TCheatEngine",
+          "tags": ["cheat-engine", "window", "ce-7.5"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_75_MEMORY_PATTERN_1",
+          "name": "CE 7.5 Code Cave Scanner Pattern",
+          "description": "Detects CE 7.5 code cave scanning function signature",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A9",
+          "tags": ["cheat-engine", "memory-pattern", "ce-7.5", "code-cave"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_75_MEMORY_PATTERN_2",
+          "name": "CE 7.5 Memory Scanner Pattern",
+          "description": "Detects CE 7.5 memory scanning routine",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "40 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 8B CB",
+          "tags": ["cheat-engine", "memory-pattern", "ce-7.5", "scanner"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "Cheat Engine 7.4",
+      "description": "Cheat Engine 7.4 detection signatures",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_74_MAIN_MODULE",
+          "name": "Cheat Engine 7.4 Main Module",
+          "description": "Detects CE 7.4 main module",
+          "type": "MODULE_NAME",
+          "severity": "CRITICAL",
+          "pattern": "cheatengine",
+          "tags": ["cheat-engine", "memory-editor", "ce-7.4"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_74_REGISTRY_KEY",
+          "name": "CE 7.4 Registry Installation",
+          "description": "Detects CE 7.4 installation via registry",
+          "type": "REGISTRY_KEY",
+          "severity": "MEDIUM",
+          "pattern": "SOFTWARE\\Cheat Engine\\7.4",
+          "tags": ["cheat-engine", "registry", "ce-7.4"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_74_MEMORY_PATTERN_1",
+          "name": "CE 7.4 Process List Pattern",
+          "description": "Detects CE 7.4 process enumeration function",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 ??",
+          "tags": ["cheat-engine", "memory-pattern", "ce-7.4", "process-enum"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "DBK64 Kernel Driver",
+      "description": "Cheat Engine DBK64.sys kernel driver detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "DBK64_DEVICE_OBJECT",
+          "name": "DBK64 Device Object",
+          "description": "Detects DBK64 kernel driver device object",
+          "type": "DRIVER_DEVICE",
+          "severity": "CRITICAL",
+          "pattern": "\\\\.\\DBK64|\\Device\\DBK64|\\DosDevices\\DBK64",
+          "tags": ["cheat-engine", "kernel-driver", "dbk64"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "DBK64_DRIVER_FILE",
+          "name": "DBK64 Driver File",
+          "description": "Detects DBK64.sys driver file on disk",
+          "type": "FILE_SIGNATURE",
+          "severity": "CRITICAL",
+          "pattern": "dbk64.sys|dbk32.sys|dbvm64.sys|dbvm32.sys",
+          "tags": ["cheat-engine", "kernel-driver", "dbk64", "file"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "DBK64_IOCTL_PATTERN",
+          "name": "DBK64 IOCTL Communication",
+          "description": "Detects DBK64 IOCTL communication pattern",
+          "type": "MEMORY_PATTERN",
+          "severity": "CRITICAL",
+          "pattern": "BA ?? ?? 22 00 48 8D 4C 24 ?? FF 15 ?? ?? ?? ?? 85 C0 78 ??",
+          "tags": ["cheat-engine", "kernel-driver", "dbk64", "ioctl"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "DBK64_REGISTRY_SERVICE",
+          "name": "DBK64 Service Registry",
+          "description": "Detects DBK64 kernel driver service registration",
+          "type": "REGISTRY_KEY",
+          "severity": "CRITICAL",
+          "pattern": "SYSTEM\\CurrentControlSet\\Services\\DBK64|SYSTEM\\CurrentControlSet\\Services\\DBVM",
+          "tags": ["cheat-engine", "kernel-driver", "dbk64", "registry"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "DBK32 Kernel Driver",
+      "description": "Cheat Engine DBK32.sys 32-bit kernel driver",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "DBK32_DEVICE_OBJECT",
+          "name": "DBK32 Device Object",
+          "description": "Detects DBK32 kernel driver device object",
+          "type": "DRIVER_DEVICE",
+          "severity": "CRITICAL",
+          "pattern": "\\\\.\\DBK32|\\Device\\DBK32",
+          "tags": ["cheat-engine", "kernel-driver", "dbk32"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "DBK32_IOCTL_PATTERN",
+          "name": "DBK32 IOCTL Pattern",
+          "description": "Detects 32-bit DBK IOCTL usage",
+          "type": "MEMORY_PATTERN",
+          "severity": "CRITICAL",
+          "pattern": "68 ?? ?? 22 00 8D 45 ?? 50 FF 15 ?? ?? ?? ?? 85 C0 78 ??",
+          "tags": ["cheat-engine", "kernel-driver", "dbk32", "ioctl"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "Speedhack Component",
+      "description": "Cheat Engine speedhack.dll component detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "SPEEDHACK_DLL_MODULE",
+          "name": "Speedhack DLL Module",
+          "description": "Detects speedhack.dll or speedhack64.dll module",
+          "type": "MODULE_NAME",
+          "severity": "CRITICAL",
+          "pattern": "speedhack|speedhack64|speedhack32",
+          "tags": ["cheat-engine", "speedhack", "dll"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "SPEEDHACK_MEMORY_PATTERN_1",
+          "name": "Speedhack Query Performance Counter Hook",
+          "description": "Detects speedhack QPC hook pattern",
+          "type": "MEMORY_PATTERN",
+          "severity": "CRITICAL",
+          "pattern": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 8B 05 ?? ?? ?? ?? 48 8B F9 85 C0",
+          "tags": ["cheat-engine", "speedhack", "qpc-hook"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "SPEEDHACK_MEMORY_PATTERN_2",
+          "name": "Speedhack GetTickCount Hook",
+          "description": "Detects speedhack GetTickCount hook",
+          "type": "MEMORY_PATTERN",
+          "severity": "CRITICAL",
+          "pattern": "FF 25 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC 48 8B 05 ?? ?? ?? ?? 48 85 C0",
+          "tags": ["cheat-engine", "speedhack", "gettickcount-hook"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "SPEEDHACK_REGISTRY_KEY",
+          "name": "Speedhack Configuration Registry",
+          "description": "Detects speedhack configuration in registry",
+          "type": "REGISTRY_KEY",
+          "severity": "HIGH",
+          "pattern": "SOFTWARE\\Cheat Engine\\Speedhack",
+          "tags": ["cheat-engine", "speedhack", "registry"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "VEH Debugger Component",
+      "description": "Cheat Engine vehdebug.dll VEH debugger detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "VEHDEBUG_DLL_MODULE",
+          "name": "VEH Debug DLL Module",
+          "description": "Detects vehdebug.dll or vehdebug-x86_64.dll",
+          "type": "MODULE_NAME",
+          "severity": "CRITICAL",
+          "pattern": "vehdebug",
+          "tags": ["cheat-engine", "veh-debugger", "dll"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "VEHDEBUG_MEMORY_PATTERN_1",
+          "name": "VEH Debugger Handler Registration",
+          "description": "Detects VEH handler registration pattern",
+          "type": "MEMORY_PATTERN",
+          "severity": "CRITICAL",
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 33 F6 48 8B F9 40 38 35 ?? ?? ?? ??",
+          "tags": ["cheat-engine", "veh-debugger", "handler"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "VEHDEBUG_MEMORY_PATTERN_2",
+          "name": "VEH Exception Filter",
+          "description": "Detects VEH exception filter callback",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 8B 41 04 48 8B F9",
+          "tags": ["cheat-engine", "veh-debugger", "exception-filter"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "CE Lua Engine",
+      "description": "Cheat Engine Lua scripting engine detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_LUA_MODULE",
+          "name": "CE Lua Engine Module",
+          "description": "Detects CE Lua DLL (lua53.dll, lua54.dll)",
+          "type": "MODULE_NAME",
+          "severity": "HIGH",
+          "pattern": "lua53|lua54|celua",
+          "tags": ["cheat-engine", "lua", "scripting"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_LUA_MEMORY_PATTERN_1",
+          "name": "CE Lua Script Loader",
+          "description": "Detects CE Lua script loading function",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B F2 48 8B E9",
+          "tags": ["cheat-engine", "lua", "script-loader"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_LUA_API_PATTERN",
+          "name": "CE Lua API Registration",
+          "description": "Detects CE custom Lua API registration",
+          "type": "MEMORY_PATTERN",
+          "severity": "MEDIUM",
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 55 57 41 56 48 8D 6C 24 D9 48 81 EC B0 00 00 00",
+          "tags": ["cheat-engine", "lua", "api"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "CE Network Server",
+      "description": "Cheat Engine network server component for remote CE",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_NETWORK_SERVER_PORT",
+          "name": "CE Network Server Default Port",
+          "description": "Detects CE network server on default port 52736",
+          "type": "NETWORK_ARTIFACT",
+          "severity": "HIGH",
+          "pattern": "52736",
+          "tags": ["cheat-engine", "network", "server"],
+          "version": 1,
+          "enabled": true
+        },
+        {
+          "id": "CE_NETWORK_PASSWORD_HASH",
+          "name": "CE Network Password Hash",
+          "description": "Detects CE network server password hash storage",
+          "type": "MEMORY_PATTERN",
+          "severity": "MEDIUM",
+          "pattern": "43 45 4E 65 74 77 6F 72 6B 50 61 73 73 77 6F 72 64",
+          "tags": ["cheat-engine", "network", "password"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "CE Plugin System",
+      "description": "Cheat Engine plugin detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_PLUGIN_INTERFACE",
+          "name": "CE Plugin Interface",
+          "description": "Detects CE plugin DLL interface exports",
+          "type": "MEMORY_PATTERN",
+          "severity": "MEDIUM",
+          "pattern": "43 45 50 6C 75 67 69 6E 56 65 72 73 69 6F 6E",
+          "tags": ["cheat-engine", "plugin"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "CE Auto Assembler",
+      "description": "Cheat Engine auto assembler component detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_AUTO_ASSEMBLER_PATTERN",
+          "name": "CE Auto Assembler Engine",
+          "description": "Detects CE auto assembler code generation",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B FA 48 8B F1 48 85 D2 0F 84",
+          "tags": ["cheat-engine", "auto-assembler", "code-injection"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "CE Debugger Interface",
+      "description": "Cheat Engine debugger interface detection",
+      "enabled": true,
+      "signatures": [
+        {
+          "id": "CE_DEBUG_INTERFACE_PATTERN",
+          "name": "CE Debug Interface",
+          "description": "Detects CE debugger interface initialization",
+          "type": "MEMORY_PATTERN",
+          "severity": "HIGH",
+          "pattern": "40 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 ?? 48 8B 01 FF 50 08",
+          "tags": ["cheat-engine", "debugger", "interface"],
+          "version": 1,
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

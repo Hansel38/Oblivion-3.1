@@ -137,7 +137,7 @@ bool ProcessThreadWatcher::Initialize()
 
 DetectionResult ProcessThreadWatcher::RunOnceScan()
 {
-    DetectionResult result = { false,0, L"", L"",0 };
+    DetectionResult result{};
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot((TH32CS_SNAPPROCESS),0);
     if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -149,7 +149,7 @@ DetectionResult ProcessThreadWatcher::RunOnceScan()
     const auto& ceTokens = GetDefaultCeArtifactTokens();
 
     // Track best candidate without aggregating across unrelated processes
-    DetectionResult best = { false,0, L"", L"",0 };
+    DetectionResult best{};
 
     do {
         std::wstring processName = pe32.szExeFile; DWORD pid = pe32.th32ProcessID;

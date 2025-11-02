@@ -128,8 +128,114 @@ struct ClientConfig {
     // Memory scanning (behavioral) cooldown
     DWORD cooldownMemoryScanningMs = 15000;
 
+    // ===== PRIORITY 3: Stealth & Evasion Detection =====
+    
+    // PEB Manipulation Detector
+    bool enablePEBManipulationDetector = true;
+    bool pebEnableMemoryScan = true;
+    bool pebEnableToolHelpValidation = true;
+    DWORD cooldownPEBManipulationMs = 20000;
+
+    // Hardware Breakpoint Monitor
+    bool enableHardwareBreakpointMonitor = true;
+    int hwbpMaxThreshold = 2;  // Max hardware breakpoints per thread
+    bool hwbpEnableAnomalyDetection = true;
+    bool hwbpTrackHistory = true;
+    DWORD cooldownHardwareBreakpointMs = 15000;
+
+    // Suspicious Memory Scanner
+    bool enableSuspiciousMemoryScanner = true;
+    SIZE_T suspMemMinRegionSize = 4096;  // 4KB minimum
+    bool suspMemEnablePatternAnalysis = true;
+    bool suspMemEnableEntropyCheck = true;
+    bool suspMemFlagRWX = true;
+    bool suspMemFlagPrivateExecutable = true;
+    DWORD cooldownSuspiciousMemoryMs = 20000;
+
+    // Heap Spray Analyzer
+    bool enableHeapSprayAnalyzer = true;
+    SIZE_T heapSprayMinSize = 0x10000;  // 64KB minimum
+    int heapSprayMinRepeatCount = 100;
+    double heapSprayMinDensity = 0.8;  // 80% pattern density
+    bool heapSprayEnableNOPDetection = true;
+    bool heapSprayEnableAddressSpray = true;
+    DWORD cooldownHeapSprayMs = 25000;
+
+    // ETHREAD Manipulation Detector
+    bool enableETHREADDetector = true;
+    DWORD cooldownETHREADMs = 30000;
+
+    // Kernel Callback Scanner
+    bool enableCallbackScanner = true;
+    DWORD cooldownCallbackMs = 60000;  // 1 minute cooldown (expensive operation)
+
+    // VAD Manipulation Detector
+    bool enableVADDetector = true;
+    SIZE_T vadSizeThreshold = 100 * 1024 * 1024;  // 100MB threshold for suspicious regions
+    DWORD cooldownVADMs = 30000;
+
     // Kernel bridge (driver)
     bool enableKernelBridge = false;
+
+    // ===== PRIORITY 4: Infrastructure & Optimization =====
+    
+    // Telemetry Collection
+    bool enableTelemetry = true;
+    DWORD telemetryCollectionIntervalMs = 5000;  // Collect system metrics every 5 seconds
+    ULONGLONG telemetryAggregationPeriodMs = 300000;  // Aggregate every 5 minutes
+    bool telemetryExportOnExit = true;
+    std::wstring telemetryExportPath = L"telemetry_export.json";
+
+    // ML Anomaly Detection
+    bool enableMLAnomalyDetection = true;
+    bool mlUseIsolationForest = true;
+    bool mlUseOneClass = true;
+    bool mlUseEnsemble = true;
+    float mlEnsembleWeight = 0.5f;  // Balance between IsolationForest and OneClass
+    int mlIsolationForestTrees = 100;
+    int mlIsolationForestSubsampleSize = 256;
+    int mlIsolationForestMaxDepth = 10;
+    float mlOneClassNu = 0.1f;  // Expected outlier fraction
+    float mlAnomalyThreshold = 0.65f;  // Threshold for anomaly detection (0.0-1.0)
+    int mlMinTrainingSamples = 50;
+    int mlMaxTrainingSamples = 5000;
+    bool mlEnableOnlineLearning = true;
+    int mlOnlineUpdateInterval = 100;  // Update model every 100 samples
+    float mlOnlineLearningRate = 0.1f;
+    bool mlEnableModelPersistence = false;
+    std::wstring mlModelSavePath = L"ml_anomaly_model.bin";
+
+    // ===== PRIORITY 4.1.5: ML Integration with Detection Pipeline =====
+    bool enableMLIntegration = true;  // Use ML scoring in detection pipeline
+    bool mlHybridMode = true;  // Combine rule-based + ML (false = ML only)
+    float mlDetectionThreshold = 0.7f;  // ML score threshold for standalone detection
+    float mlConfidenceThreshold = 0.6f;  // Minimum ML confidence to trust prediction
+    bool mlBoostIndicators = true;  // Add ML score as additional indicators
+    float mlIndicatorMultiplier = 2.0f;  // Multiply ML score by this to get indicator count
+    bool mlEnableVeto = false;  // Allow ML to veto low-confidence rule-based detections
+    float mlVetoThreshold = 0.3f;  // ML score below this can veto detections
+    bool mlLogScores = true;  // Log ML scores in detection JSON
+
+    // Adaptive Threshold Manager
+    bool enableAdaptiveThresholds = true;
+    bool usePerPlayerProfiles = true;
+    bool useGlobalBaseline = true;
+    double defaultSigmaMultiplier = 3.0;  // N in (mean + N*stddev)
+    int minBaselineSamples = 100;
+    int maxProfileAgeHours = 720;  // 30 days
+    int adaptiveMinThreshold = 1;
+    int adaptiveMaxThreshold = 10;
+    double adaptiveDecayRate = 0.95;
+    bool enableAutoDecay = true;
+    double trustScoreInitial = 0.5;
+    double trustScoreIncrement = 0.05;
+    double trustScoreDecrement = 0.2;
+
+    // ===== PRIORITY 4.2.4: Signature Testing Framework =====
+    bool enableSignatureTesting = false;                 // Run signature test suite on startup
+    std::wstring signatureTestsCsvPath = L"signatures\\tests\\tests.csv"; // CSV path for test cases
+    std::wstring signatureYaraRulesPath = L"signatures\\yara_rules.txt";   // YARA rules path
+    int signatureBenchmarkIterations = 3;                // Repetitions for throughput benchmark
 };
 
 // Load client_config.json from DLL directory (preferred) or current directory

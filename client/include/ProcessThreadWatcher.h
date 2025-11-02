@@ -10,6 +10,22 @@ struct DetectionResult {
     std::wstring processName;
     std::wstring reason;
     int indicatorCount; // Multi-indicator count for threshold
+    
+    // ===== PRIORITY 4.1.5: ML Integration Fields =====
+    bool mlEvaluated;           // Whether ML model was used for this detection
+    double mlAnomalyScore;      // ML anomaly score (0.0-1.0, higher = more anomalous)
+    double mlConfidence;        // ML confidence in the prediction (0.0-1.0)
+    bool mlFlagged;             // Whether ML model flagged this as anomalous
+    
+    DetectionResult() 
+        : detected(false)
+        , pid(0)
+        , indicatorCount(0)
+        , mlEvaluated(false)
+        , mlAnomalyScore(0.0)
+        , mlConfidence(0.0)
+        , mlFlagged(false)
+    {}
 };
 
 // Process & Thread Watcher module

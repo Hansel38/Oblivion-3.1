@@ -72,6 +72,12 @@
     <ClInclude Include="include\Heartbeat.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\HeapSprayAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\HardwareBreakpointMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\PeriodicScanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -96,7 +102,37 @@
     <ClInclude Include="include\SignaturePackManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\SignatureDatabase.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+      <ClInclude Include="include\SignatureAutoUpdate.h">
+        <Filter>Header Files</Filter>
+      </ClInclude>
+      <ClInclude Include="include\SignatureTestFramework.h">
+        <Filter>Header Files</Filter>
+      </ClInclude>
+    <ClInclude Include="include\YaraRuleEngine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\UniqueHandle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PEBManipulationDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\SuspiciousMemoryScanner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TelemetryCollector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\MLFeatureExtractor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\MLAnomalyDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\AdaptiveThresholdManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -146,6 +182,12 @@
     <ClCompile Include="src\Heartbeat.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\HeapSprayAnalyzer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\HardwareBreakpointMonitor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\PeriodicScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -167,10 +209,40 @@
     <ClCompile Include="src\SignaturePackManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\SignatureDatabase.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+      <ClCompile Include="src\SignatureAutoUpdate.cpp">
+        <Filter>Source Files</Filter>
+      </ClCompile>
+      <ClCompile Include="src\SignatureTestFramework.cpp">
+        <Filter>Source Files</Filter>
+      </ClCompile>
+    <ClCompile Include="src\YaraRuleEngine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\ServiceDriverScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\NetworkArtifactScanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PEBManipulationDetector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\SuspiciousMemoryScanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TelemetryCollector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MLFeatureExtractor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MLAnomalyDetector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AdaptiveThresholdManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

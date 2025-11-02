@@ -21,6 +21,7 @@
 #include "EtwHeuristics.h"
 #include "CodeIntegrityScanner.h"
 #include "SignaturePackManager.h"
+#include "SignatureDatabase.h"
 #include "CEBehaviorMonitor.h"
 #include "CERegistryScanner.h"
 #include "CEWindowScanner.h"
@@ -28,6 +29,20 @@
 // ===== PRIORITY 2: Advanced Pattern Detection Modules =====
 #include "DeviceObjectScanner.h"
 #include "NetworkArtifactScanner.h"
+// ===== PRIORITY 3: Stealth & Evasion Detection Modules =====
+#include "PEBManipulationDetector.h"
+#include "ETHREADManipulationDetector.h"
+#include "KernelCallbackScanner.h"
+#include "VADManipulationDetector.h"
+#include "HardwareBreakpointMonitor.h"
+#include "SuspiciousMemoryScanner.h"
+#include "HeapSprayAnalyzer.h"
+// ===== PRIORITY 4: Infrastructure & Optimization Modules =====
+#include "TelemetryCollector.h"
+#include "MLFeatureExtractor.h"
+#include "MLAnomalyDetector.h"
+#include "AdaptiveThresholdManager.h"
+#include "SignatureTestFramework.h"
 #include <string>
 #include <unordered_map>
 #include <cstring>
@@ -72,6 +87,7 @@ static Heartbeat* g_pHeartbeat = nullptr;
 static PeriodicScanner* g_pPeriodic = nullptr;
 static EtwHeuristics* g_pEtw = nullptr;
 static SignaturePackManager* g_pSigMgr = nullptr;
+static SignatureDatabase* g_pSignatureDB = nullptr; // Signature database instance
 static CEBehaviorMonitor* g_pCEBehavior = nullptr;
 static CERegistryScanner* g_pCERegistry = nullptr;
 static CEWindowScanner* g_pCEWindow = nullptr;
@@ -79,6 +95,19 @@ static SpeedHackDetector* g_pSpeedHack = nullptr;
 // ===== PRIORITY 2: Advanced Pattern Detection Global Instances =====
 static DeviceObjectScanner* g_pDeviceScanner = nullptr;
 static NetworkArtifactScanner* g_pNetArtifact = nullptr;
+// ===== PRIORITY 3: Stealth & Evasion Detection Global Instances =====
+static PEBManipulationDetector* g_pPEBDetector = nullptr;
+static ETHREADManipulationDetector* g_pETHREADDetector = nullptr;
+static KernelCallbackScanner* g_pCallbackScanner = nullptr;
+static VADManipulationDetector* g_pVADDetector = nullptr;
+static HardwareBreakpointMonitor* g_pHWBPMonitor = nullptr;
+static SuspiciousMemoryScanner* g_pMemScanner = nullptr;
+static HeapSprayAnalyzer* g_pHeapSpray = nullptr;
+// ===== PRIORITY 4: Infrastructure & Optimization Global Instances =====
+static TelemetryCollector* g_pTelemetryCollector = nullptr;
+static MLFeatureExtractor* g_pMLFeatureExtractor = nullptr;
+static MLAnomalyDetector* g_pMLAnomalyDetector = nullptr;
+static AdaptiveThresholdManager* g_pAdaptiveThresholdManager = nullptr;
 static std::mutex g_cleanupMutex; // protect cleanup from races
 
 // Runtime configuration
@@ -209,7 +238,15 @@ static void SendDetectionJson(const DetectionResult& result, const char* subtype
 {
     if (g_pNetClient != nullptr) {
         std::string hwid = GetHWID();
-        std::string jsonReport = JsonBuilder::BuildDetectionReport(result.pid, result.processName, result.reason, subtype, 1, hwid, OBLIVION_CLIENT_VERSION, result.indicatorCount);
+        
+        // ===== PRIORITY 4.1.5: Use ML-aware JSON builder if ML was evaluated =====
+        std::string jsonReport;
+        if (result.mlEvaluated && g_cfg.mlLogScores) {
+            jsonReport = JsonBuilder::BuildDetectionReportWithML(result, subtype, hwid, OBLIVION_CLIENT_VERSION);
+        } else {
+            jsonReport = JsonBuilder::BuildDetectionReport(result.pid, result.processName, result.reason, subtype, 1, hwid, OBLIVION_CLIENT_VERSION, result.indicatorCount);
+        }
+        
         g_pNetClient->SendMessage(jsonReport);
     }
 }
@@ -314,14 +351,130 @@ static void HandleDetection(const DetectionResult& result)
     }
 }
 
-static void ProcessDetection(const DetectionResult& result, const char* subtype)
+// ===== PRIORITY 4.1.5: ML Evaluation Helper =====
+static void EvaluateWithML(DetectionResult& result, const char* subtype)
 {
-    if (ShouldSuppressDetection(result, subtype)) {
-        LogIfEnabled(L"[Oblivion] Duplicate detection suppressed\n");
+    // Only evaluate if ML integration is enabled and components are available
+    if (!g_cfg.enableMLIntegration || !g_pMLAnomalyDetector || !g_pMLFeatureExtractor || !g_pTelemetryCollector) {
         return;
     }
-    SendDetectionJson(result, subtype);
-    HandleDetection(result);
+    
+    // Skip if ML model is not trained yet (check statistics)
+    auto stats = g_pMLAnomalyDetector->GetStatistics();
+    if (!stats.isolationForestTrained && !stats.oneClassTrained) {
+        return;
+    }
+    
+    try {
+        // Extract features from current telemetry
+        ULONGLONG currentTime = GetTickCount64();
+        FeatureVector features = g_pMLFeatureExtractor->ExtractFeatures(currentTime);
+        
+        // Get ML anomaly detection result
+        AnomalyDetectionResult mlResult = g_pMLAnomalyDetector->DetectAnomaly(features);
+        
+        // Store ML results in detection result
+        result.mlEvaluated = true;
+        result.mlAnomalyScore = mlResult.anomalyScore;
+        result.mlConfidence = mlResult.confidence;
+        result.mlFlagged = (mlResult.anomalyScore >= g_cfg.mlDetectionThreshold && 
+                            mlResult.confidence >= g_cfg.mlConfidenceThreshold);
+        
+        // Hybrid mode: boost indicators based on ML score
+        if (g_cfg.mlHybridMode && g_cfg.mlBoostIndicators && result.mlFlagged) {
+            int mlIndicators = static_cast<int>(mlResult.anomalyScore * g_cfg.mlIndicatorMultiplier);
+            result.indicatorCount += mlIndicators;
+            
+            // Append ML info to reason
+            wchar_t mlInfo[256];
+            swprintf_s(mlInfo, L" [ML: score=%.2f, confidence=%.2f, +%d indicators]", 
+                       mlResult.anomalyScore, mlResult.confidence, mlIndicators);
+            result.reason += mlInfo;
+        }
+        
+        // Log ML scores if enabled
+        if (g_cfg.mlLogScores) {
+            wchar_t logBuf[256];
+            swprintf_s(logBuf, L"[Oblivion] ML Eval: type=%S, score=%.3f, conf=%.3f, flagged=%d\n",
+                       subtype ? subtype : "unknown", 
+                       mlResult.anomalyScore, 
+                       mlResult.confidence,
+                       result.mlFlagged ? 1 : 0);
+            LogIfEnabled(logBuf);
+        }
+        
+    } catch (...) {
+        // ML evaluation failed - continue without ML
+        LogIfEnabled(L"[Oblivion] ML evaluation failed\n");
+    }
+}
+
+static void ProcessDetection(const DetectionResult& result, const char* subtype)
+{
+    // Make a mutable copy for ML evaluation
+    DetectionResult evalResult = result;
+    
+    // ===== PRIORITY 4.1.5: ML Evaluation =====
+    EvaluateWithML(evalResult, subtype);
+    
+    // ML Veto: If enabled, low ML scores can veto weak rule-based detections
+    if (g_cfg.enableMLIntegration && g_cfg.mlEnableVeto && evalResult.mlEvaluated) {
+        if (evalResult.mlAnomalyScore < g_cfg.mlVetoThreshold && evalResult.indicatorCount < 5) {
+            wchar_t logBuf[256];
+            swprintf_s(logBuf, L"[Oblivion] Detection vetoed by ML: score=%.3f < %.3f, indicators=%d\n",
+                       evalResult.mlAnomalyScore, g_cfg.mlVetoThreshold, evalResult.indicatorCount);
+            LogIfEnabled(logBuf);
+            
+            // Record vetoed detection in telemetry
+            if (g_pTelemetryCollector) {
+                DetectionTelemetry dt = {};
+                dt.timestamp = GetTickCount64();
+                dt.detectionType = subtype ? subtype : "unknown";
+                dt.processName = evalResult.processName;
+                dt.processId = evalResult.pid;
+                dt.indicatorCount = evalResult.indicatorCount;
+                dt.wasSuppressed = true;
+                dt.userReportedFP = false;
+                dt.reason = WToUtf8(evalResult.reason + L" [ML_VETO]");
+                g_pTelemetryCollector->RecordDetection(dt);
+            }
+            return;
+        }
+    }
+    
+    if (ShouldSuppressDetection(evalResult, subtype)) {
+        LogIfEnabled(L"[Oblivion] Duplicate detection suppressed\n");
+        // Record suppressed detection in telemetry
+        if (g_pTelemetryCollector) {
+            DetectionTelemetry dt = {};
+            dt.timestamp = GetTickCount64();
+            dt.detectionType = subtype ? subtype : "unknown";
+            dt.processName = evalResult.processName;
+            dt.processId = evalResult.pid;
+            dt.indicatorCount = evalResult.indicatorCount;
+            dt.wasSuppressed = true;
+            dt.userReportedFP = false;
+            dt.reason = WToUtf8(evalResult.reason);
+            g_pTelemetryCollector->RecordDetection(dt);
+        }
+        return;
+    }
+    SendDetectionJson(evalResult, subtype);
+    HandleDetection(evalResult);
+    
+    // Record detection in telemetry
+    if (g_pTelemetryCollector) {
+        DetectionTelemetry dt = {};
+        dt.timestamp = GetTickCount64();
+        dt.detectionType = subtype ? subtype : "unknown";
+        dt.processName = evalResult.processName;
+        dt.processId = evalResult.pid;
+        dt.indicatorCount = evalResult.indicatorCount;
+        dt.wasSuppressed = false;
+        dt.userReportedFP = false;
+        dt.reason = WToUtf8(result.reason);
+        g_pTelemetryCollector->RecordDetection(dt);
+    }
 }
 
 static std::vector<std::wstring> ParseWhitelistPrefixes(const std::wstring& delimited)
@@ -752,6 +905,179 @@ static void SchedulePeriodicScans()
  }
  LogPerf(L"Periodic.MemorySignatureScanner", GetTickCount64()-t0);
  }
+
+ // ===== PRIORITY 3.1.1: PEB Manipulation Detector =====
+ if (g_pPEBDetector) {
+ t0 = GetTickCount64();
+ if (g_pPEBDetector->ScanForPEBManipulation()) {
+ auto hiddenModules = g_pPEBDetector->GetHiddenModules();
+ if (!hiddenModules.empty()) {
+ for (const auto& hm : hiddenModules) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = hm.moduleName;
+ wchar_t addrbuf[32]; swprintf_s(addrbuf, L"0x%p", hm.baseAddress);
+ dr.reason = std::wstring(L"Hidden module detected: method=") + std::wstring(hm.detectionMethod.begin(), hm.detectionMethod.end()) + L", module=" + hm.moduleName + L", addr=" + addrbuf;
+ dr.indicatorCount = 5; // High severity
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "peb_manipulation"); fired = true;
+ break; // One detection per tick
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.PEBManipulationDetector", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 3.2: Hardware Breakpoint Monitor =====
+ if (g_pHWBPMonitor) {
+ t0 = GetTickCount64();
+ if (g_pHWBPMonitor->ScanAllThreads()) {
+ auto anomalies = g_pHWBPMonitor->GetAnomalies();
+ if (!anomalies.empty()) {
+ for (const auto& anomaly : anomalies) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<thread_" + std::to_wstring(anomaly.threadId) + L">";
+ dr.reason = std::wstring(L"Hardware breakpoint anomaly: type=") + std::wstring(anomaly.anomalyType.begin(), anomaly.anomalyType.end()) + L", desc=" + std::wstring(anomaly.description.begin(), anomaly.description.end());
+ dr.indicatorCount = (anomaly.anomalyType == "HIDDEN_DEBUGGER") ? 5 : 4;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "hardware_breakpoint"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.HardwareBreakpointMonitor", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 3.3.2: Suspicious Memory Scanner =====
+ if (g_pMemScanner) {
+ t0 = GetTickCount64();
+ if (g_pMemScanner->ScanMemory()) {
+ auto suspiciousRegions = g_pMemScanner->GetSuspiciousRegions();
+ if (!suspiciousRegions.empty()) {
+ for (const auto& region : suspiciousRegions) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ wchar_t addrbuf[32]; swprintf_s(addrbuf, L"0x%p", region.baseAddress);
+ dr.processName = L"<memory_" + std::wstring(addrbuf) + L">";
+ dr.reason = std::wstring(L"Suspicious memory region: reason=") + std::wstring(region.suspiciousReason.begin(), region.suspiciousReason.end()) + L", size=" + std::to_wstring(region.size);
+ dr.indicatorCount = (region.hasShellcodePattern || region.hasNOPSled) ? 5 : 3;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "suspicious_memory"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.SuspiciousMemoryScanner", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 3.3.3: Heap Spray Analyzer =====
+ if (g_pHeapSpray) {
+ t0 = GetTickCount64();
+ if (g_pHeapSpray->AnalyzeHeaps()) {
+ auto detections = g_pHeapSpray->GetDetections();
+ if (!detections.empty()) {
+ for (const auto& detection : detections) {
+ if (detection.likelyExploit) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ wchar_t addrbuf[32]; swprintf_s(addrbuf, L"0x%p", detection.baseAddress);
+ dr.processName = L"<heap_spray_" + std::wstring(addrbuf) + L">";
+ dr.reason = std::wstring(L"Heap spray detected: ") + std::wstring(detection.patternDescription.begin(), detection.patternDescription.end()) + L", risk=" + std::to_wstring(detection.riskScore);
+ dr.indicatorCount = 5; // High severity for likely exploits
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "heap_spray"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.HeapSprayAnalyzer", GetTickCount64() - t0);
+ }
+
+ // ===== PRIORITY 3.1.2: ETHREAD Manipulation Detector =====
+ if (g_pETHREADDetector) {
+ static ULONGLONG lastETHREADScan = 0;
+ ULONGLONG now = GetTickCount64();
+ if (now - lastETHREADScan >= g_cfg.cooldownETHREADMs) {
+ lastETHREADScan = now;
+ t0 = GetTickCount64();
+ DWORD hiddenCount = g_pETHREADDetector->ScanForHiddenThreads();
+ if (hiddenCount > 0) {
+ auto hiddenThreads = g_pETHREADDetector->GetHiddenThreads();
+ for (const auto& thread : hiddenThreads) {
+ if (thread.IsHidden || thread.IsSuspicious) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ dr.processName = L"<hidden_thread_" + std::to_wstring(thread.ThreadId) + L">";
+ dr.reason = std::wstring(L"Hidden/suspicious thread detected: ") + std::wstring(thread.DetectionReason.begin(), thread.DetectionReason.end());
+ dr.indicatorCount = thread.IsHidden ? 5 : 3;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "hidden_thread"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.ETHREADDetector", GetTickCount64() - t0);
+ }
+ }
+
+ // ===== PRIORITY 3.2.2: Kernel Callback Scanner =====
+ if (g_pCallbackScanner) {
+ static ULONGLONG lastCallbackScan = 0;
+ ULONGLONG now = GetTickCount64();
+ if (now - lastCallbackScan >= g_cfg.cooldownCallbackMs) {
+ lastCallbackScan = now;
+ t0 = GetTickCount64();
+ DWORD anomalyCount = g_pCallbackScanner->ScanAllCallbacks();
+ if (anomalyCount > 0) {
+ auto anomalies = g_pCallbackScanner->GetAnomalies();
+ for (const auto& anomaly : anomalies) {
+ if (anomaly.IsUnhooked || anomaly.IsSuspicious) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ std::wstring driverName(anomaly.DriverName.begin(), anomaly.DriverName.end());
+ dr.processName = L"<callback_anomaly_" + driverName + L">";
+ dr.reason = std::wstring(L"Kernel callback anomaly: ") + std::wstring(anomaly.AnomalyReason.begin(), anomaly.AnomalyReason.end());
+ dr.indicatorCount = anomaly.IsUnhooked ? 5 : 3;
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "callback_unhook"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.CallbackScanner", GetTickCount64() - t0);
+ }
+ }
+
+ // ===== PRIORITY 3.3.1: VAD Manipulation Detector =====
+ if (g_pVADDetector) {
+ static ULONGLONG lastVADScan = 0;
+ ULONGLONG now = GetTickCount64();
+ if (now - lastVADScan >= g_cfg.cooldownVADMs) {
+ lastVADScan = now;
+ t0 = GetTickCount64();
+ DWORD anomalyCount = g_pVADDetector->ScanForVADManipulation();
+ if (anomalyCount > 0) {
+ auto anomalies = g_pVADDetector->GetAnomalies();
+ for (const auto& anomaly : anomalies) {
+ if (anomaly.IsSuspicious) {
+ DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+ wchar_t addrbuf[32]; swprintf_s(addrbuf, L"0x%p", (void*)anomaly.StartingAddress);
+ dr.processName = L"<vad_anomaly_" + std::wstring(addrbuf) + L">";
+ dr.reason = std::wstring(L"VAD manipulation detected: ") + std::wstring(anomaly.DetectionReason.begin(), anomaly.DetectionReason.end());
+ dr.indicatorCount = 4; // High severity for VAD tampering
+ if (dr.indicatorCount >= g_cfg.closeThreshold) {
+ ProcessDetection(dr, "vad_manipulation"); fired = true;
+ break;
+ }
+ }
+ }
+ }
+ LogPerf(L"Periodic.VADDetector", GetTickCount64() - t0);
+ }
+ }
+
  return fired;
  };
  DWORD interval = g_cfg.periodicScanIntervalMs;
@@ -764,6 +1090,103 @@ static DWORD WINAPI InitThreadProc(LPVOID)
     LoadClientConfig(g_cfg, GetDllDirectory(g_hModule));
     ClampConfig();
     LogIfEnabled(L"[Oblivion] Init thread started\n");
+
+    // ===== PRIORITY 4.1.1: Initialize Telemetry Collector =====
+    if (g_cfg.enableTelemetry) {
+        try {
+            g_pTelemetryCollector = new TelemetryCollector();
+            g_pTelemetry = g_pTelemetryCollector; // Set global instance
+            g_pTelemetryCollector->SetEnabled(true);
+            g_pTelemetryCollector->SetCollectionIntervalMs(g_cfg.telemetryCollectionIntervalMs);
+            g_pTelemetryCollector->SetAggregationPeriodMs(g_cfg.telemetryAggregationPeriodMs);
+            g_pTelemetryCollector->Start();
+            LogIfEnabled(L"[Oblivion] Telemetry collector started\n");
+        } catch (...) {
+            g_pTelemetryCollector = nullptr;
+            g_pTelemetry = nullptr;
+            LogIfEnabled(L"[Oblivion] Telemetry collector failed to start\n");
+        }
+    }
+
+    // ===== PRIORITY 4.1.2: Initialize ML Feature Extractor =====
+    if (g_cfg.enableTelemetry && g_pTelemetryCollector) {
+        try {
+            g_pMLFeatureExtractor = new MLFeatureExtractor();
+            FeatureExtractionConfig feConfig;
+            // Use default config or customize from client_config later
+            g_pMLFeatureExtractor->SetConfig(feConfig);
+            LogIfEnabled(L"[Oblivion] ML Feature Extractor initialized\n");
+        } catch (...) {
+            g_pMLFeatureExtractor = nullptr;
+            LogIfEnabled(L"[Oblivion] ML Feature Extractor failed to initialize\n");
+        }
+    }
+
+    // ===== PRIORITY 4.1.3: Initialize ML Anomaly Detector =====
+    if (g_cfg.enableMLAnomalyDetection && g_pMLFeatureExtractor && g_pTelemetryCollector) {
+        try {
+            MLAnomalyDetectorConfig mlConfig;
+            mlConfig.enableIsolationForest = g_cfg.mlUseIsolationForest;
+            mlConfig.enableOneClass = g_cfg.mlUseOneClass;
+            mlConfig.useEnsemble = g_cfg.mlUseEnsemble;
+            mlConfig.ensembleWeight = g_cfg.mlEnsembleWeight;
+            mlConfig.isolationForestTrees = g_cfg.mlIsolationForestTrees;
+            mlConfig.isolationForestSubsampleSize = g_cfg.mlIsolationForestSubsampleSize;
+            mlConfig.isolationForestMaxDepth = g_cfg.mlIsolationForestMaxDepth;
+            mlConfig.oneClassNu = g_cfg.mlOneClassNu;
+            mlConfig.anomalyThreshold = g_cfg.mlAnomalyThreshold;
+            mlConfig.minTrainingSamples = g_cfg.mlMinTrainingSamples;
+            mlConfig.maxTrainingSamples = g_cfg.mlMaxTrainingSamples;
+            mlConfig.enableOnlineLearning = g_cfg.mlEnableOnlineLearning;
+            mlConfig.onlineUpdateInterval = g_cfg.mlOnlineUpdateInterval;
+            mlConfig.onlineLearningRate = g_cfg.mlOnlineLearningRate;
+            mlConfig.enableModelPersistence = g_cfg.mlEnableModelPersistence;
+            mlConfig.modelSavePath = g_cfg.mlModelSavePath;
+
+            g_pMLAnomalyDetector = new MLAnomalyDetector(mlConfig);
+            g_pMLAnomalyDetector->Initialize(g_pMLFeatureExtractor, g_pTelemetryCollector);
+            g_pMLAnomalyDetector = g_pMLAnomalyDetector; // Set global instance
+            
+            LogIfEnabled(L"[Oblivion] ML Anomaly Detector initialized\n");
+            
+            // Start warm-up period: collect initial normal behavior samples
+            // The model will train after collecting enough samples (min_training_samples)
+        } catch (...) {
+            g_pMLAnomalyDetector = nullptr;
+            LogIfEnabled(L"[Oblivion] ML Anomaly Detector failed to initialize\n");
+        }
+    }
+
+    // ===== PRIORITY 4.1.4: Initialize Adaptive Threshold Manager =====
+    if (g_cfg.enableAdaptiveThresholds && g_pTelemetryCollector) {
+        try {
+            AdaptiveThresholdConfig adaptiveConfig;
+            adaptiveConfig.enableAdaptiveThresholds = g_cfg.enableAdaptiveThresholds;
+            adaptiveConfig.usePerPlayerProfiles = g_cfg.usePerPlayerProfiles;
+            adaptiveConfig.useGlobalBaseline = g_cfg.useGlobalBaseline;
+            adaptiveConfig.defaultSigmaMultiplier = g_cfg.defaultSigmaMultiplier;
+            adaptiveConfig.minBaselineSamples = g_cfg.minBaselineSamples;
+            adaptiveConfig.maxProfileAge = g_cfg.maxProfileAgeHours;
+            adaptiveConfig.globalMinThreshold = g_cfg.adaptiveMinThreshold;
+            adaptiveConfig.globalMaxThreshold = g_cfg.adaptiveMaxThreshold;
+            adaptiveConfig.decayRate = g_cfg.adaptiveDecayRate;
+            adaptiveConfig.trustScoreInitial = g_cfg.trustScoreInitial;
+            adaptiveConfig.trustScoreIncrement = g_cfg.trustScoreIncrement;
+            adaptiveConfig.trustScoreDecrement = g_cfg.trustScoreDecrement;
+
+            g_pAdaptiveThresholdManager = new AdaptiveThresholdManager(adaptiveConfig);
+            g_pAdaptiveThresholdManager->Initialize(g_pTelemetryCollector, g_pMLAnomalyDetector);
+            
+            // Set HWID as player ID for this session
+            std::string playerID = "HWID_" + GetHWID();
+            g_pAdaptiveThresholdManager->SetActivePlayer(playerID);
+            
+            LogIfEnabled(L"[Oblivion] Adaptive Threshold Manager initialized\n");
+        } catch (...) {
+            g_pAdaptiveThresholdManager = nullptr;
+            LogIfEnabled(L"[Oblivion] Adaptive Threshold Manager failed to initialize\n");
+        }
+    }
 
     try {
         g_pNetClient = new NetworkClient();
@@ -793,6 +1216,26 @@ static DWORD WINAPI InitThreadProc(LPVOID)
         KernelBridge_Start(g_pNetClient);
     }
 
+    // ===== PRIORITY 4.2.1: Initialize Signature Database =====
+    try {
+        g_pSignatureDB = new SignatureDatabase();
+        std::wstring sigPath = GetDllDirectory(g_hModule) + L"\\signatures\\ce_signatures.json";
+        if (g_pSignatureDB->LoadFromJson(sigPath)) {
+            LogIfEnabled(L"[Oblivion] Signature database loaded\n");
+            wchar_t buf[256];
+            swprintf_s(buf, L"[Oblivion] Loaded %d signatures (%d enabled)\n", 
+                       g_pSignatureDB->GetTotalSignatureCount(),
+                       g_pSignatureDB->GetEnabledSignatureCount());
+            LogIfEnabled(buf);
+        } else {
+            LogIfEnabled(L"[Oblivion] Warning: Failed to load signature database\n");
+            // Continue execution - signature DB is optional
+        }
+    } catch (...) {
+        g_pSignatureDB = nullptr;
+        LogIfEnabled(L"[Oblivion] Exception during SignatureDatabase init\n");
+    }
+
     // Signature pack poller for fast YARA-like rollout (best-effort)
     try {
         g_pSigMgr = new SignaturePackManager(g_cfg.serverIp, g_cfg.serverPort, &g_cfg);
@@ -815,6 +1258,36 @@ static DWORD WINAPI InitThreadProc(LPVOID)
         g_pEtw->Start();
     } catch (...) {
         g_pEtw = nullptr;
+    }
+
+    // ===== PRIORITY 4.2.4: Optional Signature Testing (background, best-effort) =====
+    if (g_cfg.enableSignatureTesting) {
+        try {
+            std::wstring dllDir = GetDllDirectory(g_hModule);
+            std::wstring rulesPath = g_cfg.signatureYaraRulesPath.empty() ? (dllDir + L"\\signatures\\yara_rules.txt") : g_cfg.signatureYaraRulesPath;
+            std::wstring testsCsv = g_cfg.signatureTestsCsvPath;
+            // Run tests on a worker thread to avoid blocking init
+            auto hThread = CreateThread(nullptr, 0, [](LPVOID ctx)->DWORD{
+                std::wstring* params = reinterpret_cast<std::wstring*>(ctx);
+                std::wstring rules = params[0];
+                std::wstring tests = params[1];
+                delete[] params;
+                std::vector<SigTestCase> cases;
+                SigTestReport report;
+                if (SignatureTestFramework::LoadTestsFromCsv(tests, cases)) {
+                    if (SignatureTestFramework::RunYaraTests(rules, cases, report)) {
+                        std::wstring outCsv = L"Debug\\reports_signature_tests.csv";
+                        std::wstring outJson = L"Debug\\reports_signature_tests.json";
+                        SignatureTestFramework::SaveReportCsv(outCsv, report);
+                        SignatureTestFramework::SaveReportJson(outJson, report);
+                    }
+                }
+                return 0;
+            }, new std::wstring[2]{ rulesPath, testsCsv }, 0, nullptr);
+            if (hThread) CloseHandle(hThread);
+        } catch (...) {
+            // ignore - testing is optional
+        }
     }
 
     // Start CE Behavior Monitor for detecting memory scanning patterns
@@ -893,6 +1366,97 @@ static DWORD WINAPI InitThreadProc(LPVOID)
         g_pNetArtifact->SetThreshold(2); // Moderate threshold for CE server detection
     } catch (...) {
         g_pNetArtifact = nullptr;
+    }
+
+    // ===== PRIORITY 3: Initialize Stealth & Evasion Detection Modules =====
+    
+    // Priority 3.1.1: PEB Manipulation Detector
+    if (g_cfg.enablePEBManipulationDetector) {
+        try {
+            g_pPEBDetector = new PEBManipulationDetector();
+            HANDLE hSelf = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, GetCurrentProcessId());
+            g_pPEBDetector->SetTargetProcess(hSelf, GetCurrentProcessId());
+            g_pPEBDetector->SetEnableMemoryScan(g_cfg.pebEnableMemoryScan);
+            g_pPEBDetector->SetEnableToolHelpValidation(g_cfg.pebEnableToolHelpValidation);
+        } catch (...) {
+            g_pPEBDetector = nullptr;
+        }
+    }
+
+    // Priority 3.2: Hardware Breakpoint Monitor
+    if (g_cfg.enableHardwareBreakpointMonitor) {
+        try {
+            g_pHWBPMonitor = new HardwareBreakpointMonitor();
+            g_pHWBPMonitor->SetTargetProcess(GetCurrentProcessId());
+            g_pHWBPMonitor->SetMaxBreakpointsThreshold(g_cfg.hwbpMaxThreshold);
+            g_pHWBPMonitor->SetEnableAnomalyDetection(g_cfg.hwbpEnableAnomalyDetection);
+            g_pHWBPMonitor->SetTrackHistory(g_cfg.hwbpTrackHistory);
+        } catch (...) {
+            g_pHWBPMonitor = nullptr;
+        }
+    }
+
+    // Priority 3.3.2: Suspicious Memory Scanner
+    if (g_cfg.enableSuspiciousMemoryScanner) {
+        try {
+            g_pMemScanner = new SuspiciousMemoryScanner();
+            HANDLE hSelf = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, GetCurrentProcessId());
+            g_pMemScanner->SetTargetProcess(hSelf, GetCurrentProcessId());
+            g_pMemScanner->SetMinRegionSize(g_cfg.suspMemMinRegionSize);
+            g_pMemScanner->SetEnablePatternAnalysis(g_cfg.suspMemEnablePatternAnalysis);
+            g_pMemScanner->SetEnableEntropyCheck(g_cfg.suspMemEnableEntropyCheck);
+            g_pMemScanner->SetFlagRWX(g_cfg.suspMemFlagRWX);
+            g_pMemScanner->SetFlagPrivateExecutable(g_cfg.suspMemFlagPrivateExecutable);
+        } catch (...) {
+            g_pMemScanner = nullptr;
+        }
+    }
+
+    // Priority 3.3.3: Heap Spray Analyzer
+    if (g_cfg.enableHeapSprayAnalyzer) {
+        try {
+            g_pHeapSpray = new HeapSprayAnalyzer();
+            HANDLE hSelf = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, GetCurrentProcessId());
+            g_pHeapSpray->SetTargetProcess(hSelf, GetCurrentProcessId());
+            g_pHeapSpray->SetMinSpraySize(g_cfg.heapSprayMinSize);
+            g_pHeapSpray->SetMinRepeatCount(g_cfg.heapSprayMinRepeatCount);
+            g_pHeapSpray->SetMinPatternDensity(g_cfg.heapSprayMinDensity);
+            g_pHeapSpray->SetEnableNOPDetection(g_cfg.heapSprayEnableNOPDetection);
+            g_pHeapSpray->SetEnableAddressSprayDetection(g_cfg.heapSprayEnableAddressSpray);
+        } catch (...) {
+            g_pHeapSpray = nullptr;
+        }
+    }
+
+    // Priority 3.1.2: ETHREAD Manipulation Detector (requires kernel driver)
+    if (g_cfg.enableETHREADDetector && KernelBridge_IsDriverAvailable()) {
+        try {
+            g_pETHREADDetector = new ETHREADManipulationDetector();
+            g_pETHREADDetector->Initialize(KernelBridge_GetDriverHandle());
+        } catch (...) {
+            g_pETHREADDetector = nullptr;
+        }
+    }
+
+    // Priority 3.2.2: Kernel Callback Scanner (requires kernel driver)
+    if (g_cfg.enableCallbackScanner && KernelBridge_IsDriverAvailable()) {
+        try {
+            g_pCallbackScanner = new KernelCallbackScanner();
+            g_pCallbackScanner->Initialize(KernelBridge_GetDriverHandle());
+        } catch (...) {
+            g_pCallbackScanner = nullptr;
+        }
+    }
+
+    // Priority 3.3.1: VAD Manipulation Detector (requires kernel driver)
+    if (g_cfg.enableVADDetector && KernelBridge_IsDriverAvailable()) {
+        try {
+            g_pVADDetector = new VADManipulationDetector();
+            g_pVADDetector->Initialize(KernelBridge_GetDriverHandle());
+            g_pVADDetector->SetSizeThreshold(g_cfg.vadSizeThreshold);
+        } catch (...) {
+            g_pVADDetector = nullptr;
+        }
     }
 
     SchedulePeriodicScans();
@@ -1112,6 +1676,19 @@ static DWORD WINAPI InitThreadProc(LPVOID)
 static void CleanupGlobals()
 {
     std::lock_guard<std::mutex> lock(g_cleanupMutex);
+    
+    // ===== PRIORITY 4: Export telemetry before cleanup =====
+    if (g_pTelemetryCollector && g_cfg.telemetryExportOnExit) {
+        std::wstring exportPath = g_cfg.telemetryExportPath;
+        if (exportPath.empty()) {
+            exportPath = L"telemetry_export.json";
+        }
+        // Make path relative to DLL directory
+        std::wstring fullPath = GetDllDirectory(g_hModule) + L"\\" + exportPath;
+        g_pTelemetryCollector->ExportToFile(fullPath, true);
+        LogIfEnabled(L"[Oblivion] Telemetry exported\n");
+    }
+    
     // Stop background/periodic/etw/heartbeat before deleting
     if (g_pWatcher) { g_pWatcher->StopBackgroundWatcher(); delete g_pWatcher; g_pWatcher = nullptr; }
     if (g_pPeriodic) { g_pPeriodic->Stop(); delete g_pPeriodic; g_pPeriodic = nullptr; }
@@ -1119,6 +1696,12 @@ static void CleanupGlobals()
     if (g_pEtw) { g_pEtw->Stop(); delete g_pEtw; g_pEtw = nullptr; }
     if (g_pHeartbeat) { g_pHeartbeat->Stop(); delete g_pHeartbeat; g_pHeartbeat = nullptr; }
     if (g_pSigMgr) { g_pSigMgr->Stop(); delete g_pSigMgr; g_pSigMgr = nullptr; }
+    if (g_pSignatureDB) { delete g_pSignatureDB; g_pSignatureDB = nullptr; }
+    // ===== PRIORITY 4: Cleanup Infrastructure Modules =====
+    if (g_pAdaptiveThresholdManager) { delete g_pAdaptiveThresholdManager; g_pAdaptiveThresholdManager = nullptr; g_pAdaptiveThresholdManager = nullptr; }
+    if (g_pMLAnomalyDetector) { delete g_pMLAnomalyDetector; g_pMLAnomalyDetector = nullptr; g_pMLAnomalyDetector = nullptr; }
+    if (g_pMLFeatureExtractor) { delete g_pMLFeatureExtractor; g_pMLFeatureExtractor = nullptr; }
+    if (g_pTelemetryCollector) { g_pTelemetryCollector->Stop(); delete g_pTelemetryCollector; g_pTelemetryCollector = nullptr; g_pTelemetry = nullptr; }
     // Cleanup CE detection modules
     if (g_pCEBehavior) { g_pCEBehavior->Stop(); delete g_pCEBehavior; g_pCEBehavior = nullptr; }
     if (g_pCERegistry) { delete g_pCERegistry; g_pCERegistry = nullptr; }
@@ -1127,6 +1710,14 @@ static void CleanupGlobals()
     // ===== PRIORITY 2: Cleanup Advanced Detection Modules =====
     if (g_pDeviceScanner) { delete g_pDeviceScanner; g_pDeviceScanner = nullptr; }
     if (g_pNetArtifact) { delete g_pNetArtifact; g_pNetArtifact = nullptr; }
+    // ===== PRIORITY 3: Cleanup Stealth & Evasion Detection Modules =====
+    if (g_pPEBDetector) { delete g_pPEBDetector; g_pPEBDetector = nullptr; }
+    if (g_pETHREADDetector) { g_pETHREADDetector->Cleanup(); delete g_pETHREADDetector; g_pETHREADDetector = nullptr; }
+    if (g_pCallbackScanner) { g_pCallbackScanner->Cleanup(); delete g_pCallbackScanner; g_pCallbackScanner = nullptr; }
+    if (g_pVADDetector) { g_pVADDetector->Cleanup(); delete g_pVADDetector; g_pVADDetector = nullptr; }
+    if (g_pHWBPMonitor) { delete g_pHWBPMonitor; g_pHWBPMonitor = nullptr; }
+    if (g_pMemScanner) { delete g_pMemScanner; g_pMemScanner = nullptr; }
+    if (g_pHeapSpray) { delete g_pHeapSpray; g_pHeapSpray = nullptr; }
     if (g_cfg.enableKernelBridge) { KernelBridge_Stop(); }
     if (g_pNetClient) { delete g_pNetClient; g_pNetClient = nullptr; }
 }

@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "JsonBuilder.h"
+#include "ProcessThreadWatcher.h"  // For DetectionResult
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -27,6 +28,50 @@ std::string JsonBuilder::BuildDetectionReport(DWORD pid, const std::wstring& pro
     if (indicators > 0) {
         oss << "  \"indicators\": " << indicators << ",\n";
     }
+    if (!hwid.empty()) {
+        oss << "  \"hwid\": \"" << EscapeJson(hwid) << "\",\n";
+    }
+    oss << "  \"timestamp\": \"" << EscapeJson(timestamp) << "\"\n";
+    oss << "}";
+
+    return oss.str();
+}
+
+// ===== PRIORITY 4.1.5: ML-aware detection report =====
+std::string JsonBuilder::BuildDetectionReportWithML(const DetectionResult& result, const std::string& subtype, const std::string& hwid, const std::string& clientVersion)
+{
+    time_t now = time(nullptr);
+    char timeBuffer[26];
+    ctime_s(timeBuffer, sizeof(timeBuffer), &now);
+    std::string timestamp(timeBuffer);
+    // Remove newline
+    if (!timestamp.empty() && timestamp.back() == '\n') {
+        timestamp.pop_back();
+    }
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3);
+    
+    oss << "{\n";
+    oss << "  \"version\": 2,\n";  // Version 2 with ML fields
+    oss << "  \"client_version\": \"" << EscapeJson(clientVersion) << "\",\n";
+    oss << "  \"type\": \"detection\",\n";
+    oss << "  \"subtype\": \"" << EscapeJson(subtype) << "\",\n";
+    oss << "  \"pid\": " << result.pid << ",\n";
+    oss << "  \"process\": \"" << EscapeJson(WStringToString(result.processName)) << "\",\n";
+    oss << "  \"reason\": \"" << EscapeJson(WStringToString(result.reason)) << "\",\n";
+    oss << "  \"indicators\": " << result.indicatorCount << ",\n";
+    
+    // ML fields
+    if (result.mlEvaluated) {
+        oss << "  \"ml_evaluated\": true,\n";
+        oss << "  \"ml_anomaly_score\": " << result.mlAnomalyScore << ",\n";
+        oss << "  \"ml_confidence\": " << result.mlConfidence << ",\n";
+        oss << "  \"ml_flagged\": " << (result.mlFlagged ? "true" : "false") << ",\n";
+    } else {
+        oss << "  \"ml_evaluated\": false,\n";
+    }
+    
     if (!hwid.empty()) {
         oss << "  \"hwid\": \"" << EscapeJson(hwid) << "\",\n";
     }

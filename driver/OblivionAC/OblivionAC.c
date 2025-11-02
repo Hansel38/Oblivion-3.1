@@ -849,6 +849,357 @@ VOID OblivionAC_EvtDriverContextCleanup(WDFOBJECT DriverObject)
     g_Ctx = NULL;
 }
 
+// ===== PRIORITY 3: Stealth & Evasion Detection Helper Functions =====
+
+// Enumerate ETHREAD structures for a process
+NTSTATUS EnumerateEThreads(
+    _In_ ULONG ProcessId,
+    _In_ ULONG MaxThreadCount,
+    _Inout_ PKAC_ENUM_ETHREAD_RESPONSE Response,
+    _In_ ULONG BufferSize
+)
+{
+    if (!Response || BufferSize < sizeof(KAC_ENUM_ETHREAD_RESPONSE)) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    PEPROCESS Process = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)ProcessId, &Process);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    Response->ThreadCount = 0;
+    Response->HiddenThreadCount = 0;
+
+    // Walk the thread list in EPROCESS
+    // EPROCESS->ThreadListHead offset varies by Windows version
+    // Using hardcoded offsets for Windows 10 (0x5E0 for x64)
+    #ifdef _WIN64
+        const ULONG_PTR ThreadListHeadOffset = 0x5E0;
+        const ULONG_PTR ThreadListEntryOffset = 0x6B8;
+    #else
+        const ULONG_PTR ThreadListHeadOffset = 0x428;
+        const ULONG_PTR ThreadListEntryOffset = 0x450;
+    #endif
+
+    PLIST_ENTRY ThreadListHead = (PLIST_ENTRY)((PUCHAR)Process + ThreadListHeadOffset);
+    PLIST_ENTRY CurrentEntry = ThreadListHead->Flink;
+
+    ULONG count = 0;
+    while (CurrentEntry != ThreadListHead && count < MaxThreadCount) {
+        // Calculate ETHREAD from ThreadListEntry
+        PETHREAD Thread = (PETHREAD)((PUCHAR)CurrentEntry - ThreadListEntryOffset);
+        
+        if (MmIsAddressValid(Thread)) {
+            HANDLE ThreadId = PsGetThreadId(Thread);
+            PKAC_ETHREAD_INFO info = &Response->Threads[count];
+            
+            info->ThreadId = HandleToULong(ThreadId);
+            info->StartAddress = 0; // Would need to read from ETHREAD
+            info->Win32StartAddress = 0;
+            info->State = 0;
+            info->WaitReason = 0;
+            info->IsHidden = FALSE;
+            info->IsSuspicious = FALSE;
+            info->TebBase = 0;
+            info->StackBase = 0;
+            info->StackLimit = 0;
+            
+            // Check if thread is hidden (not in CreateThread snapshot)
+            // This requires comparing with PsGetNextProcessThread
+            PETHREAD ValidatedThread = NULL;
+            if (NT_SUCCESS(PsLookupThreadByThreadId(ThreadId, &ValidatedThread))) {
+                if (ValidatedThread != Thread) {
+                    info->IsHidden = TRUE;
+                    info->IsSuspicious = TRUE;
+                    Response->HiddenThreadCount++;
+                }
+                ObDereferenceObject(ValidatedThread);
+            } else {
+                info->IsHidden = TRUE;
+                info->IsSuspicious = TRUE;
+                Response->HiddenThreadCount++;
+            }
+            
+            // Check CrossThreadFlags for suspicious flags
+            // CrossThreadFlags offset: 0x6B4 (x64), 0x450 (x86)
+            #ifdef _WIN64
+                PULONG CrossThreadFlags = (PULONG)((PUCHAR)Thread + 0x6B4);
+            #else
+                PULONG CrossThreadFlags = (PULONG)((PUCHAR)Thread + 0x450);
+            #endif
+            
+            if (MmIsAddressValid(CrossThreadFlags)) {
+                if (*CrossThreadFlags & 0x200) { // PS_CROSS_THREAD_FLAGS_HIDE_FROM_DEBUGGER
+                    info->IsSuspicious = TRUE;
+                }
+            }
+            
+            count++;
+        }
+        
+        CurrentEntry = CurrentEntry->Flink;
+    }
+
+    Response->ThreadCount = count;
+
+    ObDereferenceObject(Process);
+    return STATUS_SUCCESS;
+}
+
+// Get VAD information for a process
+NTSTATUS GetVADInformation(
+    _In_ ULONG ProcessId,
+    _In_ ULONG_PTR BaseAddress,
+    _In_ ULONG MaxVadCount,
+    _Inout_ PKAC_VAD_INFO_RESPONSE Response,
+    _In_ ULONG BufferSize
+)
+{
+    if (!Response || BufferSize < sizeof(KAC_VAD_INFO_RESPONSE)) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    PEPROCESS Process = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)ProcessId, &Process);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    Response->VadCount = 0;
+    Response->SuspiciousVadCount = 0;
+
+    // VAD root is in EPROCESS->VadRoot
+    // Offset varies: 0x658 (Win10 x64), 0x478 (Win10 x86)
+    #ifdef _WIN64
+        const ULONG_PTR VadRootOffset = 0x658;
+    #else
+        const ULONG_PTR VadRootOffset = 0x478;
+    #endif
+
+    // VadRoot is an RTL_AVL_TREE structure (single PVOID pointer to root node)
+    PVOID* VadRootPtr = (PVOID*)((PUCHAR)Process + VadRootOffset);
+    
+    if (!MmIsAddressValid(VadRootPtr) || !(*VadRootPtr)) {
+        ObDereferenceObject(Process);
+        return STATUS_NOT_FOUND;
+    }
+
+    // Walk VAD tree (simplified - in-order traversal)
+    // VAD node structure: _MMVAD
+    // We'll do a simple stack-based traversal
+    PVOID VadStack[256];
+    ULONG StackTop = 0;
+    VadStack[StackTop++] = *VadRootPtr;
+    
+    ULONG count = 0;
+    while (StackTop > 0 && count < MaxVadCount) {
+        PVOID VadNode = VadStack[--StackTop];
+        
+        if (!MmIsAddressValid(VadNode)) {
+            continue;
+        }
+
+        // _MMVAD structure offsets (Windows 10 x64):
+        // +0x000: Core (RTL_BALANCED_NODE)
+        // +0x018: u (flags/type)
+        // +0x020: StartingVpn
+        // +0x028: EndingVpn
+        
+        PUCHAR VadPtr = (PUCHAR)VadNode;
+        
+        // RTL_BALANCED_NODE at offset 0
+        PVOID* LeftChild = (PVOID*)(VadPtr + 0x00);
+        PVOID* RightChild = (PVOID*)(VadPtr + 0x08);
+        
+        // StartingVpn/EndingVpn at offset 0x18, 0x20 (simplified)
+        #ifdef _WIN64
+            PULONG_PTR StartVpn = (PULONG_PTR)(VadPtr + 0x18);
+            PULONG_PTR EndVpn = (PULONG_PTR)(VadPtr + 0x20);
+        #else
+            PULONG StartVpn = (PULONG)(VadPtr + 0x10);
+            PULONG EndVpn = (PULONG)(VadPtr + 0x14);
+        #endif
+        
+        if (MmIsAddressValid(StartVpn) && MmIsAddressValid(EndVpn)) {
+            ULONG_PTR StartVpnVal = *StartVpn;
+            ULONG_PTR EndVpnVal = *EndVpn;
+            ULONG_PTR StartAddr = StartVpnVal << 12; // VPN to address
+            ULONG_PTR EndAddr = (EndVpnVal << 12) | 0xFFF;
+            SIZE_T Size = EndAddr - StartAddr + 1;
+            
+            // If BaseAddress specified, only return matching VAD
+            if (BaseAddress == 0 || (BaseAddress >= StartAddr && BaseAddress <= EndAddr)) {
+                PKAC_VAD_ENTRY entry = &Response->Vads[count];
+                entry->StartingVpn = StartVpnVal;
+                entry->EndingVpn = EndVpnVal;
+                entry->StartingAddress = StartAddr;
+                entry->EndingAddress = EndAddr;
+                entry->SizeInBytes = Size;
+                entry->Protection = 0; // Would need to parse VadFlags
+                entry->VadType = 0;
+                entry->IsPrivate = FALSE;
+                entry->IsSuspicious = FALSE;
+                entry->Flags = 0;
+                
+                // Check for suspicious characteristics
+                if (Size > 100 * 1024 * 1024) { // >100MB
+                    entry->IsSuspicious = TRUE;
+                    Response->SuspiciousVadCount++;
+                }
+                
+                count++;
+                
+                if (BaseAddress != 0) {
+                    // Found specific VAD, stop
+                    break;
+                }
+            }
+        }
+        
+        // Push children to stack
+        if (MmIsAddressValid(RightChild) && *RightChild && StackTop < 256) {
+            VadStack[StackTop++] = *RightChild;
+        }
+        if (MmIsAddressValid(LeftChild) && *LeftChild && StackTop < 256) {
+            VadStack[StackTop++] = *LeftChild;
+        }
+    }
+
+    Response->VadCount = count;
+
+    ObDereferenceObject(Process);
+    return STATUS_SUCCESS;
+}
+
+// Get kernel callback information
+NTSTATUS GetKernelCallbacks(
+    _In_ ULONG CallbackType,
+    _In_ ULONG MaxCallbackCount,
+    _Inout_ PKAC_CALLBACK_INFO_RESPONSE Response,
+    _In_ ULONG BufferSize
+)
+{
+    if (!Response || BufferSize < sizeof(KAC_CALLBACK_INFO_RESPONSE)) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    Response->CallbackCount = 0;
+    Response->SuspiciousCallbackCount = 0;
+
+    // Kernel callback arrays are not directly exposed
+    // We would need to locate them via pattern scanning or hardcoded offsets
+    // This is a simplified implementation that demonstrates the structure
+    
+    // For production, you'd need to:
+    // 1. Find PspCreateProcessNotifyRoutine array (process notify)
+    // 2. Find PspCreateThreadNotifyRoutine array (thread notify)
+    // 3. Find PspLoadImageNotifyRoutine array (image notify)
+    // 4. Walk array and collect non-NULL entries
+    
+    // Example for process notify callbacks (simplified):
+    if (CallbackType == 0) { // ProcessNotify
+        // PspCreateProcessNotifyRoutine is an array of EX_CALLBACK_ROUTINE_BLOCK structures
+        // Maximum 64 entries on Windows 10
+        // This is just a placeholder - real implementation needs pattern scanning
+        
+        // Return empty for now (would need kernel base + pattern scan)
+        Response->CallbackCount = 0;
+    }
+    else if (CallbackType == 1) { // ThreadNotify
+        Response->CallbackCount = 0;
+    }
+    else if (CallbackType == 2) { // ImageNotify
+        Response->CallbackCount = 0;
+    }
+    else {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+// Validate if ETHREAD is in ThreadListHead
+NTSTATUS ValidateEThread(
+    _In_ ULONG ProcessId,
+    _In_ ULONG ThreadId,
+    _Inout_ PKAC_VALIDATE_ETHREAD_RESPONSE Response
+)
+{
+    if (!Response) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(Response, sizeof(KAC_VALIDATE_ETHREAD_RESPONSE));
+    Response->ThreadExists = FALSE;
+    Response->IsHidden = FALSE;
+    Response->IsSuspicious = FALSE;
+
+    // Lookup thread by ID
+    PETHREAD Thread = NULL;
+    NTSTATUS status = PsLookupThreadByThreadId((HANDLE)(ULONG_PTR)ThreadId, &Thread);
+    if (!NT_SUCCESS(status)) {
+        return STATUS_NOT_FOUND;
+    }
+
+    Response->ThreadExists = TRUE;
+    Response->ThreadInfo.ThreadId = ThreadId;
+
+    // Check if thread belongs to process
+    PEPROCESS ThreadProcess = PsGetThreadProcess(Thread);
+    HANDLE ThreadProcessId = PsGetProcessId(ThreadProcess);
+    
+    if (HandleToULong(ThreadProcessId) != ProcessId) {
+        ObDereferenceObject(Thread);
+        return STATUS_SUCCESS; // Valid thread but wrong process
+    }
+
+    // Now walk the process's ThreadListHead to verify it's in the list
+    PEPROCESS Process = NULL;
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)ProcessId, &Process);
+    if (!NT_SUCCESS(status)) {
+        ObDereferenceObject(Thread);
+        return status;
+    }
+
+    #ifdef _WIN64
+        const ULONG_PTR ThreadListHeadOffset = 0x5E0;
+        const ULONG_PTR ThreadListEntryOffset = 0x6B8;
+    #else
+        const ULONG_PTR ThreadListHeadOffset = 0x428;
+        const ULONG_PTR ThreadListEntryOffset = 0x450;
+    #endif
+
+    PLIST_ENTRY ThreadListHead = (PLIST_ENTRY)((PUCHAR)Process + ThreadListHeadOffset);
+    PLIST_ENTRY CurrentEntry = ThreadListHead->Flink;
+
+    BOOLEAN foundInList = FALSE;
+    while (CurrentEntry != ThreadListHead) {
+        PETHREAD CurrentThread = (PETHREAD)((PUCHAR)CurrentEntry - ThreadListEntryOffset);
+        
+        if (CurrentThread == Thread) {
+            foundInList = TRUE;
+            break;
+        }
+        
+        CurrentEntry = CurrentEntry->Flink;
+    }
+
+    if (!foundInList) {
+        Response->IsHidden = TRUE;
+        Response->IsSuspicious = TRUE;
+        Response->ThreadInfo.IsHidden = TRUE;
+        Response->ThreadInfo.IsSuspicious = TRUE;
+    }
+
+    ObDereferenceObject(Process);
+    ObDereferenceObject(Thread);
+
+    return STATUS_SUCCESS;
+}
+
+
 _Use_decl_annotations_
 VOID OblivionAC_EvtIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutputBufferLength, size_t InputBufferLength, ULONG IoControlCode)
 {
@@ -879,6 +1230,98 @@ VOID OblivionAC_EvtIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request, size_t Ou
                 ctx->ProtectedPid = inBuf->Pid;
                 status = STATUS_SUCCESS;
                 WdfRequestSetInformation(Request, 0);
+            }
+        }
+    }
+    // ===== PRIORITY 3: Stealth & Evasion Detection IOCTLs =====
+    else if (IoControlCode == IOCTL_OBLIVIONAC_ENUM_ETHREAD) {
+        // Enumerate ETHREAD structures for a process
+        if (InputBufferLength < sizeof(KAC_ENUM_ETHREAD_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            PKAC_ENUM_ETHREAD_REQUEST inBuf = NULL;
+            PKAC_ENUM_ETHREAD_RESPONSE outBuf = NULL;
+            size_t inSize = 0, outSize = 0;
+            
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(KAC_ENUM_ETHREAD_REQUEST), (PVOID*)&inBuf, &inSize);
+            if (NT_SUCCESS(status)) {
+                status = WdfRequestRetrieveOutputBuffer(Request, sizeof(KAC_ENUM_ETHREAD_RESPONSE), (PVOID*)&outBuf, &outSize);
+                if (NT_SUCCESS(status)) {
+                    // Call helper function to enumerate threads
+                    status = EnumerateEThreads(inBuf->ProcessId, inBuf->MaxThreadCount, outBuf, (ULONG)outSize);
+                    if (NT_SUCCESS(status)) {
+                        WdfRequestSetInformation(Request, sizeof(KAC_ENUM_ETHREAD_RESPONSE) + 
+                            (outBuf->ThreadCount - 1) * sizeof(KAC_ETHREAD_INFO));
+                    }
+                }
+            }
+        }
+    }
+    else if (IoControlCode == IOCTL_OBLIVIONAC_GET_VAD_INFO) {
+        // Get VAD information for a process
+        if (InputBufferLength < sizeof(KAC_VAD_INFO_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            PKAC_VAD_INFO_REQUEST inBuf = NULL;
+            PKAC_VAD_INFO_RESPONSE outBuf = NULL;
+            size_t inSize = 0, outSize = 0;
+            
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(KAC_VAD_INFO_REQUEST), (PVOID*)&inBuf, &inSize);
+            if (NT_SUCCESS(status)) {
+                status = WdfRequestRetrieveOutputBuffer(Request, sizeof(KAC_VAD_INFO_RESPONSE), (PVOID*)&outBuf, &outSize);
+                if (NT_SUCCESS(status)) {
+                    // Call helper function to get VAD info
+                    status = GetVADInformation(inBuf->ProcessId, inBuf->BaseAddress, inBuf->MaxVadCount, outBuf, (ULONG)outSize);
+                    if (NT_SUCCESS(status)) {
+                        WdfRequestSetInformation(Request, sizeof(KAC_VAD_INFO_RESPONSE) + 
+                            (outBuf->VadCount - 1) * sizeof(KAC_VAD_ENTRY));
+                    }
+                }
+            }
+        }
+    }
+    else if (IoControlCode == IOCTL_OBLIVIONAC_GET_CALLBACKS) {
+        // Get kernel callback information
+        if (InputBufferLength < sizeof(KAC_CALLBACK_INFO_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            PKAC_CALLBACK_INFO_REQUEST inBuf = NULL;
+            PKAC_CALLBACK_INFO_RESPONSE outBuf = NULL;
+            size_t inSize = 0, outSize = 0;
+            
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(KAC_CALLBACK_INFO_REQUEST), (PVOID*)&inBuf, &inSize);
+            if (NT_SUCCESS(status)) {
+                status = WdfRequestRetrieveOutputBuffer(Request, sizeof(KAC_CALLBACK_INFO_RESPONSE), (PVOID*)&outBuf, &outSize);
+                if (NT_SUCCESS(status)) {
+                    // Call helper function to get callback info
+                    status = GetKernelCallbacks(inBuf->CallbackType, inBuf->MaxCallbackCount, outBuf, (ULONG)outSize);
+                    if (NT_SUCCESS(status)) {
+                        WdfRequestSetInformation(Request, sizeof(KAC_CALLBACK_INFO_RESPONSE) + 
+                            (outBuf->CallbackCount - 1) * sizeof(KAC_CALLBACK_ENTRY));
+                    }
+                }
+            }
+        }
+    }
+    else if (IoControlCode == IOCTL_OBLIVIONAC_VALIDATE_ETHREAD) {
+        // Validate if ETHREAD is in ThreadListHead
+        if (InputBufferLength < sizeof(KAC_VALIDATE_ETHREAD_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            PKAC_VALIDATE_ETHREAD_REQUEST inBuf = NULL;
+            PKAC_VALIDATE_ETHREAD_RESPONSE outBuf = NULL;
+            size_t inSize = 0, outSize = 0;
+            
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(KAC_VALIDATE_ETHREAD_REQUEST), (PVOID*)&inBuf, &inSize);
+            if (NT_SUCCESS(status)) {
+                status = WdfRequestRetrieveOutputBuffer(Request, sizeof(KAC_VALIDATE_ETHREAD_RESPONSE), (PVOID*)&outBuf, &outSize);
+                if (NT_SUCCESS(status)) {
+                    // Call helper function to validate thread
+                    status = ValidateEThread(inBuf->ProcessId, inBuf->ThreadId, outBuf);
+                    if (NT_SUCCESS(status)) {
+                        WdfRequestSetInformation(Request, sizeof(KAC_VALIDATE_ETHREAD_RESPONSE));
+                    }
+                }
             }
         }
     }
