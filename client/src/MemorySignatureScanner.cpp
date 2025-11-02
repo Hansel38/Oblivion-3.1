@@ -4,29 +4,11 @@
 #include <cmath>
 #include <vector>
 #include <map>
+#include "../include/SimdUtils.h"
 
 #pragma comment(lib, "psapi.lib")
 
-// Calculate Shannon entropy for shellcode detection
-static float CalculateEntropy(const BYTE* data, SIZE_T len)
-{
-    if (!data || len == 0) return 0.0f;
-    
-    int freq[256] = {0};
-    for (SIZE_T i = 0; i < len; ++i) {
-        freq[data[i]]++;
-    }
-    
-    float H = 0.0f;
-    for (int i = 0; i < 256; ++i) {
-        if (freq[i] > 0) {
-            float p = (float)freq[i] / (float)len;
-            H -= p * log2f(p);
-        }
-    }
-    
-    return H; // Returns 0-8, shellcode typically > 5.5
-}
+// Entropy calculation moved to SimdUtils::ComputeEntropyShannon
 
 // Detect ROP chain by counting gadgets
 static bool DetectRopChain(const BYTE* region, SIZE_T size, int& gadgetCount)
@@ -312,8 +294,14 @@ static inline bool MatchByte(unsigned char v, unsigned char pat, unsigned char m
 
 bool MemorySignatureScanner::MatchAt(BYTE* p, SIZE_T size, const MemSigPattern& pat) const
 {
-    if (size < pat.bytes.size()) return false;
-    for (size_t i=0;i<pat.bytes.size();++i) {
+    const size_t len = pat.bytes.size();
+    if (size < len) return false;
+    if (m_enableSIMD && len >= 16) {
+        // Fast path using SIMD masked compare
+        return SimdMaskedCompare(p, pat.bytes.data(), pat.mask.data(), len);
+    }
+    // Fallback scalar compare
+    for (size_t i=0;i<len;++i) {
         if (!MatchByte(p[i], pat.bytes[i], pat.mask[i])) return false;
     }
     return true;
@@ -338,7 +326,7 @@ bool MemorySignatureScanner::ScanRegion(BYTE* base, SIZE_T size, const std::wstr
     SIZE_T sampleSize = (size > 4096) ? 4096 : size;
     
     // Entropy analysis
-    float entropy = CalculateEntropy(base, sampleSize);
+    float entropy = ComputeEntropyShannon(base, sampleSize, m_enableSIMD);
     if (entropy > 6.5f) { // High entropy shellcode
         score += 2;
         outFinding.address = base;

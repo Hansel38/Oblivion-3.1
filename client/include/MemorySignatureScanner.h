@@ -24,6 +24,7 @@ public:
     void SetPatterns(const std::vector<MemSigPattern>& pats) { m_patterns = pats; }
     void SetModuleWhitelistPrefixes(const std::vector<std::wstring>& prefixes) { m_modulePrefixes = prefixes; }
     void SetImagesOnly(bool v) { m_imagesOnly = v; }
+    void SetEnableSIMD(bool v) { m_enableSIMD = v; }
 
     bool RunOnceScan(MemorySignatureFinding& outFinding);
 
@@ -35,4 +36,5 @@ private:
     std::vector<MemSigPattern> m_patterns;
     std::vector<std::wstring> m_modulePrefixes; // if non-empty, restrict scanning to modules with these prefixes
     bool m_imagesOnly = true;
+    bool m_enableSIMD = true;
 };

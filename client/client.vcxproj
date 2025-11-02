@@ -183,6 +183,10 @@
     <ClInclude Include="include\MLFeatureExtractor.h" />
     <ClInclude Include="include\MLAnomalyDetector.h" />
     <ClInclude Include="include\AdaptiveThresholdManager.h" />
+    <ClInclude Include="include\ScanPrioritizationManager.h" />
+    <ClInclude Include="include\AdaptivePollingManager.h" />
+    <ClInclude Include="include\SimdUtils.h" />
+    <ClInclude Include="include\SimdBenchmark.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
@@ -234,6 +238,10 @@
     <ClCompile Include="src\MLFeatureExtractor.cpp" />
     <ClCompile Include="src\MLAnomalyDetector.cpp" />
     <ClCompile Include="src\AdaptiveThresholdManager.cpp" />
+    <ClCompile Include="src\ScanPrioritizationManager.cpp" />
+    <ClCompile Include="src\AdaptivePollingManager.cpp" />
+    <ClCompile Include="src\SimdUtils.cpp" />
+    <ClCompile Include="src\SimdBenchmark.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="client_config.json" />

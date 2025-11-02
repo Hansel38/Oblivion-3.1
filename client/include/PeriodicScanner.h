@@ -13,6 +13,7 @@ public:
     explicit PeriodicScanner(NetworkClient* net) : m_net(net) {}
     void Start(DWORD intervalMs);
     void Stop();
+    void SetIntervalMs(DWORD intervalMs) { m_intervalMs = intervalMs ? intervalMs : 15000; }
 
     // Callbacks to perform each scan step provided by dllmain
     std::function<bool()> Tick;

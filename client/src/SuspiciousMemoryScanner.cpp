@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "../include/SuspiciousMemoryScanner.h"
+#include "../include/SimdUtils.h"
 #include <sstream>
 #include <cmath>
 #include <unordered_map>
@@ -332,22 +333,8 @@ bool SuspiciousMemoryScanner::HasShellcodePattern(const BYTE* buffer, SIZE_T siz
 int SuspiciousMemoryScanner::CalculateEntropy(const BYTE* buffer, SIZE_T size)
 {
     if (size == 0) return 0;
-    
-    // Count byte frequencies
-    std::unordered_map<BYTE, int> frequencies;
-    for (SIZE_T i = 0; i < size; i++) {
-        frequencies[buffer[i]]++;
-    }
-    
-    // Calculate Shannon entropy
-    double entropy = 0.0;
-    for (const auto& pair : frequencies) {
-        double probability = static_cast<double>(pair.second) / size;
-        entropy -= probability * log2(probability);
-    }
-    
-    // Normalize to 0-100 scale (max entropy for byte is 8 bits)
-    int score = static_cast<int>((entropy / 8.0) * 100.0);
+    float H = ComputeEntropyShannon(buffer, size, m_enableSIMD);
+    int score = static_cast<int>((H / 8.0f) * 100.0f);
     return (score > 100) ? 100 : score;
 }
 

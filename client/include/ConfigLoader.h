@@ -236,7 +236,39 @@ struct ClientConfig {
     std::wstring signatureTestsCsvPath = L"signatures\\tests\\tests.csv"; // CSV path for test cases
     std::wstring signatureYaraRulesPath = L"signatures\\yara_rules.txt";   // YARA rules path
     int signatureBenchmarkIterations = 3;                // Repetitions for throughput benchmark
+
+    // ===== PRIORITY 4.3.1: Scan Prioritization Manager =====
+    bool enableScanPrioritization = true;                // Enable scan prioritization system
+    bool enableDynamicPriorityAdjustment = true;         // Auto-adjust priorities based on detection rate
+    bool enableLoadBalancing = true;                     // Skip low-priority scans under high CPU load
+    float cpuThresholdPercent = 80.0f;                   // CPU % threshold for load balancing
+    DWORD criticalScanMaxDelayMs = 1000;                 // Max delay for CRITICAL priority scans
+    DWORD highScanMaxDelayMs = 5000;                     // Max delay for HIGH priority scans
+    DWORD scanPrioritizationBudgetMs = 100;              // Max time per tick for executing scheduled scans
+    float recentDetectionBoostWeight = 2.0f;             // Priority boost for recent detections
+    float detectionRateBoostWeight = 1.5f;               // Priority boost based on detection rate
+    float falsePositivePenaltyWeight = 1.0f;             // Priority penalty for false positives
+    DWORD recentDetectionWindowMs = 300000;              // Time window for "recent" detection (5 min)
+    DWORD statisticsUpdateIntervalMs = 30000;            // How often to recalculate priority stats
+
+    // ===== PRIORITY 4.3.2: Adaptive Polling Interval =====
+    bool enableAdaptivePolling = true;                   // Enable adaptive interval for periodic scans
+    DWORD adaptiveMinIntervalMs = 1000;                  // Minimum periodic scan interval
+    DWORD adaptiveMaxIntervalMs = 60000;                 // Maximum periodic scan interval
+    DWORD adaptiveChangeCooldownMs = 5000;               // Minimum time between interval changes
+    float adaptiveMinChangePercent = 0.15f;              // Apply only if change >= 15%
+    double adaptiveMediumRateThreshold = 0.001;          // Detection rate thresholds
+    double adaptiveHighRateThreshold = 0.005;
+    double adaptiveCriticalRateThreshold = 0.02;
+    float adaptiveCpuLowPercent = 40.0f;                 // CPU thresholds for scaling
+    float adaptiveCpuHighPercent = 85.0f;
+
+    // ===== PRIORITY 4.3.3: SIMD Acceleration =====
+    bool enableSimdAcceleration = true;                  // Use SSE2/AVX2 accelerated paths when available
+    bool enableSimdBenchmark = false;                    // Run SIMD benchmark on startup and log results
+    int simdBenchmarkIterations = 5;                     // Number of iterations for benchmark averaging
 };
+
 
 // Load client_config.json from DLL directory (preferred) or current directory
 bool LoadClientConfig(ClientConfig& outCfg, const std::wstring& dllDirectory);

@@ -210,6 +210,38 @@ static bool ParseConfigLineP3(const std::string& key, const std::string& val, Cl
     else if (key=="signature_tests_csv_path") { std::string s; if (ParseString(val,s)){ cfg.signatureTestsCsvPath=ToW(s); return true; } }
     else if (key=="signature_yara_rules_path") { std::string s; if (ParseString(val,s)){ cfg.signatureYaraRulesPath=ToW(s); return true; } }
     else if (key=="signature_benchmark_iterations") { int v; if (ParseInt(val,v)){ cfg.signatureBenchmarkIterations=v; return true; } }
+    
+    // ===== PRIORITY 4.3.1: Scan Prioritization Manager =====
+    else if (key=="enable_scan_prioritization") { bool b; if (ParseBool(val,b)){ cfg.enableScanPrioritization=b; return true; } }
+    else if (key=="enable_dynamic_priority_adjustment") { bool b; if (ParseBool(val,b)){ cfg.enableDynamicPriorityAdjustment=b; return true; } }
+    else if (key=="enable_load_balancing") { bool b; if (ParseBool(val,b)){ cfg.enableLoadBalancing=b; return true; } }
+    else if (key=="cpu_threshold_percent") { double v; if (ParseDouble(val,v)){ cfg.cpuThresholdPercent=(float)v; return true; } }
+    else if (key=="critical_scan_max_delay_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.criticalScanMaxDelayMs=v; return true; } }
+    else if (key=="high_scan_max_delay_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.highScanMaxDelayMs=v; return true; } }
+    else if (key=="scan_prioritization_budget_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.scanPrioritizationBudgetMs=v; return true; } }
+    else if (key=="recent_detection_boost_weight") { double v; if (ParseDouble(val,v)){ cfg.recentDetectionBoostWeight=(float)v; return true; } }
+    else if (key=="detection_rate_boost_weight") { double v; if (ParseDouble(val,v)){ cfg.detectionRateBoostWeight=(float)v; return true; } }
+    else if (key=="false_positive_penalty_weight") { double v; if (ParseDouble(val,v)){ cfg.falsePositivePenaltyWeight=(float)v; return true; } }
+    else if (key=="recent_detection_window_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.recentDetectionWindowMs=v; return true; } }
+    else if (key=="statistics_update_interval_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.statisticsUpdateIntervalMs=v; return true; } }
+    
+    // ===== PRIORITY 4.3.2: Adaptive Polling Interval =====
+    else if (key=="enable_adaptive_polling") { bool b; if (ParseBool(val,b)){ cfg.enableAdaptivePolling=b; return true; } }
+    else if (key=="adaptive_min_interval_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.adaptiveMinIntervalMs=v; return true; } }
+    else if (key=="adaptive_max_interval_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.adaptiveMaxIntervalMs=v; return true; } }
+    else if (key=="adaptive_change_cooldown_ms") { DWORD v; if (ParseUInt(val,v)){ cfg.adaptiveChangeCooldownMs=v; return true; } }
+    else if (key=="adaptive_min_change_percent") { double v; if (ParseDouble(val,v)){ cfg.adaptiveMinChangePercent=(float)v; return true; } }
+    else if (key=="adaptive_medium_rate_threshold") { double v; if (ParseDouble(val,v)){ cfg.adaptiveMediumRateThreshold=v; return true; } }
+    else if (key=="adaptive_high_rate_threshold") { double v; if (ParseDouble(val,v)){ cfg.adaptiveHighRateThreshold=v; return true; } }
+    else if (key=="adaptive_critical_rate_threshold") { double v; if (ParseDouble(val,v)){ cfg.adaptiveCriticalRateThreshold=v; return true; } }
+    else if (key=="adaptive_cpu_low_percent") { double v; if (ParseDouble(val,v)){ cfg.adaptiveCpuLowPercent=(float)v; return true; } }
+    else if (key=="adaptive_cpu_high_percent") { double v; if (ParseDouble(val,v)){ cfg.adaptiveCpuHighPercent=(float)v; return true; } }
+
+    // ===== PRIORITY 4.3.3: SIMD Acceleration =====
+    else if (key=="enable_simd_acceleration") { bool b; if (ParseBool(val,b)){ cfg.enableSimdAcceleration=b; return true; } }
+    else if (key=="enable_simd_benchmark") { bool b; if (ParseBool(val,b)){ cfg.enableSimdBenchmark=b; return true; } }
+    else if (key=="simd_benchmark_iterations") { int v; if (ParseInt(val,v)){ cfg.simdBenchmarkIterations=v; return true; } }
+    
     return false;
 }
 

@@ -8,9 +8,6 @@
 
 #pragma comment(lib, "psapi.lib")
 
-// Global instance (can be nullptr if not initialized)
-TelemetryCollector* g_pTelemetry = nullptr;
-
 TelemetryCollector::TelemetryCollector()
     : m_enabled(true)
     , m_collectionIntervalMs(5000) // Collect system metrics every 5 seconds

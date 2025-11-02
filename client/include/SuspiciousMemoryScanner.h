@@ -61,6 +61,7 @@ public:
     void SetMinRegionSize(SIZE_T minSize) { m_minRegionSize = minSize; }
     void SetEnablePatternAnalysis(bool enable) { m_enablePatternAnalysis = enable; }
     void SetEnableEntropyCheck(bool enable) { m_enableEntropyCheck = enable; }
+    void SetEnableSIMD(bool enable) { m_enableSIMD = enable; }
     void SetFlagRWX(bool flag) { m_flagRWX = flag; }
     void SetFlagPrivateExecutable(bool flag) { m_flagPrivateExecutable = flag; }
 
@@ -105,6 +106,7 @@ private:
     bool m_flagRWX;
     bool m_flagPrivateExecutable;
     bool m_isInitialized;
+    bool m_enableSIMD = true;
 
     // For stack/heap detection
     std::vector<PVOID> m_knownStacks;

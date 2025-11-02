@@ -42,7 +42,9 @@
 #include "MLFeatureExtractor.h"
 #include "MLAnomalyDetector.h"
 #include "AdaptiveThresholdManager.h"
+#include "AdaptivePollingManager.h"
 #include "SignatureTestFramework.h"
+#include "ScanPrioritizationManager.h"
 #include <string>
 #include <unordered_map>
 #include <cstring>
@@ -81,6 +83,8 @@ extern "C" __declspec(dllexport) void Garuda_Entry() {}
 // Global watcher instance
 ProcessThreadWatcher* g_pWatcher = nullptr;
 NetworkClient* g_pNetClient = nullptr;
+#include "SimdBenchmark.h"
+
 static HMODULE g_hModule = nullptr;
 static AntiSuspend* g_pAntiSuspend = nullptr;
 static Heartbeat* g_pHeartbeat = nullptr;
@@ -105,10 +109,15 @@ static SuspiciousMemoryScanner* g_pMemScanner = nullptr;
 static HeapSprayAnalyzer* g_pHeapSpray = nullptr;
 // ===== PRIORITY 4: Infrastructure & Optimization Global Instances =====
 static TelemetryCollector* g_pTelemetryCollector = nullptr;
+TelemetryCollector* g_pTelemetry = nullptr; // Global alias for backward compatibility
 static MLFeatureExtractor* g_pMLFeatureExtractor = nullptr;
 static MLAnomalyDetector* g_pMLAnomalyDetector = nullptr;
 static AdaptiveThresholdManager* g_pAdaptiveThresholdManager = nullptr;
+static AdaptivePollingManager* g_pAdaptivePollingManager = nullptr;
+AdaptivePollingManager* g_pAdaptivePolling = nullptr; // Global alias for backward compatibility
 static std::mutex g_cleanupMutex; // protect cleanup from races
+// ===== PRIORITY 4.3.1: Scan Prioritization =====
+static ScanPrioritizationManager* g_pScanPrioritizer = nullptr;
 
 // Runtime configuration
 static ClientConfig g_cfg; // defaults will be used if file not found
@@ -233,6 +242,54 @@ static void ClampConfig()
     g_cfg.antiSuspendStallWindowMs = clampDw(g_cfg.antiSuspendStallWindowMs, 1000, 10000);
     g_cfg.antiSuspendMissesThreshold = clampInt(g_cfg.antiSuspendMissesThreshold, 1, 5);
 }
+
+// ===== PRIORITY 4.3.1: CPU Usage Monitoring =====
+static float GetCurrentCpuUsage()
+{
+    static ULONGLONG s_lastCheckTime = 0;
+    static ULONGLONG s_lastKernelTime = 0;
+    static ULONGLONG s_lastUserTime = 0;
+    static float s_lastCpuPercent = 0.0f;
+
+    ULONGLONG now = GetTickCount64();
+    // Update every 2 seconds to avoid overhead
+    if (now - s_lastCheckTime < 2000 && s_lastCheckTime != 0) {
+        return s_lastCpuPercent;
+    }
+
+    FILETIME ftCreation, ftExit, ftKernel, ftUser;
+    if (!GetProcessTimes(GetCurrentProcess(), &ftCreation, &ftExit, &ftKernel, &ftUser)) {
+        return s_lastCpuPercent;
+    }
+
+    auto FileTimeToULL = [](const FILETIME& ft) -> ULONGLONG {
+        ULARGE_INTEGER uli;
+        uli.LowPart = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        return uli.QuadPart;
+    };
+
+    ULONGLONG kernelTime = FileTimeToULL(ftKernel);
+    ULONGLONG userTime = FileTimeToULL(ftUser);
+
+    if (s_lastCheckTime != 0) {
+        ULONGLONG elapsedWall = (now - s_lastCheckTime) * 10000ULL; // ms to 100ns units
+        ULONGLONG elapsedCpu = (kernelTime - s_lastKernelTime) + (userTime - s_lastUserTime);
+        
+        if (elapsedWall > 0) {
+            s_lastCpuPercent = (float)(elapsedCpu * 100.0 / elapsedWall);
+            if (s_lastCpuPercent > 100.0f) s_lastCpuPercent = 100.0f;
+            if (s_lastCpuPercent < 0.0f) s_lastCpuPercent = 0.0f;
+        }
+    }
+
+    s_lastCheckTime = now;
+    s_lastKernelTime = kernelTime;
+    s_lastUserTime = userTime;
+
+    return s_lastCpuPercent;
+}
+
 
 static void SendDetectionJson(const DetectionResult& result, const char* subtype)
 {
@@ -625,6 +682,10 @@ static void SchedulePeriodicScans()
  g_pPeriodic = nullptr;
  return;
  }
+ // Bind periodic scanner to AdaptivePollingManager if present
+ if (g_pAdaptivePollingManager) {
+     g_pAdaptivePollingManager->Initialize(g_pTelemetryCollector, g_pPeriodic);
+ }
  g_pPeriodic->Tick = []() -> bool {
  bool fired = false;
  ULONGLONG t0;
@@ -679,110 +740,134 @@ static void SchedulePeriodicScans()
  }
  }
 
- // New: CE Behavior Monitor - detect excessive memory scanning
- if (g_pCEBehavior) {
- t0 = GetTickCount64();
- CEBehaviorMonitor::BehaviorFinding bf{};
- if (g_pCEBehavior->CheckSuspiciousBehavior(bf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = bf.pid; dr.processName = bf.processName;
- dr.reason = L"Cheat Engine behavior detected: " + bf.reason;
- dr.indicatorCount = bf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- const char* subtype = bf.likelySequential ? "memory_scanning" : "ce_behavior";
- ProcessDetection(dr, subtype); fired = true;
- }
- }
- LogPerf(L"Periodic.CEBehaviorMonitor", GetTickCount64() - t0);
- }
-
- // New: CE Registry Scanner - detect CE installation artifacts
- if (g_pCERegistry) {
- t0 = GetTickCount64();
- CERegistryScanner::RegistryFinding rf{};
- if (g_pCERegistry->RunOnceScan(rf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
- dr.processName = L"<registry>";
- dr.reason = L"Cheat Engine registry artifacts: " + rf.reason;
- dr.indicatorCount = rf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "ce_registry"); fired = true;
- }
- }
- LogPerf(L"Periodic.CERegistryScanner", GetTickCount64() - t0);
+ // New: CE Behavior Monitor - detect excessive memory scanning (scheduled)
+ if (g_pCEBehavior && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("CEBehaviorMonitor", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         CEBehaviorMonitor::BehaviorFinding bf{};
+         bool firedLocal = false;
+         if (g_pCEBehavior->CheckSuspiciousBehavior(bf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = bf.pid; dr.processName = bf.processName;
+             dr.reason = L"Cheat Engine behavior detected: " + bf.reason;
+             dr.indicatorCount = bf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 const char* subtype = bf.likelySequential ? "memory_scanning" : "ce_behavior";
+                 ProcessDetection(dr, subtype); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.CEBehaviorMonitor", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
 
- // New: CE Window Scanner - detect CE UI presence
- if (g_pCEWindow) {
- t0 = GetTickCount64();
- CEWindowScanner::WindowFinding wf{};
- if (g_pCEWindow->ScanForCEWindows(wf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = wf.pid;
- dr.processName = wf.windowTitle;
- dr.reason = L"Cheat Engine window detected: title='" + wf.windowTitle + L"' class='" + wf.className + L"'";
- dr.indicatorCount = wf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "ce_window"); fired = true;
- }
- }
- LogPerf(L"Periodic.CEWindowScanner", GetTickCount64() - t0);
- }
-
- // New: Speed Hack Detector - detect timing manipulation
- if (g_pSpeedHack) {
- t0 = GetTickCount64();
- SpeedHackDetector::SpeedHackFinding sf{};
- if (g_pSpeedHack->CheckSpeedHack(sf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
- dr.processName = L"<speed_hack>";
- dr.reason = sf.reason;
- dr.indicatorCount = sf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "speed_hack"); fired = true;
- }
- }
- // ===== PRIORITY 2.3.2: Network timing speedhack detection =====
- if (g_pSpeedHack->DetectNetworkTimingAnomaly(sf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
- dr.processName = L"<network_speed_hack>";
- dr.reason = sf.reason;
- dr.indicatorCount = sf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "network_speed_hack"); fired = true;
- }
- }
- LogPerf(L"Periodic.SpeedHackDetector", GetTickCount64() - t0);
+ // New: CE Registry Scanner - detect CE installation artifacts (scheduled)
+ if (g_pCERegistry && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("CERegistryScanner", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         CERegistryScanner::RegistryFinding rf{};
+         bool firedLocal = false;
+         if (g_pCERegistry->RunOnceScan(rf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+             dr.processName = L"<registry>";
+             dr.reason = L"Cheat Engine registry artifacts: " + rf.reason;
+             dr.indicatorCount = rf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "ce_registry"); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.CERegistryScanner", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
 
- // ===== PRIORITY 2.2: Device Object Scanner - DBK/CE driver detection =====
- if (g_pDeviceScanner) {
- t0 = GetTickCount64();
- DeviceObjectFinding dof{};
- if (g_pDeviceScanner->DetectDBKIoctlPattern(dof)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
- dr.processName = L"<dbk_driver>";
- dr.reason = dof.reason;
- dr.indicatorCount = dof.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "dbk_driver"); fired = true;
- }
- }
- LogPerf(L"Periodic.DeviceObjectScanner", GetTickCount64() - t0);
+ // New: CE Window Scanner - detect CE UI presence (scheduled)
+ if (g_pCEWindow && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("CEWindowScanner", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         CEWindowScanner::WindowFinding wf{};
+         bool firedLocal = false;
+         if (g_pCEWindow->ScanForCEWindows(wf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = wf.pid;
+             dr.processName = wf.windowTitle;
+             dr.reason = L"Cheat Engine window detected: title='" + wf.windowTitle + L"' class='" + wf.className + L"'";
+             dr.indicatorCount = wf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "ce_window"); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.CEWindowScanner", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
 
- // ===== PRIORITY 2.3.1: Network Artifact Scanner - CE server detection =====
- if (g_pNetArtifact) {
- t0 = GetTickCount64();
- NetworkArtifactFinding naf{};
- if (g_pNetArtifact->ScanForCEServerPort(naf)) {
- DetectionResult dr{}; dr.detected = true; dr.pid = naf.processId;
- dr.processName = naf.processName.empty() ? L"<unknown>" : naf.processName;
- dr.reason = naf.reason;
- dr.indicatorCount = naf.indicators;
- if (dr.indicatorCount >= g_cfg.closeThreshold) {
- ProcessDetection(dr, "ce_network"); fired = true;
+ // New: Speed Hack Detector - detect timing manipulation (scheduled)
+ if (g_pSpeedHack && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("SpeedHackDetector", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         SpeedHackDetector::SpeedHackFinding sf{};
+         bool firedLocal = false;
+         if (g_pSpeedHack->CheckSpeedHack(sf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+             dr.processName = L"<speed_hack>";
+             dr.reason = sf.reason;
+             dr.indicatorCount = sf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "speed_hack"); firedLocal = true;
+             }
+         }
+         // ===== PRIORITY 2.3.2: Network timing speedhack detection =====
+         if (g_pSpeedHack->DetectNetworkTimingAnomaly(sf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+             dr.processName = L"<network_speed_hack>";
+             dr.reason = sf.reason;
+             dr.indicatorCount = sf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "network_speed_hack"); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.SpeedHackDetector", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
+
+ // ===== PRIORITY 2.2: Device Object Scanner - DBK/CE driver detection (scheduled)
+ if (g_pDeviceScanner && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("DeviceObjectScanner", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         DeviceObjectFinding dof{};
+         bool firedLocal = false;
+         if (g_pDeviceScanner->DetectDBKIoctlPattern(dof)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = GetCurrentProcessId();
+             dr.processName = L"<dbk_driver>";
+             dr.reason = dof.reason;
+             dr.indicatorCount = dof.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "dbk_driver"); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.DeviceObjectScanner", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
- LogPerf(L"Periodic.NetworkArtifactScanner", GetTickCount64() - t0);
+
+ // ===== PRIORITY 2.3.1: Network Artifact Scanner - CE server detection (scheduled)
+ if (g_pNetArtifact && g_pScanPrioritizer) {
+     g_pScanPrioritizer->ScheduleTask("NetworkArtifactScanner", []() -> bool {
+         ULONGLONG t0 = GetTickCount64();
+         NetworkArtifactFinding naf{};
+         bool firedLocal = false;
+         if (g_pNetArtifact->ScanForCEServerPort(naf)) {
+             DetectionResult dr{}; dr.detected = true; dr.pid = naf.processId;
+             dr.processName = naf.processName.empty() ? L"<unknown>" : naf.processName;
+             dr.reason = naf.reason;
+             dr.indicatorCount = naf.indicators;
+             if (dr.indicatorCount >= g_cfg.closeThreshold) {
+                 ProcessDetection(dr, "ce_network"); firedLocal = true;
+             }
+         }
+         LogPerf(L"Periodic.NetworkArtifactScanner", GetTickCount64() - t0);
+         return firedLocal;
+     });
  }
 
  if (g_cfg.enableOverlayScanner) {
@@ -896,7 +981,7 @@ static void SchedulePeriodicScans()
  if (!bytes.empty()) { MemSigPattern p{}; p.name=name; p.bytes=std::move(bytes); p.mask=std::move(mask); p.weight = weight; pats.push_back(std::move(p)); }
  };
  for (size_t i = 0; i <= s.size(); ++i){ wchar_t c = (i < s.size()? s[i] : L';'); if (c == L';'){ flush(cur); cur.clear(); } else cur.push_back(c);}            
- MemorySignatureScanner mss; mss.SetThreshold(g_cfg.memorySignatureThreshold); mss.SetPatterns(pats);
+            MemorySignatureScanner mss; mss.SetThreshold(g_cfg.memorySignatureThreshold); mss.SetPatterns(pats); mss.SetEnableSIMD(g_cfg.enableSimdAcceleration);
  auto memPrefixes = g_cfg.memoryModuleWhitelistPrefixes.empty()? g_cfg.moduleWhitelistPrefixes : g_cfg.memoryModuleWhitelistPrefixes;
  mss.SetModuleWhitelistPrefixes(ParseWhitelistPrefixes(memPrefixes));
  mss.SetImagesOnly(g_cfg.memoryImagesOnly);
@@ -1074,11 +1159,50 @@ static void SchedulePeriodicScans()
  }
  }
  }
- LogPerf(L"Periodic.VADDetector", GetTickCount64() - t0);
- }
- }
+    LogPerf(L"Periodic.VADDetector", GetTickCount64() - t0);
+    }
+    }
 
- return fired;
+    // ===== PRIORITY 4.3.1/4.3.2: Update CPU usage, adaptive polling, and execute scheduled prioritized tasks =====
+    if (g_pScanPrioritizer) {
+        // Update CPU usage for load balancing and adaptive polling
+        float cpuUsage = GetCurrentCpuUsage();
+        g_pScanPrioritizer->UpdateCpuUsage(cpuUsage);
+        if (g_pAdaptivePollingManager) {
+            g_pAdaptivePollingManager->Update(cpuUsage);
+        }
+        
+        // Execute pending tasks with configured budget
+        DWORD budget = g_cfg.scanPrioritizationBudgetMs;
+        g_pScanPrioritizer->ExecutePendingTasks(budget);
+        
+        // Update dynamic priorities based on detection rates
+        if (g_cfg.enableDynamicPriorityAdjustment) {
+            static ULONGLONG lastPriorityUpdate = 0;
+            ULONGLONG now = GetTickCount64();
+            if (now - lastPriorityUpdate >= g_cfg.statisticsUpdateIntervalMs) {
+                g_pScanPrioritizer->UpdateDynamicPriorities();
+                lastPriorityUpdate = now;
+            }
+        }
+        
+        // Debug info if logging enabled
+        if (g_cfg.enableLogging) {
+            static ULONGLONG lastDebugPrint = 0;
+            ULONGLONG now = GetTickCount64();
+            if (now - lastDebugPrint >= 60000) { // Print every 60 seconds
+                g_pScanPrioritizer->PrintDebugInfo();
+                lastDebugPrint = now;
+            }
+        }
+    }
+    else if (g_pAdaptivePollingManager) {
+        // Even if prioritizer disabled, still update adaptive polling with CPU
+        float cpuUsage = GetCurrentCpuUsage();
+        g_pAdaptivePollingManager->Update(cpuUsage);
+    }
+
+    return fired;
  };
  DWORD interval = g_cfg.periodicScanIntervalMs;
  if (g_cfg.aggressiveDetection && interval > 5000) interval = 5000; // faster periodic scans
@@ -1185,6 +1309,78 @@ static DWORD WINAPI InitThreadProc(LPVOID)
         } catch (...) {
             g_pAdaptiveThresholdManager = nullptr;
             LogIfEnabled(L"[Oblivion] Adaptive Threshold Manager failed to initialize\n");
+        }
+    }
+
+    // ===== PRIORITY 4.3.1: Initialize Scan Prioritization Manager =====
+    if (g_cfg.enableScanPrioritization) {
+        try {
+            ScanPrioritizationConfig spcfg;
+            spcfg.enablePrioritization = g_cfg.enableScanPrioritization;
+            spcfg.enableDynamicAdjustment = g_cfg.enableDynamicPriorityAdjustment;
+            spcfg.enableLoadBalancing = g_cfg.enableLoadBalancing;
+            spcfg.cpuThresholdPercent = g_cfg.cpuThresholdPercent;
+            spcfg.criticalScanMaxDelayMs = g_cfg.criticalScanMaxDelayMs;
+            spcfg.highScanMaxDelayMs = g_cfg.highScanMaxDelayMs;
+            spcfg.recentDetectionBoostWeight = g_cfg.recentDetectionBoostWeight;
+            spcfg.detectionRateBoostWeight = g_cfg.detectionRateBoostWeight;
+            spcfg.falsePositivePenaltyWeight = g_cfg.falsePositivePenaltyWeight;
+            spcfg.recentDetectionWindowMs = g_cfg.recentDetectionWindowMs;
+            spcfg.statisticsUpdateIntervalMs = g_cfg.statisticsUpdateIntervalMs;
+            
+            g_pScanPrioritizer = new ScanPrioritizationManager(spcfg);
+            if (g_pScanPrioritizer->Initialize()) {
+                g_pScanPrioritizer->SetTelemetryCollector(g_pTelemetryCollector);
+                // Register a few key scanners with metadata
+                ScannerInfo si;
+                si.name = "CEBehaviorMonitor"; si.displayName = "CE Behavior Monitor"; si.priority = ScanPriority::HIGH; si.pathType = ScanPathType::HOT_PATH; si.minIntervalMs = 1000; si.canBeSkipped = false;
+                g_pScanPrioritizer->RegisterScanner(si.name, si);
+
+                si.name = "CERegistryScanner"; si.displayName = "CE Registry Scanner"; si.priority = ScanPriority::NORMAL; si.pathType = ScanPathType::WARM_PATH; si.minIntervalMs = 5000; si.canBeSkipped = true;
+                g_pScanPrioritizer->RegisterScanner(si.name, si);
+
+                si.name = "CEWindowScanner"; si.displayName = "CE Window Scanner"; si.priority = ScanPriority::NORMAL; si.pathType = ScanPathType::WARM_PATH; si.minIntervalMs = 5000; si.canBeSkipped = true;
+                g_pScanPrioritizer->RegisterScanner(si.name, si);
+
+                si.name = "SpeedHackDetector"; si.displayName = "Speed Hack Detector"; si.priority = ScanPriority::HIGH; si.pathType = ScanPathType::HOT_PATH; si.minIntervalMs = 1000; si.canBeSkipped = false;
+                g_pScanPrioritizer->RegisterScanner(si.name, si);
+
+                si.name = "DeviceObjectScanner"; si.displayName = "Device Object Scanner"; si.priority = ScanPriority::HIGH; si.pathType = ScanPathType::HOT_PATH; si.minIntervalMs = 2000; si.canBeSkipped = false;
+                g_pScanPrioritizer->RegisterScanner(si.name, si);
+
+            si.name = "NetworkArtifactScanner"; si.displayName = "Network Artifact Scanner"; si.priority = ScanPriority::NORMAL; si.pathType = ScanPathType::WARM_PATH; si.minIntervalMs = 5000; si.canBeSkipped = true;
+            g_pScanPrioritizer->RegisterScanner(si.name, si);
+            }
+            LogIfEnabled(L"[Oblivion] Scan Prioritization Manager initialized\n");
+        } catch (...) {
+            g_pScanPrioritizer = nullptr;
+            LogIfEnabled(L"[Oblivion] Scan Prioritization Manager failed to initialize\n");
+        }
+    }
+
+    // ===== PRIORITY 4.3.2: Initialize Adaptive Polling Manager =====
+    if (g_cfg.enableAdaptivePolling) {
+        try {
+            AdaptivePollingConfig apCfg;
+            apCfg.enableAdaptivePolling = g_cfg.enableAdaptivePolling;
+            apCfg.baseIntervalMs = g_cfg.periodicScanIntervalMs;
+            apCfg.minIntervalMs = g_cfg.adaptiveMinIntervalMs;
+            apCfg.maxIntervalMs = g_cfg.adaptiveMaxIntervalMs;
+            apCfg.minChangeCooldownMs = g_cfg.adaptiveChangeCooldownMs;
+            apCfg.minChangePercent = g_cfg.adaptiveMinChangePercent;
+            apCfg.mediumRateThreshold = g_cfg.adaptiveMediumRateThreshold;
+            apCfg.highRateThreshold = g_cfg.adaptiveHighRateThreshold;
+            apCfg.criticalRateThreshold = g_cfg.adaptiveCriticalRateThreshold;
+            apCfg.cpuLowPercent = g_cfg.adaptiveCpuLowPercent;
+            apCfg.cpuHighPercent = g_cfg.adaptiveCpuHighPercent;
+
+            g_pAdaptivePollingManager = new AdaptivePollingManager(apCfg);
+            // Note: PeriodicScanner not yet created; bind it inside SchedulePeriodicScans after g_pPeriodic exists
+            g_pAdaptivePolling = g_pAdaptivePollingManager; // set global alias
+            LogIfEnabled(L"[Oblivion] Adaptive Polling Manager initialized\n");
+        } catch (...) {
+            g_pAdaptivePollingManager = nullptr;
+            LogIfEnabled(L"[Oblivion] Adaptive Polling Manager failed to initialize\n");
         }
     }
 
@@ -1405,6 +1601,7 @@ static DWORD WINAPI InitThreadProc(LPVOID)
             g_pMemScanner->SetMinRegionSize(g_cfg.suspMemMinRegionSize);
             g_pMemScanner->SetEnablePatternAnalysis(g_cfg.suspMemEnablePatternAnalysis);
             g_pMemScanner->SetEnableEntropyCheck(g_cfg.suspMemEnableEntropyCheck);
+            g_pMemScanner->SetEnableSIMD(g_cfg.enableSimdAcceleration);
             g_pMemScanner->SetFlagRWX(g_cfg.suspMemFlagRWX);
             g_pMemScanner->SetFlagPrivateExecutable(g_cfg.suspMemFlagPrivateExecutable);
         } catch (...) {
@@ -1460,6 +1657,12 @@ static DWORD WINAPI InitThreadProc(LPVOID)
     }
 
     SchedulePeriodicScans();
+
+    // ===== PRIORITY 4.3.3: SIMD Benchmark (optional) =====
+    if (g_cfg.enableSimdBenchmark) {
+        LogIfEnabled(L"[Oblivion] Running SIMD benchmark...\n");
+        RunSimdBenchmark(g_cfg.simdBenchmarkIterations);
+    }
 
     try {
         g_pWatcher = new ProcessThreadWatcher();
@@ -1698,8 +1901,10 @@ static void CleanupGlobals()
     if (g_pSigMgr) { g_pSigMgr->Stop(); delete g_pSigMgr; g_pSigMgr = nullptr; }
     if (g_pSignatureDB) { delete g_pSignatureDB; g_pSignatureDB = nullptr; }
     // ===== PRIORITY 4: Cleanup Infrastructure Modules =====
-    if (g_pAdaptiveThresholdManager) { delete g_pAdaptiveThresholdManager; g_pAdaptiveThresholdManager = nullptr; g_pAdaptiveThresholdManager = nullptr; }
-    if (g_pMLAnomalyDetector) { delete g_pMLAnomalyDetector; g_pMLAnomalyDetector = nullptr; g_pMLAnomalyDetector = nullptr; }
+    if (g_pScanPrioritizer) { g_pScanPrioritizer->Shutdown(); delete g_pScanPrioritizer; g_pScanPrioritizer = nullptr; }
+    if (g_pAdaptiveThresholdManager) { delete g_pAdaptiveThresholdManager; g_pAdaptiveThresholdManager = nullptr; }
+    if (g_pAdaptivePollingManager) { delete g_pAdaptivePollingManager; g_pAdaptivePollingManager = nullptr; g_pAdaptivePolling = nullptr; }
+    if (g_pMLAnomalyDetector) { delete g_pMLAnomalyDetector; g_pMLAnomalyDetector = nullptr; }
     if (g_pMLFeatureExtractor) { delete g_pMLFeatureExtractor; g_pMLFeatureExtractor = nullptr; }
     if (g_pTelemetryCollector) { g_pTelemetryCollector->Stop(); delete g_pTelemetryCollector; g_pTelemetryCollector = nullptr; g_pTelemetry = nullptr; }
     // Cleanup CE detection modules
