@@ -291,25 +291,69 @@ bool MemoryIntegrity::CheckPageProtection() {
         LOG_INFO("MemoryIntegrity: Debugger detected, protection change warnings are suppressed.");
         return false;
     }
+    auto normalizeProt = [](DWORD p) -> DWORD {
+        // Mask out PAGE_GUARD, PAGE_NOCACHE, PAGE_WRITECOMBINE noise flags
+        return p & ~(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
+    };
+
+    auto isTextRegion = [](const std::string& name) -> bool {
+        return name.find("::text") != std::string::npos;
+    };
+
     for (auto& pair : m_regions) {
         CriticalRegion& region = pair.second;
         DWORD currentProtection = 0;
         if (GetMemoryProtection(region.baseAddress, currentProtection)) {
-            if (currentProtection != region.originalProtection) {
-                MemoryModification mod = {};
-                mod.address = region.baseAddress;
-                mod.size = region.size;
-                mod.regionName = region.name;
-                mod.modificationType = "PROTECTION_CHANGED";
-                mod.expectedProtection = region.originalProtection;
-                mod.actualProtection = currentProtection;
-                mod.timestamp = now;
-                m_modifications.push_back(mod);
-                region.violationCount++;
-                protectionChanged = true;
-                LOG_WARNING_FMT("MemoryIntegrity: Protection changed in region '%s' at 0x%p (expected: 0x%X, actual: 0x%X)",
-                               region.name.c_str(), region.baseAddress, region.originalProtection, currentProtection);
-                // Update current protection
+            // Normalize to ignore auxiliary flags
+            currentProtection = normalizeProt(currentProtection);
+            DWORD lastProtection = normalizeProt(region.currentProtection);
+
+            // Only react if protection actually changed since last check
+            if (currentProtection != lastProtection) {
+                bool textRegion = isTextRegion(region.name);
+                bool allowedTextProt = textRegion &&
+                    (currentProtection == PAGE_EXECUTE_READ || currentProtection == PAGE_EXECUTE_WRITECOPY);
+
+                if (allowedTextProt) {
+                    // Benign transition for .text: READ/WRITECOPY/EXECUTE_READ toggles
+                    LOG_INFO_FMT("MemoryIntegrity: Protection updated for text region '%s' at 0x%p (prev: 0x%X, now: 0x%X)",
+                                 region.name.c_str(), region.baseAddress, lastProtection, currentProtection);
+                } else {
+                    // If region is .text and becomes EXECUTE_READWRITE, this can be legitimate during patching.
+                    // If content hash hasn't changed, lower severity (no violation count increment).
+                    bool loweredSeverity = false;
+                    if (textRegion && currentProtection == PAGE_EXECUTE_READWRITE) {
+                        bool hashSame = false;
+                        if (region.usesSHA256) {
+                            hashSame = (CalculateSHA256(region.baseAddress, region.size) == region.expectedSHA256);
+                        } else {
+                            hashSame = (CalculateCRC32(region.baseAddress, region.size) == region.expectedCRC32);
+                        }
+                        if (hashSame) {
+                            LOG_INFO_FMT("MemoryIntegrity: Text region temporarily writeable but hash unchanged '%s' at 0x%p (prev: 0x%X, now: 0x%X)",
+                                         region.name.c_str(), region.baseAddress, lastProtection, currentProtection);
+                            loweredSeverity = true;
+                        }
+                    }
+
+                    if (!loweredSeverity) {
+                        MemoryModification mod = {};
+                        mod.address = region.baseAddress;
+                        mod.size = region.size;
+                        mod.regionName = region.name;
+                        mod.modificationType = "PROTECTION_CHANGED";
+                        mod.expectedProtection = region.currentProtection; // previous observed protection
+                        mod.actualProtection = currentProtection;
+                        mod.timestamp = now;
+                        m_modifications.push_back(mod);
+                        protectionChanged = true;
+                        region.violationCount++;
+                        LOG_WARNING_FMT("MemoryIntegrity: Protection changed in region '%s' at 0x%p (prev: 0x%X, now: 0x%X)",
+                                        region.name.c_str(), region.baseAddress, lastProtection, currentProtection);
+                    }
+                }
+
+                // Update current protection to suppress repeated logs while state is stable
                 region.currentProtection = currentProtection;
             }
         }

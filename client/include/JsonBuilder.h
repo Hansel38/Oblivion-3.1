@@ -1,12 +1,5 @@
-// Utility: Convert std::wstring to UTF-8 std::string
-inline std::string WToUtf8(const std::wstring& ws) {
-    if (ws.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(len, 0);
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &s[0], len, nullptr, nullptr);
-    return s;
-}
 #pragma once
+#include "Encoding.h"
 #include <windows.h>
 #include <string>
 

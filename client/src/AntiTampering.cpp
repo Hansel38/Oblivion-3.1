@@ -661,6 +661,45 @@ namespace ObfuscatedAPI {
     }
 }
 
+// ===== UTILITIES =====
+namespace AntiTamperingUtils {
+    bool PatchCodeOnce(void* target, const void* data, size_t size) {
+        if (!target || !data || size == 0) return false;
+
+        SYSTEM_INFO si{}; GetSystemInfo(&si);
+        const size_t pageSize = si.dwPageSize ? si.dwPageSize : 0x1000;
+
+        BYTE* start = static_cast<BYTE*>(target);
+        BYTE* pageBase = reinterpret_cast<BYTE*>(reinterpret_cast<uintptr_t>(start) & ~(pageSize - 1));
+        size_t offset = static_cast<size_t>(start - pageBase);
+        size_t total = offset + size;
+        size_t protectSize = ((total + pageSize - 1) / pageSize) * pageSize;
+
+        DWORD oldProt = 0;
+        if (!ObfuscatedAPI::ObfVirtualProtect(pageBase, protectSize, PAGE_EXECUTE_READWRITE, &oldProt)) {
+            return false;
+        }
+
+        // Single, atomic write
+        memcpy(start, data, size);
+
+        // Flush instruction cache via obfuscated resolver if available; fallback to direct API
+        using PFN_FlushInstructionCache = BOOL (WINAPI*)(HANDLE, LPCVOID, SIZE_T);
+        BOOL flushed = FALSE;
+        if (g_pApiResolver) {
+            auto pFlush = g_pApiResolver->GetAPITyped<PFN_FlushInstructionCache>("kernel32.dll", "FlushInstructionCache");
+            if (pFlush) flushed = pFlush(GetCurrentProcess(), start, size);
+        }
+        if (!flushed) {
+            flushed = FlushInstructionCache(GetCurrentProcess(), start, size);
+        }
+
+        DWORD dummy = 0;
+        ObfuscatedAPI::ObfVirtualProtect(pageBase, protectSize, oldProt, &dummy);
+        return TRUE == flushed;
+    }
+}
+
 // ===== ENCRYPTED SIGNATURES DEFINITIONS =====
 
 // (EncryptedSignatures removed; use OBFUSCATE inline where needed)

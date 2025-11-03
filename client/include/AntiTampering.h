@@ -262,4 +262,19 @@ namespace ObfuscatedAPI {
     HWND ObfFindWindowW(LPCWSTR lpClassName, LPCWSTR lpWindowName);
 }
 
+// ===== UTILITIES =====
+// Safe code patching helper for one-shot inline patches on executable code.
+// Contract:
+// - Inputs: target (address to patch), data (buffer with bytes), size (byte length)
+// - Behavior: page-aligns range, temporarily sets PAGE_EXECUTE_READWRITE, writes once,
+//             flushes instruction cache, and restores the original protection immediately.
+// - Returns: true on success; false if VirtualProtect fails before write.
+// Notes:
+// - Use for atomic patches only; avoid repeated toggling in loops.
+// - Prefer other hooking methods (IAT/EAT, trampolines in separate RX pages, MinHook/Detours)
+//   when feasible to keep .text readonly most of the time.
+namespace AntiTamperingUtils {
+    bool PatchCodeOnce(void* target, const void* data, size_t size);
+}
+
 // (EncryptedSignatures removed; prefer using OBFUSCATE/OBFUSCATE_W inline)
