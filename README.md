@@ -1,8 +1,59 @@
-# Oblivion Anti-Cheat � Process & Thread Watcher
+# Oblivion Anti-Cheat � Process & Thread Watcher
 
 ## Overview
 Oblivion is a modular anti-cheat system for games, featuring a client DLL (for injection into the game process) and a server (for receiving detection reports).
 This module implements the **Process & Thread Watcher**: it scans for blacklisted/suspicious processes and threads, reports detections to the server, notifies the user, and closes the game if necessary.
+
+---
+
+## Phase 10: Anti‑Tampering & Obfuscation (NEW)
+
+Oblivion 3.1 adds a stealth layer to resist reverse‑engineering and bypasses:
+
+- Compile‑time string encryption via `OBFUSCATE/OBFUSCATE_W` (no plaintext CE signatures in the binary)
+- Obfuscated API calls via dynamic resolution (bypass IAT hooks): `ObfuscatedAPI::ObfEnumWindows`, etc.
+- Code self‑integrity checks (periodic verification of `.text` section and critical functions)
+- Anti‑dumping (detects common dump/debug tools like ProcessHacker, x64dbg, IDA, procdump)
+
+### How to use string encryption
+
+```
+// Before (plaintext in .rdata):
+if (title.find(L"cheatengine") != std::wstring::npos) { ... }
+
+// After (compile‑time XOR encryption; decrypted only at runtime):
+if (title.find(OBFUSCATE_W("cheatengine")) != std::wstring::npos) { ... }
+```
+
+### How to use obfuscated API wrappers
+
+```
+// Before (hookable via IAT):
+EnumWindows(EnumProc, lParam);
+
+// After (dynamic resolution, bypass IAT):
+ObfuscatedAPI::ObfEnumWindows(EnumProc, lParam);
+```
+
+### Configuration (client_config.json additions)
+
+```
+"enableAntiTampering": true,
+"antiTamperingCheckIntervalMs": 5000,
+"enableCodeIntegritySelfCheck": true,
+"enableAntiDumping": true,
+"cooldownAntiTamperingMs": 30000
+```
+
+### Quick test checklist
+
+1) String encryption: Build Release, open `client.dll` in a hex viewer; search for: `TfrmCheatEngine`, `cheatengine`, `\\Device\\DBK`, `dbk`, `cedriver`, `speedhack` → expected: not found.
+
+2) API obfuscation: Set an IAT hook on `EnumWindows` and trigger CE window scan → expected: your hook is not hit (because we use `ObfEnumWindows`).
+
+3) Code integrity: Patch a byte in `.text` (e.g., a NOP) while running → expected detection in ~5s with reason "Anti‑cheat tampering detected".
+
+4) Anti‑dumping: Start ProcessHacker/x64dbg/procdump while the game is running → expected detection in ~5s.
 
 ---
 
@@ -193,4 +244,4 @@ Fitur ini akan otomatis melewati signature check untuk file yang namanya sesuai 
 
 ---
 
-FEATURE COMPLETE � Process & Thread Watcher
+FEATURE COMPLETE � Process & Thread Watcher

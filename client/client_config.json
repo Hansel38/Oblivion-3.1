@@ -178,5 +178,11 @@
   "statistics_update_interval_ms": 30000,
   "enable_simd_acceleration": true,
   "enable_simd_benchmark": false,
-  "simd_benchmark_iterations": 5
+  "simd_benchmark_iterations": 5,
+  
+  "enableAntiTampering": true,
+  "antiTamperingCheckIntervalMs": 5000,
+  "enableCodeIntegritySelfCheck": true,
+  "enableAntiDumping": true,
+  "cooldownAntiTamperingMs": 30000
 }

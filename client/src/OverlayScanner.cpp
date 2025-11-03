@@ -3,6 +3,7 @@
 #include "blacklist_overlay.h"
 #include <algorithm>
 #include <tlhelp32.h>
+#include "AntiTampering.h"
 
 OverlayScanner::OverlayScanner() {}
 
@@ -27,7 +28,7 @@ bool OverlayScanner::RunOnceScan(OverlayFinding& finding)
         return TRUE;
     };
 
-    EnumWindows((WNDENUMPROC)enumThunk, reinterpret_cast<LPARAM>(&pack));
+    ObfuscatedAPI::ObfEnumWindows((WNDENUMPROC)enumThunk, reinterpret_cast<LPARAM>(&pack));
     return finding.indicators >= m_closeThreshold;
 }
 

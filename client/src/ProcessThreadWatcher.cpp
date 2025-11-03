@@ -11,6 +11,7 @@
 #include <winver.h>
 #include <map>
 #include <mutex>
+#include "AntiTampering.h"
 
 #pragma comment(lib, "version.lib")
 
@@ -108,7 +109,7 @@ static bool AnyWindowTextContains(DWORD pid, const std::vector<std::wstring>& to
     std::pair<std::wstring*, std::wstring*> outs{ &winTitle, &winClass };
     std::pair<std::vector<std::wstring>*, std::pair<std::wstring*, std::wstring*>> inner{ const_cast<std::vector<std::wstring>*>(&tokens), outs };
     std::pair<DWORD, decltype(inner)> pack{ pid, inner };
-    if (!EnumWindows(Local::EnumProc, reinterpret_cast<LPARAM>(&pack))) return true; // found and stopped
+    if (!ObfuscatedAPI::ObfEnumWindows(Local::EnumProc, reinterpret_cast<LPARAM>(&pack))) return true; // found and stopped
     return false;
 }
 

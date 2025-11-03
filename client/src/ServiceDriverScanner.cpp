@@ -6,6 +6,7 @@
 #include <algorithm>
 
 // Returns true if any kernel driver service name/path suggests Cheat Engine (dbk/cedriver)
+#include "AntiTampering.h"
 static bool EnumCeDriverServices(std::wstring& outService, std::wstring& outPath)
 {
  SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, GENERIC_READ);
@@ -47,8 +48,10 @@ static bool EnumCeDriverServices(std::wstring& outService, std::wstring& outPath
  std::wstring disp = entries[i].lpDisplayName ? entries[i].lpDisplayName : L"";
  auto low = [](std::wstring s){ std::transform(s.begin(), s.end(), s.begin(), ::towlower); return s; };
  std::wstring nlow = low(name), dlow = low(disp);
- if (nlow.find(L"dbk") != std::wstring::npos || nlow.find(L"cedriver") != std::wstring::npos ||
- dlow.find(L"dbk") != std::wstring::npos || dlow.find(L"cedriver") != std::wstring::npos) {
+ const std::wstring dbkTok = OBFUSCATE_W("dbk");
+ const std::wstring ceDrvTok = OBFUSCATE_W("cedriver");
+ if (nlow.find(dbkTok) != std::wstring::npos || nlow.find(ceDrvTok) != std::wstring::npos ||
+	 dlow.find(dbkTok) != std::wstring::npos || dlow.find(ceDrvTok) != std::wstring::npos) {
  // query config for path
  SC_HANDLE svc = OpenServiceW(scm, entries[i].lpServiceName, SERVICE_QUERY_CONFIG);
  if (svc) {

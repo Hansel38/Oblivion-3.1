@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "DeviceObjectScanner.h"
+#include "AntiTampering.h"
 #include <winternl.h>
 #include <algorithm>
 
@@ -168,10 +169,14 @@ bool DeviceObjectScanner::ScanDeviceObjects(DeviceObjectFinding& outFinding)
             std::transform(objLower.begin(), objLower.end(), objLower.begin(), ::towlower);
 
             // Check against known patterns
-            if (objLower.find(L"dbk") != std::wstring::npos ||
-                objLower.find(L"cedriver") != std::wstring::npos ||
-                objLower.find(L"speedhack") != std::wstring::npos ||
-                objLower.find(L"kernelcheatengine") != std::wstring::npos) {
+            const std::wstring dbkTok = OBFUSCATE_W("dbk");
+            const std::wstring ceDrvTok = OBFUSCATE_W("cedriver");
+            const std::wstring speedTok = OBFUSCATE_W("speedhack");
+            const std::wstring kceTok = OBFUSCATE_W("kernelcheatengine");
+            if (objLower.find(dbkTok) != std::wstring::npos ||
+                objLower.find(ceDrvTok) != std::wstring::npos ||
+                objLower.find(speedTok) != std::wstring::npos ||
+                objLower.find(kceTok) != std::wstring::npos) {
                 
                 int score = 5; // Direct match to known CE pattern
                 
@@ -210,8 +215,10 @@ bool DeviceObjectScanner::ScanSymbolicLinks(DeviceObjectFinding& outFinding)
             std::transform(linkLower.begin(), linkLower.end(), linkLower.begin(), ::towlower);
 
             // Check for DBK/CE symbolic links
-            if (linkLower.find(L"dbk") != std::wstring::npos ||
-                linkLower.find(L"cedriver") != std::wstring::npos) {
+            const std::wstring dbkTok2 = OBFUSCATE_W("dbk");
+            const std::wstring ceDrvTok2 = OBFUSCATE_W("cedriver");
+            if (linkLower.find(dbkTok2) != std::wstring::npos ||
+                linkLower.find(ceDrvTok2) != std::wstring::npos) {
                 
                 int score = 5;
                 

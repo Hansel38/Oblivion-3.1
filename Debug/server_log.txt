@@ -13,3 +13,24 @@
 [Sun Nov  2 15:14:05 2025] Client connected from 127.0.0.1
 [Sun Nov  2 15:14:05 2025] [DETECTION v1] subtype=heartbeat, pid=18552, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
 [Sun Nov  2 15:14:05 2025] [REASON] heartbeat
+[Mon Nov  3 22:24:12 2025] Server started on port 4000
+[Mon Nov  3 22:24:38 2025] Client connected from 127.0.0.1
+[Mon Nov  3 22:24:38 2025] [DETECTION v1] subtype=process, pid=13060, process='process', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=5 [HMAC=OK]
+[Mon Nov  3 22:24:38 2025] [REASON] Cheat Engine artifact: module 'cheatengine-i386.exe' in 'C:\Program Files\Cheat Engine\cheatengine-i386.exe'
+[Mon Nov  3 22:47:17 2025] Server started on port 4000
+[Mon Nov  3 22:47:38 2025] Client connected from 127.0.0.1
+[Mon Nov  3 22:47:38 2025] [DETECTION v1] subtype=heartbeat, pid=1532, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Mon Nov  3 22:47:38 2025] [REASON] heartbeat
+[Mon Nov  3 22:50:04 2025] Server started on port 4000
+[Mon Nov  3 22:50:40 2025] Client connected from 127.0.0.1
+[Mon Nov  3 22:50:40 2025] [DETECTION v1] subtype=heartbeat, pid=4204, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Mon Nov  3 22:50:40 2025] [REASON] heartbeat
+[Mon Nov  3 22:51:10 2025] Client connected from 127.0.0.1
+[Mon Nov  3 22:51:10 2025] [DETECTION v1] subtype=heartbeat, pid=4204, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Mon Nov  3 22:51:10 2025] [REASON] heartbeat
+[Mon Nov  3 22:51:10 2025] Client connected from 127.0.0.1
+[Tue Nov  4 00:03:07 2025] Server started on port 4000
+[Tue Nov  4 00:03:43 2025] Client connected from 127.0.0.1
+[Tue Nov  4 00:03:43 2025] [DETECTION v1] subtype=heartbeat, pid=11000, process='RRO.exe', hwid=af150cb029556c4ebfbbf2ec8199cae4fe2b9b688c2d76eda6b597b95630452b, client=0.2.0, indicators=0 [HMAC=OK]
+[Tue Nov  4 00:03:43 2025] [REASON] heartbeat
+[Tue Nov  4 00:57:34 2025] Server started on port 4000

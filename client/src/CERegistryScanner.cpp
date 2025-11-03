@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "CERegistryScanner.h"
+#include "AntiTampering.h"
 #include <vector>
 
 static std::wstring ToLower(const std::wstring& s){ std::wstring t=s; for(auto& c:t) c=(wchar_t)towlower(c); return t; }
@@ -23,18 +24,18 @@ void CERegistryScanner::EnumerateValues(HKEY hKey, int& indicators, std::wstring
         if (r != ERROR_SUCCESS) break;
         std::wstring n(name);
         std::wstring nl = ToLower(n);
-        if (nl.find(L"mru") != std::wstring::npos || nl.find(L"recent") != std::wstring::npos) {
+    if (nl.find(OBFUSCATE_W("mru")) != std::wstring::npos || nl.find(OBFUSCATE_W("recent")) != std::wstring::npos) {
             indicators += 2;
             reason += L"MRU entry: '" + n + L"'; ";
         }
-        if (nl.find(L"scan") != std::wstring::npos || nl.find(L"address") != std::wstring::npos) {
+    if (nl.find(OBFUSCATE_W("scan")) != std::wstring::npos || nl.find(OBFUSCATE_W("address")) != std::wstring::npos) {
             indicators += 1;
             reason += L"Scan-related setting: '" + n + L"'; ";
         }
         if (type == REG_SZ && dataSize >= sizeof(wchar_t)) {
             std::wstring val((wchar_t*)dataBuf, dataSize/sizeof(wchar_t) - 1);
             std::wstring vl = ToLower(val);
-            if (vl.find(L".ct") != std::wstring::npos || vl.find(L"cheat") != std::wstring::npos) {
+            if (vl.find(OBFUSCATE_W(".ct")) != std::wstring::npos || vl.find(OBFUSCATE_W("cheat")) != std::wstring::npos) {
                 indicators += 2;
                 reason += L"Recent file: '" + val + L"'; ";
             }
@@ -66,9 +67,9 @@ bool CERegistryScanner::RunOnceScan(RegistryFinding& out)
 {
     out = {};
     // 1) Check for CE key presence
-    const wchar_t* CEKEY = L"Software\\Cheat Engine";
+    const std::wstring CEKEY = OBFUSCATE_W("Software\\Cheat Engine");
     HKEY h{};
-    LONG r = RegOpenKeyExW(HKEY_CURRENT_USER, CEKEY, 0, KEY_READ, &h);
+    LONG r = RegOpenKeyExW(HKEY_CURRENT_USER, CEKEY.c_str(), 0, KEY_READ, &h);
     if (r != ERROR_SUCCESS) {
         return false; // no CE key found
     }
@@ -83,7 +84,7 @@ bool CERegistryScanner::RunOnceScan(RegistryFinding& out)
     RegCloseKey(h);
 
     // 3) Additional heuristics: look for portable CE traces under HKCU\Software\Classes
-    if (KeyExists(HKEY_CURRENT_USER, L"Software\\Classes\\.ct")) {
+    if (KeyExists(HKEY_CURRENT_USER, OBFUSCATE_W("Software\\Classes\\.ct").c_str())) {
         out.indicators += 1; out.reason += L"File association for .ct present; ";
     }
 

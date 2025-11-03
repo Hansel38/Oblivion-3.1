@@ -267,6 +267,23 @@ struct ClientConfig {
     bool enableSimdAcceleration = true;                  // Use SSE2/AVX2 accelerated paths when available
     bool enableSimdBenchmark = false;                    // Run SIMD benchmark on startup and log results
     int simdBenchmarkIterations = 5;                     // Number of iterations for benchmark averaging
+
+    // ===== PRIORITY 4.4: Memory Integrity Monitor =====
+    bool enableMemoryIntegrity = true;                   // Enable memory integrity monitoring
+    DWORD memoryIntegrityCheckIntervalMs = 2000;         // Check interval for periodic validation
+    int memoryIntegrityViolationThreshold = 3;           // Number of violations before triggering detection
+    bool memoryIntegrityUseSHA256 = false;               // Use SHA256 instead of CRC32 (slower but more secure)
+    bool memoryIntegrityDetectApiHooks = true;           // Detect VirtualProtect/VirtualAlloc hooks
+    bool memoryIntegrityAutoRegisterTextSections = true; // Auto-register all .text sections on startup
+    bool memoryIntegrityEnableBackgroundMonitoring = true; // Run monitoring in background thread
+    DWORD cooldownMemoryIntegrityMs = 20000;             // Cooldown for memory integrity detections
+
+        // ===== PRIORITY 4.5: Anti-Tampering System =====
+        bool enableAntiTampering = true;                     // Enable anti-tampering protection
+        DWORD antiTamperingCheckIntervalMs = 5000;           // Check interval for self-integrity validation
+        bool enableCodeIntegritySelfCheck = true;            // Enable code self-integrity checking
+        bool enableAntiDumping = true;                       // Enable anti-dumping tool detection
+        DWORD cooldownAntiTamperingMs = 30000;               // Cooldown for anti-tampering detections
 };
 
 

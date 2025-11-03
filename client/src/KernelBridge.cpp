@@ -12,14 +12,7 @@ static NetworkClient* g_kbNet = nullptr;
 static std::atomic<bool> g_kbDisabled{false};
 static HANDLE g_kbDriverHandle = INVALID_HANDLE_VALUE;
 
-static std::string WToUtf8(const std::wstring& ws)
-{
-    if (ws.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(len, 0);
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &s[0], len, nullptr, nullptr);
-    return s;
-}
+// Use inline WToUtf8 from JsonBuilder.h
 
 static bool ProbeDriverOnce()
 {

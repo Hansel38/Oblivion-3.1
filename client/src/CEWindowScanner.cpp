@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "CEWindowScanner.h"
+#include "AntiTampering.h"
 #include <vector>
 
 static std::wstring ToLower(const std::wstring& s){ std::wstring t=s; for(auto& c:t) c=(wchar_t)towlower(c); return t; }
@@ -16,9 +17,10 @@ bool CEWindowScanner::IsCheatEngineTitleFuzzy(const std::wstring& title)
     for (auto& c: t) c=(wchar_t)towlower(c);
     std::wstring s; s.reserve(t.size());
     for (wchar_t c: t) { if ((c>=L'a'&&c<=L'z')) s.push_back(c); }
-    if (s.find(L"cheatengine") != std::wstring::npos) return true;
+    const std::wstring ceTok = OBFUSCATE_W("cheatengine");
+    if (s.find(ceTok) != std::wstring::npos) return true;
     // fuzzy subsequence: c h e a t e n g i n e
-    const std::wstring pat = L"cheatengine";
+    const std::wstring pat = ceTok;
     return SubsequenceMatch(s, pat);
 }
 
@@ -27,14 +29,14 @@ static BOOL CALLBACK EnumChildTextProc(HWND h, LPARAM lp)
     // 1) Check child control class names (Delphi/Lazarus typical classes)
     wchar_t cls[128]; cls[0] = 0; GetClassNameW(h, cls, 127);
     std::wstring lcls = ToLower(cls);
-    static const wchar_t* classTokens[] = {
-        L"tbutton", L"tpanel", L"tlistview", L"ttreeview", L"tstatusbar", L"ttoolbar",
-        L"tpagecontrol", L"ttabcontrol", L"tcombobox", L"tedit", L"tcheckbox", L"tlistbox",
-        L"tstringgrid", L"tprogressbar", L"tmenuitem"
+    static const std::wstring classTokens[] = {
+        OBFUSCATE_W("tbutton"), OBFUSCATE_W("tpanel"), OBFUSCATE_W("tlistview"), OBFUSCATE_W("ttreeview"), OBFUSCATE_W("tstatusbar"), OBFUSCATE_W("ttoolbar"),
+        OBFUSCATE_W("tpagecontrol"), OBFUSCATE_W("ttabcontrol"), OBFUSCATE_W("tcombobox"), OBFUSCATE_W("tedit"), OBFUSCATE_W("tcheckbox"), OBFUSCATE_W("tlistbox"),
+        OBFUSCATE_W("tstringgrid"), OBFUSCATE_W("tprogressbar"), OBFUSCATE_W("tmenuitem")
     };
-    for (auto* tok : classTokens) {
-        std::wstring t = tok; if (!t.empty() && lcls.find(t) != std::wstring::npos) { *(bool*)lp = true; return FALSE; }
-    }
+        for (const auto& tok : classTokens) {
+            const std::wstring& t = tok; if (!t.empty() && lcls.find(t) != std::wstring::npos) { *(bool*)lp = true; return FALSE; }
+        }
 
     // 2) Check child window text tokens typical for CE UI
     int len = GetWindowTextLengthW(h);
@@ -44,13 +46,13 @@ static BOOL CALLBACK EnumChildTextProc(HWND h, LPARAM lp)
         if (!text.empty() && text.back() == L'\0') text.pop_back();
         std::wstring lt = ToLower(text);
         // common CE controls/labels/buttons
-        static const wchar_t* tokens[] = {
-            L"first scan", L"next scan", L"new scan", L"value", L"type", L"scan type", L"memory view",
-            L"add address manually", L"found", L"addresses", L"hex", L"float", L"double",
-            L"exact value", L"unknown initial value", L"scan settings", L"writable", L"readable",
-            L"fast scan", L"pause the game"
+        static const std::wstring tokens[] = {
+            OBFUSCATE_W("first scan"), OBFUSCATE_W("next scan"), OBFUSCATE_W("new scan"), OBFUSCATE_W("value"), OBFUSCATE_W("type"), OBFUSCATE_W("scan type"), OBFUSCATE_W("memory view"),
+            OBFUSCATE_W("add address manually"), OBFUSCATE_W("found"), OBFUSCATE_W("addresses"), OBFUSCATE_W("hex"), OBFUSCATE_W("float"), OBFUSCATE_W("double"),
+            OBFUSCATE_W("exact value"), OBFUSCATE_W("unknown initial value"), OBFUSCATE_W("scan settings"), OBFUSCATE_W("writable"), OBFUSCATE_W("readable"),
+            OBFUSCATE_W("fast scan"), OBFUSCATE_W("pause the game")
         };
-        for (auto* tok : tokens) { std::wstring t = tok; if (lt.find(t) != std::wstring::npos) { *(bool*)lp = true; return FALSE; } }
+        for (const auto& tok : tokens) { const std::wstring& t = tok; if (lt.find(t) != std::wstring::npos) { *(bool*)lp = true; return FALSE; } }
     }
     return TRUE;
 }
@@ -69,14 +71,14 @@ static BOOL CALLBACK EnumChildCountProc(HWND h, LPARAM lp)
     // Class name check
     wchar_t cls[128]; cls[0] = 0; GetClassNameW(h, cls, 127);
     std::wstring lcls = ToLower(cls);
-    static const wchar_t* classTokens[] = {
+    static const std::wstring classTokens[] = {
         L"tbutton", L"tpanel", L"tlistview", L"ttreeview", L"tstatusbar", L"ttoolbar",
         L"tpagecontrol", L"ttabcontrol", L"tcombobox", L"tedit", L"tcheckbox", L"tlistbox",
         L"tstringgrid", L"tprogressbar", L"tmenuitem"
     };
     bool classHit = false;
-    for (auto* tok : classTokens) {
-        std::wstring t = tok;
+    for (const auto& tok : classTokens) {
+        const std::wstring& t = tok;
         if (!t.empty() && lcls.find(t) != std::wstring::npos) { classHit = true; break; }
     }
     if (classHit) st->classHits += 1;
@@ -88,14 +90,14 @@ static BOOL CALLBACK EnumChildCountProc(HWND h, LPARAM lp)
         GetWindowTextW(h, &text[0], len + 1);
         if (!text.empty() && text.back() == L'\0') text.pop_back();
         std::wstring lt = ToLower(text);
-        static const wchar_t* tokens[] = {
-            L"first scan", L"next scan", L"new scan", L"value", L"type", L"scan type", L"memory view",
-            L"add address manually", L"found", L"addresses", L"hex", L"float", L"double",
-            L"exact value", L"unknown initial value", L"scan settings", L"writable", L"readable",
-            L"fast scan", L"pause the game"
+        static const std::wstring tokens[] = {
+            OBFUSCATE_W("first scan"), OBFUSCATE_W("next scan"), OBFUSCATE_W("new scan"), OBFUSCATE_W("value"), OBFUSCATE_W("type"), OBFUSCATE_W("scan type"), OBFUSCATE_W("memory view"),
+            OBFUSCATE_W("add address manually"), OBFUSCATE_W("found"), OBFUSCATE_W("addresses"), OBFUSCATE_W("hex"), OBFUSCATE_W("float"), OBFUSCATE_W("double"),
+            OBFUSCATE_W("exact value"), OBFUSCATE_W("unknown initial value"), OBFUSCATE_W("scan settings"), OBFUSCATE_W("writable"), OBFUSCATE_W("readable"),
+            OBFUSCATE_W("fast scan"), OBFUSCATE_W("pause the game")
         };
-        for (auto* tok : tokens) {
-            std::wstring t = tok;
+        for (const auto& tok : tokens) {
+            const std::wstring& t = tok;
             if (!t.empty() && lt.find(t) != std::wstring::npos) { st->textHits += 1; break; }
         }
     }
@@ -130,7 +132,9 @@ bool CEWindowScanner::ScanForCEWindows(WindowFinding& out)
         if (tl>0) { title.resize(tl+1); GetWindowTextW(hWnd, &title[0], tl+1); if (!title.empty() && title.back()==L'\0') title.pop_back(); }
         std::wstring lcls = ToLower(cls);
         int indicators = 0;
-        if (lcls.find(L"tmainform") != std::wstring::npos || lcls.find(L"tcemainform") != std::wstring::npos) indicators += 2;
+    const std::wstring tmain = OBFUSCATE_W("tmainform");
+    const std::wstring tcemain = OBFUSCATE_W("tcemainform");
+    if (lcls.find(tmain) != std::wstring::npos || lcls.find(tcemain) != std::wstring::npos) indicators += 2;
         if (CEWindowScanner::IsCheatEngineTitleFuzzy(title)) indicators += 2;
         // Base child control presence adds +1
         bool hasChild = CEWindowScanner::HasCEChildControls(hWnd);
@@ -152,6 +156,6 @@ bool CEWindowScanner::ScanForCEWindows(WindowFinding& out)
         return TRUE;
     };
 
-    EnumWindows((WNDENUMPROC)cb, (LPARAM)&ctx);
+    ObfuscatedAPI::ObfEnumWindows((WNDENUMPROC)cb, (LPARAM)&ctx);
     return out.detected;
 }
