@@ -13,7 +13,7 @@
   "enable_injection_scanner": true,
   "injection_threshold": 2,
   "enable_signature_validator": true,
-  "signature_threshold": 2,
+  "signature_threshold": 1,
   "module_whitelist_prefixes": "C:\\Windows\\;C:\\Program Files\\RRO\\",
   "enable_anti_suspend": true,
   "anti_suspend_heartbeat_ms": 200,
