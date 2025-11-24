@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <winternl.h> // Untuk fungsi-fungsi NT yang tidak berdokumentasi
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 // Fungsi pointer untuk NtQueryInformationProcess
 typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(
     IN HANDLE ProcessHandle,
@@ -21,9 +24,8 @@ namespace Oblivion {
         // Jalankan semua metode pemeriksaan
         if (CheckDebuggerPresentAPI() || CheckNtQueryInfoProcess() || CheckInt3Trap()) {
             // Jika salah satu metode mendeteksi debugger, hentikan client
-            std::wstring message = L"Debugger terdeteksi!\n\nClient akan ditutup.";
-            MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-            ExitProcess(0);
+            std::string details = "Debugger detected via multiple checks";
+            ReportViolationAndExit(L"", "DEBUGGER_DETECTED", details);
         }
     }
 

@@ -7,6 +7,9 @@
 #include <fstream>
 #include <algorithm>
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 // Tidak perlu konfigurasi RVA manual!
 // Sistem akan otomatis mendeteksi semua region executable dan membuat baseline CRC32.
 
@@ -355,13 +358,9 @@ namespace Oblivion {
 
                             // 1. Deteksi region mencurigakan (executable + writable)
                             if (DetectSuspiciousMemoryRegion(regionBase, regionSize)) {
-                                std::wstring message = L"Region memori mencurigakan terdeteksi!\n";
-                                message += L"Region executable dan writable secara bersamaan terdeteksi.\n";
-                                message += L"Ini biasanya menunjukkan code injection atau memory patching.\n\n";
-                                message += L"Client akan ditutup.";
-                                MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                                std::string details = "Suspicious memory region detected: executable and writable simultaneously";
                                 CloseHandle(hSnapshot);
-                                ExitProcess(0);
+                                ReportViolationAndExit(L"", "MEMORY_VIOLATION", details);
                             }
 
                             // 2. Cek integritas kode menggunakan CRC32 baseline
@@ -369,13 +368,9 @@ namespace Oblivion {
                             if (m_baselineCreated && (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
                                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(regionBase);
                                 if (VerifyRegionIntegrity(regionBase, regionSize, regionAddress)) {
-                                    std::wstring message = L"Modifikasi kode terdeteksi!\n";
-                                    message += L"CRC32 checksum tidak cocok dengan baseline.\n";
-                                    message += L"Ini menunjukkan adanya memory patching atau code modification.\n\n";
-                                    message += L"Client akan ditutup.";
-                                    MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                                    std::string details = "Code modification detected: CRC32 checksum mismatch with baseline";
                                     CloseHandle(hSnapshot);
-                                    ExitProcess(0);
+                                    ReportViolationAndExit(L"", "CODE_MODIFICATION", details);
                                 }
                             }
                         }

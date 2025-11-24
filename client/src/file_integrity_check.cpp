@@ -12,6 +12,9 @@
 #define STATUS_UNSUCCESSFUL ((NTSTATUS)0xC0000001L)
 #endif
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 #pragma comment(lib, "bcrypt.lib") // Linker library untuk CNG
 
 // DAFTAR FILE DAN HASH YANG DIHARAPKAN
@@ -43,21 +46,31 @@ namespace Oblivion {
 
             if (calculatedHash.empty()) {
                 // Gagal membaca file (mungkin tidak ada)
-                std::wstring message = L"File penting tidak ditemukan atau rusak: ";
-                message += filePair.relativePath;
-                message += L"\n\nClient akan ditutup.";
-                MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                ExitProcess(0);
+                // Konversi file path ke UTF-8 untuk details
+                std::string details_utf8;
+                int size_needed = WideCharToMultiByte(CP_UTF8, 0, &filePair.relativePath[0], (int)filePair.relativePath.size(), NULL, 0, NULL, NULL);
+                if (size_needed > 0) {
+                    details_utf8.assign(size_needed, 0);
+                    WideCharToMultiByte(CP_UTF8, 0, &filePair.relativePath[0], (int)filePair.relativePath.size(), &details_utf8[0], size_needed, NULL, NULL);
+                }
+                details_utf8 += " - File not found or corrupted";
+                
+                ReportViolationAndExit(L"", "FILE_INTEGRITY_FAILED", details_utf8);
             }
 
             // Bandingkan hash (case-insensitive)
             if (_stricmp(calculatedHash.c_str(), filePair.expectedHash.c_str()) != 0) {
                 // Hash tidak cocok, file telah dimodifikasi
-                std::wstring message = L"File telah dimodifikasi: ";
-                message += filePair.relativePath;
-                message += L"\n\nClient akan ditutup.";
-                MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                ExitProcess(0);
+                // Konversi file path ke UTF-8 untuk details
+                std::string details_utf8;
+                int size_needed = WideCharToMultiByte(CP_UTF8, 0, &filePair.relativePath[0], (int)filePair.relativePath.size(), NULL, 0, NULL, NULL);
+                if (size_needed > 0) {
+                    details_utf8.assign(size_needed, 0);
+                    WideCharToMultiByte(CP_UTF8, 0, &filePair.relativePath[0], (int)filePair.relativePath.size(), &details_utf8[0], size_needed, NULL, NULL);
+                }
+                details_utf8 += " - Hash mismatch. Expected: " + filePair.expectedHash + ", Got: " + calculatedHash;
+                
+                ReportViolationAndExit(L"", "FILE_MODIFIED", details_utf8);
             }
         }
         // Jika semua lolos, tidak ada yang perlu dilakukan

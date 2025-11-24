@@ -10,6 +10,9 @@
 #include <iostream>
 #include <vector>
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 namespace Oblivion {
     ProcessWatcher::ProcessWatcher() : m_isRunning(false) {
         m_pAntiDebug = new AntiDebug();
@@ -104,9 +107,17 @@ namespace Oblivion {
 
                 if (IsProcessBlacklisted(processName)) {
                     m_isRunning = false;
-                    std::wstring message = L"Software ilegal terdeteksi: " + processName + L"\n\nClient akan ditutup.";
-                    MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                    ExitProcess(0);
+                    
+                    // Konversi processName ke UTF-8 untuk details
+                    std::string details_utf8;
+                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), NULL, 0, NULL, NULL);
+                    if (size_needed > 0) {
+                        details_utf8.assign(size_needed, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), &details_utf8[0], size_needed, NULL, NULL);
+                    }
+                    
+                    // Panggil fungsi pelaporan global
+                    ReportViolationAndExit(L"", "PROCESS_DETECTED", details_utf8);
                 }
 
             } while (Process32Next(hSnapshot, &pe32) && m_isRunning);

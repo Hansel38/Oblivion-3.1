@@ -147,6 +147,7 @@
     <ClInclude Include="include\file_integrity_check.h" />
     <ClInclude Include="include\injection_scanner.h" />
     <ClInclude Include="include\memory_scanner.h" />
+    <ClInclude Include="include\network_reporter.h" />
     <ClInclude Include="include\overlay_scanner.h" />
     <ClInclude Include="include\process_watcher.h" />
     <ClInclude Include="pch.h" />
@@ -165,6 +166,7 @@
     <ClCompile Include="src\file_integrity_check.cpp" />
     <ClCompile Include="src\injection_scanner.cpp" />
     <ClCompile Include="src\memory_scanner.cpp" />
+    <ClCompile Include="src\network_reporter.cpp" />
     <ClCompile Include="src\overlay_scanner.cpp" />
     <ClCompile Include="src\process_watcher.cpp" />
   </ItemGroup>

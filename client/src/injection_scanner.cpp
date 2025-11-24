@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cwctype> // Untuk towlower
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 namespace Oblivion {
     InjectionScanner::InjectionScanner() {}
 
@@ -29,11 +32,16 @@ namespace Oblivion {
                 // Periksa apakah modul (DLL) ini ada di daftar hitam
                 if (IsDllBlacklisted(me32.szModule)) {
                     // Jika iya, hentikan client
-                    std::wstring message = L"Modul ilegal terdeteksi: ";
-                    message += me32.szModule;
-                    message += L"\n\nClient akan ditutup.";
-                    MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                    ExitProcess(0);
+                    // Konversi DLL name ke UTF-8 untuk details
+                    std::string details_utf8;
+                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, me32.szModule, -1, NULL, 0, NULL, NULL);
+                    if (size_needed > 0) {
+                        details_utf8.assign(size_needed - 1, 0); // -1 untuk menghilangkan null terminator
+                        WideCharToMultiByte(CP_UTF8, 0, me32.szModule, -1, &details_utf8[0], size_needed, NULL, NULL);
+                    }
+                    
+                    // Panggil fungsi pelaporan global
+                    ReportViolationAndExit(L"", "INJECTION_DETECTED", details_utf8);
                 }
 
             } while (Module32NextW(hSnapshot, &me32));

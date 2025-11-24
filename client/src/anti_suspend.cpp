@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <string>
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 namespace Oblivion {
     AntiSuspend::AntiSuspend() : m_isRunning(false) {
         // Inisialisasi heartbeat ke waktu saat ini
@@ -56,9 +59,8 @@ namespace Oblivion {
                 // Hentikan Guardian untuk mencegah race condition
                 m_isRunning = false;
 
-                std::wstring message = L"Thread pemantauan dihentikan secara paksa!\n\nClient akan ditutup.";
-                MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                ExitProcess(0);
+                std::string details = "Monitoring thread suspended or terminated - heartbeat timeout exceeded";
+                ReportViolationAndExit(L"", "THREAD_SUSPENDED", details);
             }
         }
     }

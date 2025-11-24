@@ -3,6 +3,9 @@
 #include <vector>
 #include <string>
 
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 namespace Oblivion {
     OverlayScanner::OverlayScanner() : m_gameWindow(NULL), m_gameRect{0, 0, 0, 0} {
         // Coba cari handle jendela game. "RagWindow" adalah class name default untuk Ragnarok.
@@ -76,11 +79,16 @@ namespace Oblivion {
         // - Tidak ada di whitelist
         // Ini adalah overlay ilegal!
 
-        std::wstring message = L"Overlay ilegal terdeteksi dari jendela kelas: ";
-        message += className;
-        message += L"\n\nClient akan ditutup.";
-        MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-        ExitProcess(0);
+        // Konversi className ke UTF-8 untuk details
+        std::string details_utf8;
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, className, -1, NULL, 0, NULL, NULL);
+        if (size_needed > 0) {
+            details_utf8.assign(size_needed - 1, 0); // -1 untuk menghilangkan null terminator
+            WideCharToMultiByte(CP_UTF8, 0, className, -1, &details_utf8[0], size_needed, NULL, NULL);
+        }
+        
+        // Panggil fungsi pelaporan global
+        ReportViolationAndExit(L"", "OVERLAY_DETECTED", details_utf8);
 
         // Kode tidak akan mencapai sini karena ExitProcess
         return FALSE;
