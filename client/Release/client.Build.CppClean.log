@@ -4,6 +4,7 @@ h:\oblivion\client\release\pch.obj
 h:\oblivion\client\release\process_watcher.obj
 h:\oblivion\client\release\injection_scanner.obj
 h:\oblivion\client\release\blacklist.obj
+h:\oblivion\client\release\anti_suspend.obj
 h:\oblivion\client\release\antidebug.obj
 h:\oblivion\client\release\dllmain.obj
 h:\oblivion\release\client.dll

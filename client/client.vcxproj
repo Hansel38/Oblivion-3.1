@@ -142,6 +142,7 @@
   <ItemGroup>
     <ClInclude Include="framework.h" />
     <ClInclude Include="include\AntiDebug.h" />
+    <ClInclude Include="include\anti_suspend.h" />
     <ClInclude Include="include\blacklist.h" />
     <ClInclude Include="include\injection_scanner.h" />
     <ClInclude Include="include\process_watcher.h" />
@@ -156,6 +157,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\AntiDebug.cpp" />
+    <ClCompile Include="src\anti_suspend.cpp" />
     <ClCompile Include="src\blacklist.cpp" />
     <ClCompile Include="src\injection_scanner.cpp" />
     <ClCompile Include="src\process_watcher.cpp" />

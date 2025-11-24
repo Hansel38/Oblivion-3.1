@@ -3,6 +3,7 @@
 #include "blacklist.h"
 #include "AntiDebug.h"
 #include "injection_scanner.h"
+#include "anti_suspend.h"
 #include <tlhelp32.h>
 #include <iostream>
 #include <vector>
@@ -11,6 +12,7 @@ namespace Oblivion {
     ProcessWatcher::ProcessWatcher() : m_isRunning(false) {
         m_pAntiDebug = new AntiDebug();
         m_pInjectionScanner = new InjectionScanner();
+        m_pAntiSuspend = new AntiSuspend();
     }
 
     ProcessWatcher::~ProcessWatcher() {
@@ -19,6 +21,8 @@ namespace Oblivion {
         m_pAntiDebug = nullptr;
         delete m_pInjectionScanner;
         m_pInjectionScanner = nullptr;
+        delete m_pAntiSuspend;
+        m_pAntiSuspend = nullptr;
     }
 
     void ProcessWatcher::Start() {
@@ -26,6 +30,11 @@ namespace Oblivion {
             return;
         }
         m_isRunning = true;
+        
+        // Mulai thread pengawas terlebih dahulu
+        m_pAntiSuspend->Start();
+        
+        // Lalu mulai thread pemantauan utama
         m_watcherThread = std::thread(&ProcessWatcher::WatcherLoop, this);
     }
 
@@ -37,10 +46,12 @@ namespace Oblivion {
         if (m_watcherThread.joinable()) {
             m_watcherThread.join();
         }
+        // Hentikan thread pengawas setelah thread utama berhenti
+        m_pAntiSuspend->Stop();
     }
 
     void ProcessWatcher::WatcherLoop() {
-        // Pemindaian awal
+        // Lakukan pemindaian awal
         PerformScan();
 
         if (m_isRunning) m_pAntiDebug->PerformCheck();
@@ -49,6 +60,9 @@ namespace Oblivion {
 
         // Loop pemantauan real-time
         while (m_isRunning) {
+            // Update heartbeat di awal loop untuk memberi tahu Guardian bahwa kita masih hidup
+            m_pAntiSuspend->UpdateHeartbeat();
+
             PerformScan();
 
             if (m_isRunning) m_pAntiDebug->PerformCheck();

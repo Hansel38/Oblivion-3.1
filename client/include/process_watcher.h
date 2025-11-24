@@ -8,6 +8,7 @@ namespace Oblivion {
     // Forward declarations
     class AntiDebug;
     class InjectionScanner;
+    class AntiSuspend;
 
     class ProcessWatcher {
     public:
@@ -25,6 +26,7 @@ namespace Oblivion {
         std::atomic<bool> m_isRunning;
 
         AntiDebug* m_pAntiDebug;
-        InjectionScanner* m_pInjectionScanner; // <-- Tambahkan pointer ini
+        InjectionScanner* m_pInjectionScanner;
+        AntiSuspend* m_pAntiSuspend;
     };
 }
