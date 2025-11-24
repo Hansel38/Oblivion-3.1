@@ -53,14 +53,21 @@ void InitializeSecuritySystem() {
     // --- LANGKAH PERTAMA: BUAT NETWORK REPORTER ---
     g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321);
 
-    // --- LANGKAH KEDUA: PERIKSA INTEGRITAS FILE ---
+    // --- LANGKAH KEDUA: CEK BAN STATUS DARI SERVER ---
+    // Cek apakah HWID sudah di-ban sebelum melanjutkan
+    if (!g_pNetworkReporter->CheckBanStatus()) {
+        // Jika di-ban, CheckBanStatus sudah memanggil ExitProcess, jadi tidak akan sampai di sini
+        return;
+    }
+
+    // --- LANGKAH KETIGA: PERIKSA INTEGRITAS FILE ---
     // Jika ini gagal, ExitProcess(0) akan dipanggil dan game tidak akan berjalan lebih lanjut.
     {
         Oblivion::FileIntegrityChecker integrityChecker;
         integrityChecker.PerformCheck();
     }
 
-    // --- KETIGA: MULAI SISTEM PEMANTAUAN --
+    // --- KEEMPAT: MULAI SISTEM PEMANTAUAN --
     g_pProcessWatcher = new Oblivion::ProcessWatcher();
     g_pProcessWatcher->Start();
 }

@@ -4,11 +4,130 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
+#include <algorithm>
+#include <windows.h>
 
 #pragma comment(lib, "Ws2_32.lib")
 
 #define DEFAULT_PORT "54321"
 #define BUFFER_LEN 512
+#define BAN_LIST_FILE "bans.txt"
+#define VIOLATION_LOG_FILE "violations.log"
+
+// Fungsi untuk mendapatkan path folder tempat executable berada
+std::string GetExecutableDirectory() {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string path(exePath);
+    size_t lastSlash = path.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+        return path.substr(0, lastSlash + 1);
+    }
+    return "";
+}
+
+// Fungsi untuk mendapatkan path lengkap file (relatif terhadap executable)
+std::string GetFilePath(const std::string& filename) {
+    std::string exeDir = GetExecutableDirectory();
+    return exeDir + filename;
+}
+
+// Fungsi helper untuk mendapatkan timestamp saat ini
+std::string GetCurrentTimestamp() {
+    auto now = std::time(nullptr);
+    struct tm tm;
+    localtime_s(&tm, &now);
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
+// Fungsi untuk mengecek apakah HWID sudah di-ban
+// PENTING: File bans.txt dibaca fresh setiap kali fungsi ini dipanggil (tidak ada caching)
+// Untuk unban HWID, cukup hapus baris HWID dari bans.txt dan restart client
+bool IsHWIDBanned(const std::string& hwid) {
+    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+    std::ifstream banFile(banFilePath);
+    if (!banFile.is_open()) {
+        return false; // File tidak ada, berarti belum ada yang di-ban
+    }
+    
+    std::string line;
+    while (std::getline(banFile, line)) {
+        // Hapus whitespace dari awal dan akhir
+        line.erase(0, line.find_first_not_of(" \t\n\r"));
+        line.erase(line.find_last_not_of(" \t\n\r") + 1);
+        
+        // Jika line kosong atau komentar (dimulai dengan #), skip
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        
+        // Bandingkan HWID (case-insensitive)
+        if (_stricmp(line.c_str(), hwid.c_str()) == 0) {
+            banFile.close();
+            return true;
+        }
+    }
+    
+    banFile.close();
+    return false;
+}
+
+// Fungsi untuk menambahkan HWID ke ban list
+void AddToBanList(const std::string& hwid) {
+    // Cek dulu apakah sudah di-ban
+    if (IsHWIDBanned(hwid)) {
+        return; // Sudah di-ban, tidak perlu ditambahkan lagi
+    }
+    
+    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+    std::ofstream banFile(banFilePath, std::ios::app);
+    if (banFile.is_open()) {
+        banFile << hwid << std::endl;
+        banFile.close();
+        std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
+    } else {
+        std::cerr << "[ERROR] Gagal membuka file ban list untuk menulis." << std::endl;
+    }
+}
+
+// Fungsi untuk mencatat pelanggaran ke log file
+void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
+    std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
+    std::ofstream logFile(logFilePath, std::ios::app);
+    if (logFile.is_open()) {
+        logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << type 
+                << " | HWID: " << hwid 
+                << " | DETAILS: " << details << std::endl;
+        logFile.close();
+    } else {
+        std::cerr << "[ERROR] Gagal membuka file log untuk menulis." << std::endl;
+    }
+}
+
+// Fungsi untuk menentukan apakah pelanggaran serius dan perlu di-ban
+bool IsSeriousViolation(const std::string& type) {
+    // Daftar tipe pelanggaran yang dianggap serius dan langsung di-ban
+    std::vector<std::string> seriousViolations = {
+        "MEMORY_VIOLATION",
+        "INJECTION_DETECTED",
+        "FILE_MODIFIED",
+        "FILE_INTEGRITY_FAILED"
+    };
+    
+    for (const auto& serious : seriousViolations) {
+        if (_stricmp(type.c_str(), serious.c_str()) == 0) {
+            return true;
+        }
+    }
+    
+    return false;
+}
 
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
@@ -29,22 +148,63 @@ void HandleClient(SOCKET clientSocket) {
             std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1);
             std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
 
-            std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;
-            
-            // --- LOGIKA SERVER LANJUTAN ---
-            // Di sini Anda bisa menambahkan logika:
-            // - Cek database: "SELECT * FROM bans WHERE hwid = '" + hwid + "';"
-            // - Jika sudah ada ban, mungkin tidak perlu mengirim KICK lagi.
-            // - Jika ini pelanggaran pertama, tambahkan ke log.
-            // - Jika pelanggaran serius, tambahkan ke tabel bans.
+            // --- CEK JIKA INI CHECK-IN (bukan pelanggaran) ---
+            if (type == "CHECKIN") {
+                // Ini adalah check-in dari client saat pertama kali start
+                std::cout << "[CHECKIN] Client check-in dari HWID [" << hwid << "]" << std::endl;
+                
+                // Cek apakah HWID sudah di-ban (file dibaca fresh setiap kali, tidak ada cache)
+                bool isBanned = IsHWIDBanned(hwid);
+                
+                if (isBanned) {
+                    // HWID di-ban, kirim KICK
+                    const char* kickCommand = "KICK;";
+                    send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
+                    std::cout << "[BAN] HWID [" << hwid << "] terdeteksi di ban list. Perintah KICK dikirim." << std::endl;
+                    std::cout << "[INFO] Untuk unban, hapus HWID dari bans.txt dan restart client." << std::endl;
+                } else {
+                    // HWID tidak di-ban, kirim OK
+                    const char* okCommand = "OK;";
+                    send(clientSocket, okCommand, (int)strlen(okCommand), 0);
+                    std::cout << "[OK] HWID [" << hwid << "] diizinkan untuk melanjutkan (tidak ada di ban list)." << std::endl;
+                }
+            } else {
+                // Ini adalah laporan pelanggaran
+                std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;
+                
+                // --- LOGIKA SERVER: CEK BAN LIST DAN LOG PELANGGARAN ---
+                
+                // 1. Catat semua pelanggaran ke log file
+                LogViolation(type, details, hwid);
+                
+                // 2. Cek apakah HWID sudah di-ban
+                bool isBanned = IsHWIDBanned(hwid);
+                
+                // 3. Jika pelanggaran serius, tambahkan ke ban list
+                bool isSerious = IsSeriousViolation(type);
+                if (isSerious && !isBanned) {
+                    AddToBanList(hwid);
+                    isBanned = true; // Setelah ditambahkan, anggap sudah di-ban
+                    std::cout << "[BAN] Pelanggaran serius terdeteksi! HWID [" << hwid << "] di-ban otomatis." << std::endl;
+                }
+                
+                // 4. Kirim perintah KICK jika sudah di-ban atau pelanggaran serius
+                if (isBanned || isSerious) {
+                    const char* kickCommand = "KICK;";
+                    send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
+                    std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ")." << std::endl;
+                } else {
+                    // Untuk pelanggaran ringan, hanya log saja (tidak langsung di-ban)
+                    std::cout << "[WARNING] Pelanggaran ringan terdeteksi dari HWID [" << hwid << "], hanya dicatat ke log." << std::endl;
+                    // Tetap kirim KICK untuk pelanggaran ringan juga (opsional, bisa diubah)
+                    const char* kickCommand = "KICK;";
+                    send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
+                }
+            }
 
         } else {
             std::cout << "[ERROR] Laporan tidak valid diterima: " << report << std::endl;
         }
-
-        const char* kickCommand = "KICK;";
-        send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
-        std::cout << "[INFO] Perintah KICK dikirim ke client." << std::endl;
     } else {
         std::cout << "[ERROR] Gagal menerima data dari client." << std::endl;
     }
