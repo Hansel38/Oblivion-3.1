@@ -36,6 +36,9 @@
     <ClInclude Include="include\AntiDebug.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\injection_scanner.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -51,6 +54,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\AntiDebug.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\injection_scanner.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

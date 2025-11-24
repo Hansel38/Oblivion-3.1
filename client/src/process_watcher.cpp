@@ -2,21 +2,23 @@
 #include "process_watcher.h"
 #include "blacklist.h"
 #include "AntiDebug.h"
+#include "injection_scanner.h"
 #include <tlhelp32.h>
 #include <iostream>
 #include <vector>
 
 namespace Oblivion {
     ProcessWatcher::ProcessWatcher() : m_isRunning(false) {
-        // Buat instance dari AntiDebug
         m_pAntiDebug = new AntiDebug();
+        m_pInjectionScanner = new InjectionScanner();
     }
 
     ProcessWatcher::~ProcessWatcher() {
         Stop();
-        // Hapus instance AntiDebug
         delete m_pAntiDebug;
         m_pAntiDebug = nullptr;
+        delete m_pInjectionScanner;
+        m_pInjectionScanner = nullptr;
     }
 
     void ProcessWatcher::Start() {
@@ -38,22 +40,20 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::WatcherLoop() {
-        // Lakukan pemindaian awal
+        // Pemindaian awal
         PerformScan();
 
-        // Lakukan pemeriksaan anti-debug awal
-        if (m_isRunning) {
-            m_pAntiDebug->PerformCheck();
-        }
+        if (m_isRunning) m_pAntiDebug->PerformCheck();
+
+        if (m_isRunning) m_pInjectionScanner->PerformScan();
 
         // Loop pemantauan real-time
         while (m_isRunning) {
             PerformScan();
 
-            // Lakukan pemeriksaan anti-debug secara berkala
-            if (m_isRunning) {
-                m_pAntiDebug->PerformCheck();
-            }
+            if (m_isRunning) m_pAntiDebug->PerformCheck();
+
+            if (m_isRunning) m_pInjectionScanner->PerformScan();
 
             Sleep(2000); // Interval 2 detik
         }

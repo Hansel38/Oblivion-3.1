@@ -143,6 +143,7 @@
     <ClInclude Include="framework.h" />
     <ClInclude Include="include\AntiDebug.h" />
     <ClInclude Include="include\blacklist.h" />
+    <ClInclude Include="include\injection_scanner.h" />
     <ClInclude Include="include\process_watcher.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
@@ -156,6 +157,7 @@
     </ClCompile>
     <ClCompile Include="src\AntiDebug.cpp" />
     <ClCompile Include="src\blacklist.cpp" />
+    <ClCompile Include="src\injection_scanner.cpp" />
     <ClCompile Include="src\process_watcher.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

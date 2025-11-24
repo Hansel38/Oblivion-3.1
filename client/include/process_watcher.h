@@ -5,8 +5,9 @@
 #include <atomic>
 
 namespace Oblivion {
-    // Forward declaration agar tidak perlu include anti_debug.h di sini
+    // Forward declarations
     class AntiDebug;
+    class InjectionScanner;
 
     class ProcessWatcher {
     public:
@@ -23,7 +24,7 @@ namespace Oblivion {
         std::thread m_watcherThread;
         std::atomic<bool> m_isRunning;
 
-        // Pointer untuk mengelola objek AntiDebug
         AntiDebug* m_pAntiDebug;
+        InjectionScanner* m_pInjectionScanner; // <-- Tambahkan pointer ini
     };
 }
