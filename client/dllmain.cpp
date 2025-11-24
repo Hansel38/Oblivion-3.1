@@ -1,5 +1,6 @@
 #include "pch.h"
-#include "include/process_watcher.h"
+#include "process_watcher.h"
+#include "file_integrity_check.h"
 #include <windows.h>
 
 // Global instance dari ProcessWatcher
@@ -19,7 +20,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Mencegah thread detach notification untuk performa yang lebih baik
         DisableThreadLibraryCalls(hModule);
 
-        // Alokasikan dan mulai ProcessWatcher
+        // --- LANGKAH PERTAMA: PERIKSA INTEGRITAS FILE ---
+        // Jika ini gagal, ExitProcess(0) akan dipanggil dan game tidak akan berjalan lebih lanjut.
+        {
+            Oblivion::FileIntegrityChecker integrityChecker;
+            integrityChecker.PerformCheck();
+        }
+
+
+        // --- Jika integritas file aman, lanjutkan memulai sistem pemantauan ---
         g_pProcessWatcher = new Oblivion::ProcessWatcher();
         g_pProcessWatcher->Start();
         break;

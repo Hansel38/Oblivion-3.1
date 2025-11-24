@@ -48,6 +48,9 @@
     <ClInclude Include="include\memory_scanner.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\file_integrity_check.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -75,6 +78,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\memory_scanner.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\file_integrity_check.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

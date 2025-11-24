@@ -5,6 +5,7 @@ h:\oblivion\client\release\process_watcher.obj
 h:\oblivion\client\release\overlay_scanner.obj
 h:\oblivion\client\release\memory_scanner.obj
 h:\oblivion\client\release\injection_scanner.obj
+h:\oblivion\client\release\file_integrity_check.obj
 h:\oblivion\client\release\blacklist.obj
 h:\oblivion\client\release\anti_suspend.obj
 h:\oblivion\client\release\antidebug.obj
