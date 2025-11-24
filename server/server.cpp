@@ -12,32 +12,43 @@
 
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
-    char buffer[BUFFER_LEN] = { 0 };
+    char buffer[BUFFER_LEN] = {0};
     int bytesReceived;
 
-    // Terima data dari client
     bytesReceived = recv(clientSocket, buffer, BUFFER_LEN, 0);
     if (bytesReceived > 0) {
         std::string report(buffer, bytesReceived);
-        std::cout << "[INFO] Laporan diterima: " << report << std::endl;
+        
+        // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID; ---
+        size_t pos1 = report.find(':');
+        size_t pos2 = report.find(':', pos1 + 1);
+        size_t pos3 = report.find(';', pos2 + 1);
 
-        // --- LOGIKA SERVER DI SINI ---
-        // Di masa depan, Anda bisa menambahkan logika lebih lanjut:
-        // - Parsing laporan (misal: PROCESS_DETECTED:cheatengine.exe)
-        // - Memeriksa database pemain
-        // - Mencatat ke file log atau database SQL
-        // - Memberikan ban sementara atau permanen
+        if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
+            std::string type = report.substr(0, pos1);
+            std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1);
+            std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
 
-        // Untuk saat ini, kita akan selalu memerintahkan client untuk keluar
+            std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;
+            
+            // --- LOGIKA SERVER LANJUTAN ---
+            // Di sini Anda bisa menambahkan logika:
+            // - Cek database: "SELECT * FROM bans WHERE hwid = '" + hwid + "';"
+            // - Jika sudah ada ban, mungkin tidak perlu mengirim KICK lagi.
+            // - Jika ini pelanggaran pertama, tambahkan ke log.
+            // - Jika pelanggaran serius, tambahkan ke tabel bans.
+
+        } else {
+            std::cout << "[ERROR] Laporan tidak valid diterima: " << report << std::endl;
+        }
+
         const char* kickCommand = "KICK;";
         send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
         std::cout << "[INFO] Perintah KICK dikirim ke client." << std::endl;
-    }
-    else {
-        std::cout << "[ERROR] Gagal menerima data dari client atau client memutuskan koneksi." << std::endl;
+    } else {
+        std::cout << "[ERROR] Gagal menerima data dari client." << std::endl;
     }
 
-    // Tutup koneksi dengan client
     closesocket(clientSocket);
 }
 

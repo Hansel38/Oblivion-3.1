@@ -14,5 +14,6 @@ namespace Oblivion {
     private:
         std::string m_serverIP;
         int m_serverPort;
+        std::string m_hwid;  // Hardware ID yang di-generate saat konstruktor
     };
 }

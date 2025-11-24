@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "network_reporter.h"
+#include "hwid_generator.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <thread>
@@ -11,8 +12,27 @@ namespace Oblivion {
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort)
         : m_serverIP(serverIP), m_serverPort(serverPort) {
         // Inisialisasi Winsock sekali saja untuk seluruh aplikasi
+        // Catatan: WSAStartup bisa dipanggil beberapa kali, setiap panggilan harus diikuti WSACleanup
         WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
+        int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        // Jika WSAStartup gagal, gunakan fallback (jangan tutup aplikasi di constructor)
+        if (iResult != 0) {
+            m_hwid = "UNKNOWN";
+            return;
+        }
+        
+        // --- GENERATE HWID SAAT PEMBUATAN OBJEK ---
+        // Gunakan try-catch untuk menangani error dari WMI atau hashing
+        try {
+            m_hwid = HWIDGenerator::Generate();
+            // Jika Generate() mengembalikan string kosong, gunakan fallback
+            if (m_hwid.empty()) {
+                m_hwid = "UNKNOWN";
+            }
+        } catch (...) {
+            // Jika ada exception (misalnya dari WMI), gunakan fallback
+            m_hwid = "UNKNOWN";
+        }
     }
 
     NetworkReporter::~NetworkReporter() {
@@ -33,7 +53,12 @@ namespace Oblivion {
 
         // Resolve server address and port
         std::string portStr = std::to_string(m_serverPort);
-        getaddrinfo(m_serverIP.c_str(), portStr.c_str(), &hints, &result);
+        int iResult = getaddrinfo(m_serverIP.c_str(), portStr.c_str(), &hints, &result);
+        if (iResult != 0) {
+            // Gagal resolve alamat server - Fail-Closed
+            MessageBoxW(NULL, L"Gagal menyelesaikan alamat server.\n\nClient akan ditutup.", L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
 
         // Attempt to connect to an address until one succeeds
         for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
@@ -61,9 +86,15 @@ namespace Oblivion {
             return;
         }
 
-        // Format dan kirim laporan
-        std::string report = type + ":" + details + ";";
-        send(connectSocket, report.c_str(), (int)report.length(), 0);
+        // --- FORMAT LAPORAN BARU MENGGUNAKAN HWID ---
+        std::string report = type + ":" + details + ":" + m_hwid + ";";
+        int bytesSent = send(connectSocket, report.c_str(), (int)report.length(), 0);
+        if (bytesSent == SOCKET_ERROR || bytesSent == 0) {
+            // Gagal mengirim laporan - Fail-Closed
+            closesocket(connectSocket);
+            MessageBoxW(NULL, L"Gagal mengirim laporan ke server.\n\nClient akan ditutup.", L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
 
         // Tunggu respons dari server dengan timeout
         char recvbuf[512] = { 0 };

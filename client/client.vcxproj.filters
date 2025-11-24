@@ -54,6 +54,9 @@
     <ClInclude Include="include\network_reporter.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\hwid_generator.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -87,6 +90,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\network_reporter.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\hwid_generator.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>
