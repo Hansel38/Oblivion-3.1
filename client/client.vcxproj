@@ -145,6 +145,8 @@
     <ClInclude Include="include\anti_suspend.h" />
     <ClInclude Include="include\blacklist.h" />
     <ClInclude Include="include\injection_scanner.h" />
+    <ClInclude Include="include\memory_scanner.h" />
+    <ClInclude Include="include\overlay_scanner.h" />
     <ClInclude Include="include\process_watcher.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
@@ -160,6 +162,8 @@
     <ClCompile Include="src\anti_suspend.cpp" />
     <ClCompile Include="src\blacklist.cpp" />
     <ClCompile Include="src\injection_scanner.cpp" />
+    <ClCompile Include="src\memory_scanner.cpp" />
+    <ClCompile Include="src\overlay_scanner.cpp" />
     <ClCompile Include="src\process_watcher.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

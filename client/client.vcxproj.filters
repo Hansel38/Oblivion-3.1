@@ -42,6 +42,12 @@
     <ClInclude Include="include\anti_suspend.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\overlay_scanner.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\memory_scanner.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -63,6 +69,12 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\anti_suspend.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\overlay_scanner.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_scanner.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

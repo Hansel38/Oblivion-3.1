@@ -9,6 +9,8 @@ namespace Oblivion {
     class AntiDebug;
     class InjectionScanner;
     class AntiSuspend;
+    class OverlayScanner;
+    class MemoryScanner;
 
     class ProcessWatcher {
     public:
@@ -28,5 +30,7 @@ namespace Oblivion {
         AntiDebug* m_pAntiDebug;
         InjectionScanner* m_pInjectionScanner;
         AntiSuspend* m_pAntiSuspend;
+        OverlayScanner* m_pOverlayScanner;
+        MemoryScanner* m_pMemoryScanner;
     };
 }
