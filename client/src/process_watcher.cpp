@@ -8,6 +8,7 @@
 #include "memory_scanner.h"
 #include "digital_signature_validator.h"
 #include "iat_hook_scanner.h"
+#include "advanced_process_heuristics.h"
 #include <tlhelp32.h>
 #include <iostream>
 #include <vector>
@@ -29,6 +30,7 @@ namespace Oblivion {
         m_pMemoryScanner = new MemoryScanner();
         m_pDigitalSignatureValidator = new DigitalSignatureValidator();
         m_pIATHookScanner = new IATHookScanner();
+        m_pAdvancedHeuristics = new AdvancedProcessHeuristics();
     }
 
     ProcessWatcher::~ProcessWatcher() {
@@ -47,6 +49,8 @@ namespace Oblivion {
         m_pDigitalSignatureValidator = nullptr;
         delete m_pIATHookScanner;
         m_pIATHookScanner = nullptr;
+        delete m_pAdvancedHeuristics;
+        m_pAdvancedHeuristics = nullptr;
     }
 
     void ProcessWatcher::Start() {
@@ -90,6 +94,8 @@ namespace Oblivion {
 
         if (m_isRunning) m_pIATHookScanner->PerformScan();
 
+        if (m_isRunning) m_pAdvancedHeuristics->PerformScan();
+
         // Gunakan generator angka acak modern untuk interval tidur acak
         std::mt19937 rng(static_cast<unsigned int>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count()));
@@ -112,6 +118,8 @@ namespace Oblivion {
             if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
 
             if (m_isRunning) m_pIATHookScanner->PerformScan();
+
+            if (m_isRunning) m_pAdvancedHeuristics->PerformScan();
 
             if (m_isRunning) {
                 const int sleepDurationMs = sleepDist(rng);

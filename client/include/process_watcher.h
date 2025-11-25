@@ -13,6 +13,7 @@ namespace Oblivion {
     class MemoryScanner;
     class DigitalSignatureValidator;
     class IATHookScanner;
+    class AdvancedProcessHeuristics;
 
     class ProcessWatcher {
     public:
@@ -36,5 +37,6 @@ namespace Oblivion {
         MemoryScanner* m_pMemoryScanner;
         DigitalSignatureValidator* m_pDigitalSignatureValidator;
         IATHookScanner* m_pIATHookScanner;
+        AdvancedProcessHeuristics* m_pAdvancedHeuristics;
     };
 }

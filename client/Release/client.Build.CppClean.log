@@ -12,6 +12,7 @@ h:\oblivion\client\release\file_integrity_check.obj
 h:\oblivion\client\release\digital_signature_validator.obj
 h:\oblivion\client\release\blacklist.obj
 h:\oblivion\client\release\anti_suspend.obj
+h:\oblivion\client\release\advanced_process_heuristics.obj
 h:\oblivion\client\release\antidebug.obj
 h:\oblivion\client\release\dllmain.obj
 h:\oblivion\release\client.dll

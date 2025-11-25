@@ -63,6 +63,9 @@
     <ClInclude Include="include\iat_hook_scanner.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\advanced_process_heuristics.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -105,6 +108,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\iat_hook_scanner.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\advanced_process_heuristics.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>
