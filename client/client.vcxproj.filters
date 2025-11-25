@@ -57,6 +57,12 @@
     <ClInclude Include="include\hwid_generator.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\digital_signature_validator.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\iat_hook_scanner.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -93,6 +99,12 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\hwid_generator.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\digital_signature_validator.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\iat_hook_scanner.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

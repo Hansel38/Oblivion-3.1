@@ -6,8 +6,10 @@ h:\oblivion\client\release\overlay_scanner.obj
 h:\oblivion\client\release\network_reporter.obj
 h:\oblivion\client\release\memory_scanner.obj
 h:\oblivion\client\release\injection_scanner.obj
+h:\oblivion\client\release\iat_hook_scanner.obj
 h:\oblivion\client\release\hwid_generator.obj
 h:\oblivion\client\release\file_integrity_check.obj
+h:\oblivion\client\release\digital_signature_validator.obj
 h:\oblivion\client\release\blacklist.obj
 h:\oblivion\client\release\anti_suspend.obj
 h:\oblivion\client\release\antidebug.obj

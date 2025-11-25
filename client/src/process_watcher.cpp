@@ -6,11 +6,16 @@
 #include "anti_suspend.h"
 #include "overlay_scanner.h"
 #include "memory_scanner.h"
+#include "digital_signature_validator.h"
+#include "iat_hook_scanner.h"
 #include <tlhelp32.h>
 #include <iostream>
 #include <vector>
 #include <random>
 #include <chrono>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
@@ -22,6 +27,8 @@ namespace Oblivion {
         m_pAntiSuspend = new AntiSuspend();
         m_pOverlayScanner = new OverlayScanner();
         m_pMemoryScanner = new MemoryScanner();
+        m_pDigitalSignatureValidator = new DigitalSignatureValidator();
+        m_pIATHookScanner = new IATHookScanner();
     }
 
     ProcessWatcher::~ProcessWatcher() {
@@ -36,6 +43,10 @@ namespace Oblivion {
         m_pOverlayScanner = nullptr;
         delete m_pMemoryScanner;
         m_pMemoryScanner = nullptr;
+        delete m_pDigitalSignatureValidator;
+        m_pDigitalSignatureValidator = nullptr;
+        delete m_pIATHookScanner;
+        m_pIATHookScanner = nullptr;
     }
 
     void ProcessWatcher::Start() {
@@ -75,6 +86,10 @@ namespace Oblivion {
 
         if (m_isRunning) m_pMemoryScanner->PerformScan();
 
+        if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
+
+        if (m_isRunning) m_pIATHookScanner->PerformScan();
+
         // Gunakan generator angka acak modern untuk interval tidur acak
         std::mt19937 rng(static_cast<unsigned int>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count()));
@@ -94,8 +109,32 @@ namespace Oblivion {
 
             if (m_isRunning) m_pMemoryScanner->PerformScan();
 
+            if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
+
+            if (m_isRunning) m_pIATHookScanner->PerformScan();
+
             if (m_isRunning) {
                 const int sleepDurationMs = sleepDist(rng);
+
+#ifdef _DEBUG
+                // Log waktu eksekusi loop untuk verifikasi interval acak.
+                auto now = std::chrono::system_clock::now();
+                auto tt = std::chrono::system_clock::to_time_t(now);
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+                std::tm localTime{};
+                localtime_s(&localTime, &tt);
+
+                std::ostringstream oss;
+                oss << "[ProcessWatcher] Scan loop at "
+                    << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S")
+                    << '.' << std::setw(3) << std::setfill('0') << ms.count()
+                    << " sleeping " << sleepDurationMs << " ms";
+
+                const auto message = oss.str();
+                OutputDebugStringA(message.c_str());
+                OutputDebugStringA("\n");
+#endif
+
                 Sleep(sleepDurationMs);
             }
         }

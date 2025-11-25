@@ -11,6 +11,8 @@ namespace Oblivion {
     class AntiSuspend;
     class OverlayScanner;
     class MemoryScanner;
+    class DigitalSignatureValidator;
+    class IATHookScanner;
 
     class ProcessWatcher {
     public:
@@ -32,5 +34,7 @@ namespace Oblivion {
         AntiSuspend* m_pAntiSuspend;
         OverlayScanner* m_pOverlayScanner;
         MemoryScanner* m_pMemoryScanner;
+        DigitalSignatureValidator* m_pDigitalSignatureValidator;
+        IATHookScanner* m_pIATHookScanner;
     };
 }
