@@ -9,6 +9,8 @@
 #include <tlhelp32.h>
 #include <iostream>
 #include <vector>
+#include <random>
+#include <chrono>
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
@@ -73,6 +75,11 @@ namespace Oblivion {
 
         if (m_isRunning) m_pMemoryScanner->PerformScan();
 
+        // Gunakan generator angka acak modern untuk interval tidur acak
+        std::mt19937 rng(static_cast<unsigned int>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+        std::uniform_int_distribution<int> sleepDist(500, 3000);
+
         // Loop pemantauan real-time
         while (m_isRunning) {
             m_pAntiSuspend->UpdateHeartbeat();
@@ -87,7 +94,10 @@ namespace Oblivion {
 
             if (m_isRunning) m_pMemoryScanner->PerformScan();
 
-            Sleep(2000); // Interval 2 detik
+            if (m_isRunning) {
+                const int sleepDurationMs = sleepDist(rng);
+                Sleep(sleepDurationMs);
+            }
         }
     }
 
