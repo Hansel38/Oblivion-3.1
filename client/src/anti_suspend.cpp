@@ -40,9 +40,9 @@ namespace Oblivion {
     }
 
     void AntiSuspend::GuardianLoop() {
-        // Timeout dalam milidetik. Harus lebih besar dari interval sleep ProcessWatcher.
-        // ProcessWatcher sleep 2000ms, jadi kita beri jeda 3000ms.
-        const auto timeout = std::chrono::milliseconds(3000);
+        // Timeout dalam milidetik. Harus lebih besar dari total waktu scan + interval tidur ProcessWatcher.
+        // Scan dapat memakan beberapa detik, jadi beri toleransi yang lebih longgar.
+        const auto timeout = std::chrono::milliseconds(8000);
 
         while (m_isRunning) {
             // Guardian tidur sebentar sebelum memeriksa

@@ -66,6 +66,9 @@
     <ClInclude Include="include\advanced_process_heuristics.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\self_integrity_guard.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -111,6 +114,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\advanced_process_heuristics.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\self_integrity_guard.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

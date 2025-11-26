@@ -2,6 +2,7 @@
 #include "process_watcher.h"
 #include "file_integrity_check.h"
 #include "network_reporter.h"
+#include "self_integrity_guard.h"
 #include <windows.h>
 #include <thread>
 
@@ -11,6 +12,8 @@ static Oblivion::ProcessWatcher* g_pProcessWatcher = nullptr;
 // Buat instance global NetworkReporter agar bisa diakses
 // Ganti 127.0.0.1 dengan IP server Anda
 static Oblivion::NetworkReporter* g_pNetworkReporter = nullptr;
+static Oblivion::SelfIntegrityGuard* g_pSelfIntegrityGuard = nullptr;
+static HMODULE g_hSelfModule = nullptr;
 
 // Fungsi export dari Stud_PE
 // Ini adalah fungsi yang akan dipanggil oleh client setelah DLL di-inject.
@@ -67,7 +70,16 @@ void InitializeSecuritySystem() {
         integrityChecker.PerformCheck();
     }
 
-    // --- KEEMPAT: MULAI SISTEM PEMANTAUAN --
+    // --- LANGKAH KEEMPAT: AKTIFKAN SELF-INTEGRITY GUARD ---
+    if (!g_pSelfIntegrityGuard) {
+        g_pSelfIntegrityGuard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
+        if (!g_pSelfIntegrityGuard->Start()) {
+            ReportViolationAndExit(L"", "SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
+            return;
+        }
+    }
+
+    // --- KELIMA: MULAI SISTEM PEMANTAUAN --
     g_pProcessWatcher = new Oblivion::ProcessWatcher();
     g_pProcessWatcher->Start();
 }
@@ -78,6 +90,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH: {
         // Mencegah thread detach notification untuk performa yang lebih baik
         DisableThreadLibraryCalls(hModule);
+        g_hSelfModule = hModule;
 
         // PENTING: Jangan melakukan operasi blocking di DllMain!
         // Pindahkan semua inisialisasi berat ke thread terpisah agar aplikasi bisa menampilkan window
@@ -88,6 +101,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
 
     case DLL_PROCESS_DETACH:
+        if (g_pSelfIntegrityGuard) {
+            g_pSelfIntegrityGuard->Stop();
+            delete g_pSelfIntegrityGuard;
+            g_pSelfIntegrityGuard = nullptr;
+        }
         // Hentikan dan dealokasikan ProcessWatcher
         if (g_pProcessWatcher) {
             g_pProcessWatcher->Stop();

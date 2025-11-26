@@ -79,22 +79,37 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::WatcherLoop() {
+        auto heartbeat = [this]() {
+            if (m_isRunning) {
+                m_pAntiSuspend->UpdateHeartbeat();
+            }
+        };
+
+        heartbeat();
         // Pemindaian awal
         PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pAntiDebug->PerformCheck();
+        heartbeat();
 
         if (m_isRunning) m_pInjectionScanner->PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pOverlayScanner->PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pMemoryScanner->PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pIATHookScanner->PerformScan();
+        heartbeat();
 
         if (m_isRunning) m_pAdvancedHeuristics->PerformScan();
+        heartbeat();
 
         // Gunakan generator angka acak modern untuk interval tidur acak
         std::mt19937 rng(static_cast<unsigned int>(
@@ -103,7 +118,7 @@ namespace Oblivion {
 
         // Loop pemantauan real-time
         while (m_isRunning) {
-            m_pAntiSuspend->UpdateHeartbeat();
+            heartbeat();
 
             PerformScan();
 
