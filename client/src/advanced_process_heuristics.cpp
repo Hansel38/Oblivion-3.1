@@ -37,6 +37,10 @@ typedef struct _SYSTEM_HANDLE_INFORMATION {
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
 namespace {
+    DWORD GetProtectedProcessId() {
+        return GetCurrentProcessId();
+    }
+
     std::wstring ToLowerCopy(const std::wstring& input) {
         std::wstring lowered = input;
         std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
@@ -524,24 +528,8 @@ namespace Oblivion {
 
     void AdvancedProcessHeuristics::PerformScan() {
         // ULTIMATE DETECTION: Handle-Based Heuristics
-        // First, find rro.exe process ID
-        DWORD gameProcessId = 0;
-        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (hSnapshot != INVALID_HANDLE_VALUE) {
-            PROCESSENTRY32W pe32;
-            pe32.dwSize = sizeof(PROCESSENTRY32W);
-            
-            if (Process32FirstW(hSnapshot, &pe32)) {
-                do {
-                    std::wstring processName = ToLowerCopy(pe32.szExeFile);
-                    if (processName == L"rro.exe") {
-                        gameProcessId = pe32.th32ProcessID;
-                        break;
-                    }
-                } while (Process32NextW(hSnapshot, &pe32));
-            }
-            CloseHandle(hSnapshot);
-        }
+        // Use the process ID of the host game (current process)
+        const DWORD gameProcessId = GetProtectedProcessId();
 
         // Check for suspicious handles to game process (ULTIMATE - detects ANY memory scanner)
         if (gameProcessId != 0) {
@@ -558,7 +546,7 @@ namespace Oblivion {
         }
 
         // Continue with traditional detection methods
-        hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnapshot == INVALID_HANDLE_VALUE) {
             return;
         }
