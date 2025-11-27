@@ -1,10 +1,13 @@
 #include "pch.h"
 #include "advanced_process_heuristics.h"
+#include "digital_signature_validator.h"
 #include <tlhelp32.h>
 #include <vector>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
+#include <iostream>
+#include <map>
 #include <psapi.h>
 #include <winternl.h>
 
@@ -37,6 +40,10 @@ typedef struct _SYSTEM_HANDLE_INFORMATION {
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
 namespace {
+    // Cache untuk signature verification - menghindari re-verify proses yang sama
+    // Key: Process Path (lowercase), Value: Is Verified (true/false)
+    std::map<std::wstring, bool> g_signatureCache;
+    
     DWORD GetProtectedProcessId() {
         return GetCurrentProcessId();
     }
@@ -199,7 +206,15 @@ namespace {
         L"applicationframehost.exe",
         L"systemsettings.exe",
         
-        // Common legitimate software (optional - bisa disesuaikan)
+        // Open-source utilities (no signature verification - often unsigned)
+        L"notepad++.exe",
+        L"7zfm.exe",
+        L"7zg.exe",
+        L"vlc.exe",
+        L"winrar.exe",
+        
+        // Common legitimate software (REQUIRES SIGNATURE VERIFICATION)
+        // These processes MUST be verified with digital signature to prevent spoofing
         L"chrome.exe",
         L"firefox.exe",
         L"msedge.exe",
@@ -207,16 +222,201 @@ namespace {
         L"steam.exe",
         L"steamwebhelper.exe",
         L"vscode.exe",
-        L"devenv.exe"
+        L"code.exe",
+        L"devenv.exe",
+        L"skype.exe",
+        L"teams.exe",
+        // Media & Entertainment
+        L"spotify.exe",
+        // Gaming platforms
+        L"epicgameslauncher.exe",
+        L"easyanticheat.exe",
+        L"battlenet.exe",
+        L"origin.exe",
+        L"uplay.exe",
+        L"upc.exe",
+        // Cloud & Productivity
+        L"dropbox.exe",
+        L"onedrive.exe",
+        L"googledrivesync.exe"
     };
 
-    bool IsProcessWhitelisted(const std::wstring& processName) {
+    // Proses yang HARUS diverifikasi dengan digital signature (tidak boleh di-spoof)
+    // Ini adalah subset dari whitelist yang rentan terhadap spoofing
+    const std::vector<std::wstring> kSignatureVerificationRequired = {
+        L"chrome.exe",
+        L"firefox.exe",
+        L"msedge.exe",
+        L"discord.exe",
+        L"steam.exe",
+        L"steamwebhelper.exe",
+        L"vscode.exe",
+        L"code.exe",
+        L"devenv.exe",
+        L"skype.exe",
+        L"teams.exe",
+        L"spotify.exe",
+        L"epicgameslauncher.exe",
+        L"easyanticheat.exe",
+        L"battlenet.exe",
+        L"origin.exe",
+        L"uplay.exe",
+        L"upc.exe",
+        L"dropbox.exe",
+        L"onedrive.exe",
+        L"googledrivesync.exe"
+        // NOTE: notepad++, 7zip, vlc, winrar tidak require signature verification
+        // karena sering unsigned (open-source/freeware)
+    };
+
+    // Fungsi helper untuk mendapatkan full path dari process
+    std::wstring GetProcessPath(DWORD processId) {
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+        if (hProcess == NULL) {
+            return L"";
+        }
+
+        wchar_t processPath[MAX_PATH] = { 0 };
+        DWORD size = MAX_PATH;
+        std::wstring result;
+
+        if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
+            result = processPath;
+        }
+
+        CloseHandle(hProcess);
+        return result;
+    }
+
+    bool IsProcessWhitelisted(const std::wstring& processName, DWORD processId = 0) {
         std::wstring lowerName = ToLowerCopy(processName);
+        
+        // Cek apakah process ada di whitelist
+        bool isInWhitelist = false;
         for (const auto& whitelisted : kSystemProcessWhitelist) {
             if (lowerName == whitelisted) {
-                return true;
+                isInWhitelist = true;
+                break;
             }
         }
+        
+        if (!isInWhitelist) {
+            return false; // Tidak ada di whitelist
+        }
+        
+        // Cek apakah proses ini memerlukan verifikasi signature
+        bool needsSignatureVerification = false;
+        for (const auto& requiresVerification : kSignatureVerificationRequired) {
+            if (lowerName == requiresVerification) {
+                needsSignatureVerification = true;
+                break;
+            }
+        }
+        
+        // Jika tidak perlu verifikasi signature (proses Windows system), langsung return true
+        if (!needsSignatureVerification) {
+            return true;
+        }
+        
+        // Proses memerlukan verifikasi signature - cegah spoofing!
+        if (processId == 0) {
+            // Jika PID tidak diberikan, tidak bisa verifikasi - anggap tidak aman
+            return false;
+        }
+        
+        // Dapatkan full path dari process
+        std::wstring processPath = GetProcessPath(processId);
+        if (processPath.empty()) {
+            // Tidak bisa mendapatkan path - suspicious
+            std::wcout << L"[AdvHeuristics] WARNING: Cannot get path for whitelisted process: " << processName << L" (PID: " << processId << L")" << std::endl;
+            return false;
+        }
+        
+        // Normalize path untuk cache (lowercase)
+        std::wstring cacheKey = processPath;
+        std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
+        
+        // Cek cache terlebih dahulu untuk menghindari re-verification
+        auto cacheIt = g_signatureCache.find(cacheKey);
+        if (cacheIt != g_signatureCache.end()) {
+            // Cache hit! Return hasil yang sudah pernah diverifikasi (SILENT - no log spam)
+            bool cachedResult = cacheIt->second;
+            
+            // Hanya log jika SPOOFING terdeteksi (penting!)
+            if (!cachedResult) {
+                std::wcout << L"[AdvHeuristics] SPOOFING DETECTED (cached): " << processName 
+                           << L" (PID: " << processId << L")" << std::endl;
+            }
+            // Jika valid, tidak perlu log (sudah di-log saat pertama kali verify)
+            
+            return cachedResult;
+        }
+        
+        // Dapatkan expected publisher dari DigitalSignatureValidator
+        const auto& publisherMap = Oblivion::DigitalSignatureValidator::m_expectedPublishers;
+        auto it = publisherMap.find(lowerName);
+        
+        if (it == publisherMap.end()) {
+            // Tidak ada expected publisher - ini seharusnya tidak terjadi karena kita sudah filter di atas
+            std::wcout << L"[AdvHeuristics] WARNING: No expected publisher for: " << processName << std::endl;
+            return false;
+        }
+        
+        const std::wstring& expectedPublisher = it->second;
+        
+        // Verifikasi digital signature dengan expected publisher
+        std::wcout << L"[AdvHeuristics] Verifying signature: " << processName << L" (PID: " << processId << L")..." << std::endl;
+        bool isVerified = Oblivion::DigitalSignatureValidator::VerifyProcessSignature(processPath, expectedPublisher);
+        
+        // Simpan hasil ke cache
+        g_signatureCache[cacheKey] = isVerified;
+        
+        if (!isVerified) {
+            // SPOOFING DETECTED!
+            std::wcout << L"[AdvHeuristics] SPOOFING DETECTED: Process \"" << processName 
+                       << L"\" (PID: " << processId << L") failed signature verification!" << std::endl;
+            std::wcout << L"[AdvHeuristics] Path: " << processPath << std::endl;
+            std::wcout << L"[AdvHeuristics] Expected publisher: " << expectedPublisher << std::endl;
+            
+            // Log detail untuk debugging
+            std::wstring actualPublisher;
+            std::wstring actualPublisherInfo = L"No signature";
+            if (Oblivion::DigitalSignatureValidator::GetFilePublisher(processPath, actualPublisher)) {
+                std::wcout << L"[AdvHeuristics] Actual publisher: " << actualPublisher << std::endl;
+                actualPublisherInfo = actualPublisher;
+            } else {
+                std::wcout << L"[AdvHeuristics] No valid signature found!" << std::endl;
+            }
+            
+            // Build details untuk report ke server
+            std::wstringstream detailsStream;
+            detailsStream << L"Process: " << processName 
+                         << L" (PID: " << processId << L")"
+                         << L" | Path: " << processPath
+                         << L" | Expected: " << expectedPublisher
+                         << L" | Actual: " << actualPublisherInfo;
+            
+            std::wstring detailsWide = detailsStream.str();
+            
+            // Convert ke UTF-8 untuk server
+            int size_needed = WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), NULL, 0, NULL, NULL);
+            std::string details_utf8;
+            if (size_needed > 0) {
+                details_utf8.resize(size_needed);
+                WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), &details_utf8[0], size_needed, NULL, NULL);
+            }
+            
+            // REPORT KE SERVER DAN EXIT
+            std::wcout << L"[AdvHeuristics] Reporting spoofing to server..." << std::endl;
+            ReportViolationAndExit(L"", "SIGNATURE_SPOOFING", details_utf8);
+            
+            return false; // Tidak akan tercapai karena ReportViolationAndExit memanggil ExitProcess
+        }
+        
+        // Signature verified successfully
+        std::wcout << L"[AdvHeuristics] Signature verified: " << processName 
+                   << L" (PID: " << processId << L") - Publisher: " << expectedPublisher << std::endl;
+        return true;
         return false;
     }
 
@@ -522,11 +722,20 @@ namespace {
 }
 
 namespace Oblivion {
-    AdvancedProcessHeuristics::AdvancedProcessHeuristics() = default;
+    AdvancedProcessHeuristics::AdvancedProcessHeuristics() : m_heartbeatCallback(nullptr) {}
 
     AdvancedProcessHeuristics::~AdvancedProcessHeuristics() = default;
+    
+    void AdvancedProcessHeuristics::SetHeartbeatCallback(std::function<void()> callback) {
+        m_heartbeatCallback = callback;
+    }
 
     void AdvancedProcessHeuristics::PerformScan() {
+        // Update heartbeat di awal scan
+        if (m_heartbeatCallback) {
+            m_heartbeatCallback();
+        }
+        
         // ULTIMATE DETECTION: Handle-Based Heuristics
         // Use the process ID of the host game (current process)
         const DWORD gameProcessId = GetProtectedProcessId();
@@ -558,6 +767,11 @@ namespace Oblivion {
 
         if (Process32FirstW(hSnapshot, &pe32)) {
             do {
+                // Update heartbeat setiap iterasi untuk mencegah timeout
+                if (m_heartbeatCallback) {
+                    m_heartbeatCallback();
+                }
+                
                 if (pe32.th32ProcessID == 0 || pe32.th32ProcessID == 4 || pe32.th32ProcessID == selfPid) {
                     continue;
                 }
@@ -565,7 +779,8 @@ namespace Oblivion {
                 std::wstring processName = pe32.szExeFile;
 
                 // Skip whitelisted system processes untuk menghindari false positive
-                if (IsProcessWhitelisted(processName)) {
+                // IMPORTANT: Sekarang dengan signature verification untuk mencegah spoofing
+                if (IsProcessWhitelisted(processName, pe32.th32ProcessID)) {
                     continue;
                 }
 
@@ -798,7 +1013,7 @@ namespace Oblivion {
                 // Get process name that owns this suspicious handle
                 std::wstring processName = GetProcessName(handle.ProcessId);
                 
-                if (!processName.empty() && !IsProcessWhitelisted(processName)) {
+                if (!processName.empty() && !IsProcessWhitelisted(processName, handle.ProcessId)) {
                     // Verify: Try to duplicate the handle and check if it points to our game
                     HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.ProcessId);
                     if (hOwnerProcess != NULL) {

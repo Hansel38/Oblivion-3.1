@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <string>
+#include <functional>
 
 namespace Oblivion {
     class AdvancedProcessHeuristics {
@@ -10,6 +11,9 @@ namespace Oblivion {
         ~AdvancedProcessHeuristics();
 
         void PerformScan();
+        
+        // Set callback untuk heartbeat update (untuk mencegah timeout di scan yang lama)
+        void SetHeartbeatCallback(std::function<void()> callback);
 
     private:
         AdvancedProcessHeuristics(const AdvancedProcessHeuristics&) = delete;
@@ -43,6 +47,9 @@ namespace Oblivion {
                                           const std::wstring& indicator) const;
 
         std::string ConvertWideToUtf8(const std::wstring& input) const;
+        
+        // Heartbeat callback untuk mencegah timeout
+        std::function<void()> m_heartbeatCallback;
     };
 }
 

@@ -41,8 +41,9 @@ namespace Oblivion {
 
     void AntiSuspend::GuardianLoop() {
         // Timeout dalam milidetik. Harus lebih besar dari total waktu scan + interval tidur ProcessWatcher.
-        // Scan dapat memakan beberapa detik, jadi beri toleransi yang lebih longgar.
-        const auto timeout = std::chrono::milliseconds(8000);
+        // Signature verification bisa lambat (WinVerifyTrust, disk I/O), jadi timeout diperbesar.
+        // Advanced heuristics + signature check bisa memakan 10-15 detik pada sistem lambat.
+        const auto timeout = std::chrono::milliseconds(20000); // 20 detik (sebelumnya 8 detik)
 
         while (m_isRunning) {
             // Guardian tidur sebentar sebelum memeriksa
@@ -59,7 +60,9 @@ namespace Oblivion {
                 // Hentikan Guardian untuk mencegah race condition
                 m_isRunning = false;
 
-                std::string details = "Monitoring thread suspended or terminated - heartbeat timeout exceeded";
+                auto elapsedSeconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+                std::string details = "Monitoring thread suspended or terminated - heartbeat timeout exceeded (" + 
+                                     std::to_string(elapsedSeconds) + " seconds)";
                 ReportViolationAndExit(L"", "THREAD_SUSPENDED", details);
             }
         }

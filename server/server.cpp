@@ -117,7 +117,10 @@ bool IsSeriousViolation(const std::string& type) {
         "MEMORY_VIOLATION",
         "INJECTION_DETECTED",
         "FILE_MODIFIED",
-        "FILE_INTEGRITY_FAILED"
+        "FILE_INTEGRITY_FAILED",
+        "SIGNATURE_SPOOFING",      // Spoofing process name dengan fake signature
+        "ADV_HEURISTIC_DETECTED",  // Advanced heuristics detection (CE, WPE, dll)
+        "PROCESS_DETECTED"         // Blacklisted process detected
     };
     
     for (const auto& serious : seriousViolations) {
@@ -182,28 +185,26 @@ void HandleClient(SOCKET clientSocket) {
                 // 1. Catat semua pelanggaran ke log file
                 LogViolation(type, details, hwid);
                 
-                // 2. Cek apakah HWID sudah di-ban
+                // 2. Cek apakah HWID sudah di-ban (hanya cek, tidak auto-ban)
                 bool isBanned = IsHWIDBanned(hwid);
                 
-                // 3. Jika pelanggaran serius, tambahkan ke ban list
-                bool isSerious = IsSeriousViolation(type);
-                if (isSerious && !isBanned) {
-                    AddToBanList(hwid);
-                    isBanned = true; // Setelah ditambahkan, anggap sudah di-ban
-                    std::cout << "[BAN] Pelanggaran serius terdeteksi! HWID [" << hwid << "] di-ban otomatis." << std::endl;
-                }
+                // 3. AUTO-BAN DISABLED - Admin melakukan ban manual via bans.txt
+                // bool isSerious = IsSeriousViolation(type);
+                // if (isSerious && !isBanned) {
+                //     AddToBanList(hwid);
+                //     isBanned = true;
+                //     std::cout << "[BAN] Pelanggaran serius terdeteksi! HWID [" << hwid << "] di-ban otomatis." << std::endl;
+                // }
                 
-                // 4. Kirim perintah KICK jika sudah di-ban atau pelanggaran serius
-                if (isBanned || isSerious) {
+                // 4. Kirim perintah KICK hanya jika sudah di-ban secara manual
+                if (isBanned) {
                     const char* kickCommand = "KICK;";
                     send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
-                    std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ")." << std::endl;
+                    std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ") - sudah ada di ban list." << std::endl;
                 } else {
-                    // Untuk pelanggaran ringan, hanya log saja (tidak langsung di-ban)
-                    std::cout << "[WARNING] Pelanggaran ringan terdeteksi dari HWID [" << hwid << "], hanya dicatat ke log." << std::endl;
-                    // Tetap kirim KICK untuk pelanggaran ringan juga (opsional, bisa diubah)
-                    const char* kickCommand = "KICK;";
-                    send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
+                    // Pelanggaran hanya dicatat ke log, tidak langsung di-ban atau di-kick
+                    std::cout << "[WARNING] Pelanggaran terdeteksi dari HWID [" << hwid << "], dicatat ke log (menunggu review manual)." << std::endl;
+                    // Tidak kirim KICK - client tetap berjalan sampai admin memutuskan ban manual
                 }
             }
 

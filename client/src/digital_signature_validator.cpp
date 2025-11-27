@@ -8,6 +8,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cwctype>
+#include <map>
 
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
@@ -27,6 +28,51 @@ const std::vector<std::wstring> Oblivion::DigitalSignatureValidator::m_trustedPu
     L"Google LLC",        // Untuk DLL Chrome/Gecko
     L"Mozilla Corporation" // Untuk DLL Firefox
     // Tambahkan penerbit lain yang Anda percaya di sini
+};
+
+// Mapping process name -> expected publisher untuk whitelist verification
+// Ini digunakan untuk memverifikasi bahwa proses yang di-whitelist adalah BENAR-BENAR dari publisher yang sah
+const std::map<std::wstring, std::wstring> Oblivion::DigitalSignatureValidator::m_expectedPublishers = {
+    // Browser applications
+    {L"chrome.exe", L"Google LLC"},
+    {L"firefox.exe", L"Mozilla Corporation"},
+    {L"msedge.exe", L"Microsoft Corporation"},
+    
+    // Communication apps
+    {L"discord.exe", L"Discord Inc."},
+    {L"skype.exe", L"Microsoft Corporation"},
+    {L"teams.exe", L"Microsoft Corporation"},
+    
+    // Gaming platforms
+    {L"steam.exe", L"Valve Corporation"},
+    {L"steamwebhelper.exe", L"Valve Corporation"},
+    
+    // Development tools
+    {L"vscode.exe", L"Microsoft Corporation"},
+    {L"code.exe", L"Microsoft Corporation"},
+    {L"devenv.exe", L"Microsoft Corporation"},
+    
+    // Media & Entertainment
+    {L"spotify.exe", L"Spotify AB"},
+    {L"vlc.exe", L"VideoLAN"},
+    
+    // Gaming platforms & launchers
+    {L"epicgameslauncher.exe", L"Epic Games"},
+    {L"easyanticheat.exe", L"Epic Games"},
+    {L"battlenet.exe", L"Blizzard Entertainment"},
+    {L"origin.exe", L"Electronic Arts"},
+    {L"uplay.exe", L"Ubisoft"},
+    {L"upc.exe", L"Ubisoft"},
+    
+    // Cloud storage & productivity
+    {L"dropbox.exe", L"Dropbox"},
+    {L"onedrive.exe", L"Microsoft Corporation"},
+    {L"googledrivesync.exe", L"Google LLC"},
+    
+    // NOTE: Open-source apps seperti notepad++, 7zip, vlc sering tidak ditandatangani
+    // Mereka dipindahkan ke whitelist biasa (tanpa signature verification)
+    
+    // Add more as needed
 };
 
 // Daftar DLL yang diizinkan meskipun tidak ditandatangani
@@ -351,5 +397,123 @@ namespace Oblivion {
         if (hStore) CertCloseStore(hStore, 0);
         if (hMsg) CryptMsgClose(hMsg);
         return result;
+    }
+
+    // Static function untuk verifikasi file signature (untuk process verification)
+    bool DigitalSignatureValidator::VerifyFileSignature(const std::wstring& filePath) {
+        WINTRUST_FILE_INFO fileInfo = { 0 };
+        fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
+        fileInfo.pcwszFilePath = filePath.c_str();
+        fileInfo.hFile = NULL;
+        fileInfo.pgKnownSubject = NULL;
+
+        WINTRUST_DATA winTrustData = { 0 };
+        winTrustData.cbStruct = sizeof(WINTRUST_DATA);
+        winTrustData.pPolicyCallbackData = NULL;
+        winTrustData.pSIPClientData = NULL;
+        winTrustData.dwUIChoice = WTD_UI_NONE;
+        winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+        winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
+        winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        winTrustData.hWVTStateData = NULL;
+        winTrustData.pwszURLReference = NULL;
+        winTrustData.dwProvFlags = WTD_SAFER_FLAG;
+        winTrustData.dwUIContext = 0;
+        winTrustData.pFile = &fileInfo;
+
+        GUID policyGUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+        LONG result = WinVerifyTrust(NULL, &policyGUID, &winTrustData);
+
+        // Cleanup
+        winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        WinVerifyTrust(NULL, &policyGUID, &winTrustData);
+
+        return (result == ERROR_SUCCESS);
+    }
+
+    // Static function untuk mendapatkan publisher dari file
+    bool DigitalSignatureValidator::GetFilePublisher(const std::wstring& filePath, std::wstring& publisherName) {
+        HCERTSTORE hStore = NULL;
+        HCRYPTMSG hMsg = NULL;
+        PCCERT_CONTEXT pCertContext = NULL;
+        PCMSG_SIGNER_INFO pSignerInfo = NULL;
+        bool result = false;
+
+        DWORD encoding, contentType, formatType;
+        if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filePath.c_str(),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+            CERT_QUERY_FORMAT_FLAG_BINARY,
+            0, &encoding, &contentType, &formatType,
+            &hStore, &hMsg, NULL)) {
+            return false;
+        }
+
+        DWORD dwSize = 0;
+        if (!CryptMsgGetParam(hMsg, CMSG_SIGNER_CERT_INFO_PARAM, 0, NULL, &dwSize)) {
+            goto cleanup;
+        }
+
+        pSignerInfo = (PCMSG_SIGNER_INFO)LocalAlloc(LPTR, dwSize);
+        if (!pSignerInfo) {
+            goto cleanup;
+        }
+
+        if (!CryptMsgGetParam(hMsg, CMSG_SIGNER_CERT_INFO_PARAM, 0, pSignerInfo, &dwSize)) {
+            LocalFree(pSignerInfo);
+            pSignerInfo = NULL;
+            goto cleanup;
+        }
+
+        pCertContext = CertFindCertificateInStore(hStore, encoding, 0, CERT_FIND_SUBJECT_CERT, pSignerInfo, NULL);
+        LocalFree(pSignerInfo);
+        pSignerInfo = NULL;
+
+        if (pCertContext) {
+            DWORD nameSize = CertGetNameStringW(pCertContext, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, NULL, NULL, 0);
+            if (nameSize > 0) {
+                std::vector<WCHAR> nameBuffer(nameSize);
+                if (CertGetNameStringW(pCertContext, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, NULL, nameBuffer.data(), nameSize) > 0) {
+                    publisherName = nameBuffer.data();
+                    result = true;
+                }
+            }
+            CertFreeCertificateContext(pCertContext);
+        }
+
+    cleanup:
+        if (hStore) CertCloseStore(hStore, 0);
+        if (hMsg) CryptMsgClose(hMsg);
+        return result;
+    }
+
+    // Static function untuk verifikasi process signature dengan expected publisher
+    bool DigitalSignatureValidator::VerifyProcessSignature(const std::wstring& processPath, const std::wstring& expectedPublisher) {
+        // Step 1: Verify digital signature
+        if (!VerifyFileSignature(processPath)) {
+            // Signature tidak valid atau tidak ada
+            return false;
+        }
+
+        // Step 2: Get publisher name
+        std::wstring actualPublisher;
+        if (!GetFilePublisher(processPath, actualPublisher)) {
+            // Tidak bisa mendapatkan publisher
+            return false;
+        }
+
+        // Step 3: Compare with expected publisher (case-insensitive contains check)
+        std::wstring lowerActual = actualPublisher;
+        std::wstring lowerExpected = expectedPublisher;
+        std::transform(lowerActual.begin(), lowerActual.end(), lowerActual.begin(), ::towlower);
+        std::transform(lowerExpected.begin(), lowerExpected.end(), lowerExpected.begin(), ::towlower);
+
+        // Check if actual publisher contains expected publisher name
+        if (lowerActual.find(lowerExpected) != std::wstring::npos) {
+            return true;
+        }
+
+        // Publisher mismatch
+        return false;
     }
 }

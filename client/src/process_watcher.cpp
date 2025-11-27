@@ -33,6 +33,14 @@ namespace Oblivion {
             m_pDigitalSignatureValidator = new DigitalSignatureValidator();
             m_pIATHookScanner = new IATHookScanner();
             m_pAdvancedHeuristics = new AdvancedProcessHeuristics();
+            
+            // Set heartbeat callback untuk AdvancedHeuristics
+            m_pAdvancedHeuristics->SetHeartbeatCallback([this]() {
+                if (m_isRunning && m_pAntiSuspend) {
+                    m_pAntiSuspend->UpdateHeartbeat();
+                }
+            });
+            
             std::cout << "[ProcessWatcher] All components initialized successfully" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "[ProcessWatcher] ERROR: Failed to initialize: " << e.what() << std::endl;
