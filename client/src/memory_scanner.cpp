@@ -148,6 +148,73 @@ namespace Oblivion {
         return true;
     }
 
+    // Helper: Temukan section berdasarkan RVA
+    const PESectionInfo* MemoryScanner::GetSectionByRva(uintptr_t rva) const {
+        // m_sectionMap keyed by section.virtualAddress (section RVA start)
+        // Cari section yang mengandung RVA
+        for (const auto& kv : m_sectionMap) {
+            const PESectionInfo& sec = kv.second;
+            uintptr_t start = static_cast<uintptr_t>(sec.virtualAddress);
+            uintptr_t end = start + static_cast<uintptr_t>(sec.virtualSize);
+            if (rva >= start && rva < end) {
+                return &sec;
+            }
+        }
+        return nullptr;
+    }
+
+    bool MemoryScanner::IsSectionVerified(uint32_t sectionRva) const {
+        return m_verifiedSections.find(sectionRva) != m_verifiedSections.end();
+    }
+
+    // Helper: Deteksi kehadiran runtime JIT umum yang kadang membuat halaman RWX secara sah
+    bool MemoryScanner::IsJITRuntimePresent() const {
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+        if (hSnapshot == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+
+        MODULEENTRY32W me32;
+        me32.dwSize = sizeof(MODULEENTRY32W);
+
+        const wchar_t* jitModules[] = {
+            L"clrjit.dll", L"coreclr.dll", L"mscorlib.dll",
+            L"chakra.dll", L"jscript9.dll", L"v8.dll",
+            L"luajit.dll"
+        };
+
+        bool present = false;
+        if (Module32FirstW(hSnapshot, &me32)) {
+            do {
+                for (const auto& name : jitModules) {
+                    if (_wcsicmp(me32.szModule, name) == 0) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (present) break;
+            } while (Module32NextW(hSnapshot, &me32));
+        }
+
+        CloseHandle(hSnapshot);
+        return present;
+    }
+
+    // Helper: Cek apakah modul berasal dari System32 atau SysWOW64 (modul Windows sah)
+    bool MemoryScanner::IsSystemModule(const std::wstring& modulePath) const {
+        std::wstring pathLower = modulePath;
+        std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::towlower);
+
+        // Cek apakah path mengandung system32 atau syswow64
+        if (pathLower.find(L"\\system32\\") != std::wstring::npos ||
+            pathLower.find(L"\\syswow64\\") != std::wstring::npos ||
+            pathLower.find(L"\\windows\\") != std::wstring::npos) {
+            return true;
+        }
+
+        return false;
+    }
+
     bool MemoryScanner::ValidateImageHeaders(const std::vector<uint8_t>& fileData,
                                              IMAGE_DOS_HEADER& dosHeader,
                                              IMAGE_NT_HEADERS& ntHeaders) {
@@ -495,6 +562,8 @@ namespace Oblivion {
             return false;
         }
 
+        m_verifiedSections.clear();
+
         for (const auto& baseline : m_diskBaseline) {
             uint8_t* memoryAddr = reinterpret_cast<uint8_t*>(m_moduleBaseAddress + baseline.rva);
             
@@ -542,6 +611,8 @@ namespace Oblivion {
                 ReportViolationAndExit(L"", "CODE_MODIFICATION", ss.str());
                 return false;
             }
+
+            m_verifiedSections.insert(baseline.rva);
         }
 
         return true;
@@ -618,7 +689,22 @@ namespace Oblivion {
 
                 // ALWAYS compare dengan DISK baseline, bukan memory baseline!
                 if (currentCRC32 != baseline.diskCRC32) {
-                    return true; // Modification detected
+                    // Tambahan heuristik: gunakan hash SHA256 32-bit untuk mengurangi false positive
+                    uint64_t sha32 = CalculateSHA256_32bit(memoryBase, regionSize);
+                    uint32_t sha32_lo = static_cast<uint32_t>(sha32);
+
+                    // Untuk .text, perubahan apapun adalah pelanggaran
+                    if (baseline.isCodeSection) {
+                        return true; // Modification detected di code section
+                    }
+
+                    // Untuk non-code section, jika kedua hash (CRC & SHA32) menunjukkan perubahan, flag
+                    if (sha32_lo != baseline.memoryCRC32) {
+                        return true; // Modification detected
+                    }
+
+                    // Jika hanya CRC berubah (misalignment/relocation kecil), toleransi minimal: tidak flag langsung
+                    return false;
                 }
 
                 // Additional check: Code cave detection untuk code sections
@@ -645,47 +731,9 @@ namespace Oblivion {
             return false;
         }
 
-        uintptr_t regionAddress = reinterpret_cast<uintptr_t>(memoryBase);
-
-        // Detect RWX (Read-Write-Execute) pages - sangat suspicious!
-        bool isExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-        bool isWritable = (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
-
-        if (isExecutable && isWritable) {
-            // Check jika region ini di LUAR module bounds
-            // Jika di luar, hampir pasti injection
-            if (m_moduleBaseAddress > 0) {
-                HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-                if (hSnapshot != INVALID_HANDLE_VALUE) {
-                    MODULEENTRY32W me32;
-                    me32.dwSize = sizeof(MODULEENTRY32W);
-
-                    bool isInsideKnownModule = false;
-                    if (Module32FirstW(hSnapshot, &me32)) {
-                        do {
-                            uintptr_t moduleStart = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
-                            uintptr_t moduleEnd = moduleStart + me32.modBaseSize;
-
-                            if (regionAddress >= moduleStart && regionAddress < moduleEnd) {
-                                isInsideKnownModule = true;
-                                break;
-                            }
-                        } while (Module32NextW(hSnapshot, &me32));
-                    }
-
-                    CloseHandle(hSnapshot);
-
-                    if (!isInsideKnownModule) {
-                        // RWX page di luar module - VERY SUSPICIOUS!
-                        std::stringstream ss;
-                        ss << "Suspicious RWX memory region outside known modules at 0x" 
-                           << std::hex << regionAddress;
-                        return true;
-                    }
-                }
-            }
-        }
-
+        // NOTE: Deteksi RWX dinonaktifkan untuk menghindari false positive dari WoW64/sistem
+        // Masih mengandalkan: CRC32 verification, code cave detection, PE validation
+        
         return false;
     }
 

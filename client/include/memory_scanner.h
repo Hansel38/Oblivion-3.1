@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <map>
+#include <unordered_set>
 
 namespace Oblivion {
     // Struktur untuk menyimpan baseline yang diverifikasi dari disk
@@ -86,9 +87,16 @@ namespace Oblivion {
         bool VerifyBaselineIntegrity();
         uint32_t CalculateBaselineChecksum();
 
+        // === Helpers ===
+        const PESectionInfo* GetSectionByRva(uintptr_t rva) const;
+        bool IsJITRuntimePresent() const;
+        bool IsSystemModule(const std::wstring& modulePath) const;
+        bool IsSectionVerified(uint32_t sectionRva) const;
+
         // === Member Variables ===
         std::vector<ExecutableRegion> m_diskBaseline;      // Baseline dari disk (trusted)
         std::map<uint32_t, PESectionInfo> m_sectionMap;    // Map RVA -> Section Info
+        std::unordered_set<uint32_t> m_verifiedSections;   // Sections yang terakhir diverifikasi
         EmbeddedSignature m_embeddedSig;                   // Embedded signature
         uintptr_t m_moduleBaseAddress;                     // Base address modul
         bool m_baselineCreated;                            // Flag baseline creation
