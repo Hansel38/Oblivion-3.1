@@ -186,7 +186,6 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::PerformScan() {
-        // ... (Kode di dalam fungsi ini tidak berubah) ...
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnapshot == INVALID_HANDLE_VALUE) {
             return;
@@ -198,23 +197,46 @@ namespace Oblivion {
         if (Process32First(hSnapshot, &pe32)) {
             do {
                 std::wstring processName = pe32.szExeFile;
+                DWORD processId = pe32.th32ProcessID;
 
+                // Deteksi blacklist
                 if (IsProcessBlacklisted(processName)) {
                     std::wcout << L"[DETECTION] Blacklisted process detected: " << processName << std::endl;
                     m_isRunning = false;
-                    
-                    // Konversi processName ke UTF-8 untuk details
                     std::string details_utf8;
                     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), NULL, 0, NULL, NULL);
                     if (size_needed > 0) {
                         details_utf8.assign(size_needed, 0);
                         WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), &details_utf8[0], size_needed, NULL, NULL);
                     }
-                    
                     std::cout << "[VIOLATION] Reporting to server: PROCESS_DETECTED - " << details_utf8 << std::endl;
-                    
-                    // Panggil fungsi pelaporan global
                     ReportViolationAndExit(L"", "PROCESS_DETECTED", details_utf8);
+                }
+
+                // Cek apakah proses sudah pernah di-scan
+                bool isNewProcess = m_scannedProcesses.find(processId) == m_scannedProcesses.end();
+                
+                if (isNewProcess) {
+                    // Tambahkan ke cache
+                    m_scannedProcesses.insert(processId);
+                    
+                    // Memory scan untuk proses non-whitelist
+                    if (Oblivion::ShouldPerformMemoryScan(processName)) {
+                        std::wcout << L"[SCAN] Memory scan scheduled for: " << processName << L" (PID: " << processId << L")" << std::endl;
+                    }
+
+                    // Heuristik perilaku
+                    if (Oblivion::IsSuspiciousBehavior(processId)) {
+                        Oblivion::LogSuspiciousProcess(processName, processId, "Suspicious module or injection detected");
+                        // Optional: langsung blokir
+                        std::string details_utf8;
+                        int size_needed = WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), NULL, 0, NULL, NULL);
+                        if (size_needed > 0) {
+                            details_utf8.assign(size_needed, 0);
+                            WideCharToMultiByte(CP_UTF8, 0, &processName[0], (int)processName.size(), &details_utf8[0], size_needed, NULL, NULL);
+                        }
+                        ReportViolationAndExit(L"", "SUSPICIOUS_BEHAVIOR", details_utf8);
+                    }
                 }
 
             } while (Process32Next(hSnapshot, &pe32) && m_isRunning);

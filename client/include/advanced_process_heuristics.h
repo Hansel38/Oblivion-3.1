@@ -51,5 +51,10 @@ namespace Oblivion {
         // Heartbeat callback untuk mencegah timeout
         std::function<void()> m_heartbeatCallback;
     };
+
+    // Global helper functions for advanced heuristics
+    bool ShouldPerformMemoryScan(const std::wstring& processName);
+    bool IsSuspiciousBehavior(DWORD processId);
+    void LogSuspiciousProcess(const std::wstring& processName, DWORD processId, const std::string& reason);
 }
 

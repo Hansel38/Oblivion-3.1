@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <thread>
 #include <atomic>
+#include <set>
 
 namespace Oblivion {
     // Forward declarations
@@ -38,5 +39,8 @@ namespace Oblivion {
         DigitalSignatureValidator* m_pDigitalSignatureValidator;
         IATHookScanner* m_pIATHookScanner;
         AdvancedProcessHeuristics* m_pAdvancedHeuristics;
+        
+        // Cache untuk menghindari log spam
+        std::set<DWORD> m_scannedProcesses;
     };
 }

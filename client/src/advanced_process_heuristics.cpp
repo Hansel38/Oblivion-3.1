@@ -469,42 +469,6 @@ namespace {
         CloseHandle(hProcess);
         return result;
     }
-
-    // Tentukan apakah process ini perlu di-scan memory-nya
-    // Memory scanning hanya untuk process dengan karakteristik mencurigakan
-    bool ShouldPerformMemoryScan(const std::wstring& processName) {
-        std::wstring lowerName = ToLowerCopy(processName);
-        
-        // Jangan scan process yang sudah jelas legitimate berdasarkan nama
-        const std::vector<std::wstring> knownLegitimatePatterns = {
-            L"microsoft", L"windows", L"system", L"adobe", 
-            L"nvidia", L"intel", L"amd", L"google", L"skype"
-        };
-        
-        for (const auto& pattern : knownLegitimatePatterns) {
-            if (lowerName.find(pattern) != std::wstring::npos) {
-                return false;
-            }
-        }
-        
-        // Scan process dengan nama yang sangat generic atau mencurigakan
-        // Contoh: "helper.exe", "updater.exe", "launcher.exe", "svchost32.exe" (typosquatting)
-        const std::vector<std::wstring> suspiciousPatterns = {
-            L"helper", L"updater", L"launcher", L"crack", L"patch", 
-            L"keygen", L"trainer", L"hack", L"bot", L"cheat",
-            L"inject", L"mod", L"bypass"
-        };
-        
-        for (const auto& pattern : suspiciousPatterns) {
-            if (lowerName.find(pattern) != std::wstring::npos) {
-                return true;
-            }
-        }
-        
-        // Untuk process lain, SKIP memory scanning untuk menghindari false positive
-        // Module dan window class detection sudah cukup kuat
-        return false;
-    }
     
     // Memory signatures - pola byte khas CE di memory (IMPROVED - lebih spesifik)
     struct MemorySignature {
@@ -722,6 +686,85 @@ namespace {
 }
 
 namespace Oblivion {
+    // Tentukan apakah process ini perlu di-scan memory-nya
+    // Memory scanning hanya untuk process dengan karakteristik mencurigakan
+    bool ShouldPerformMemoryScan(const std::wstring& processName) {
+        std::wstring lowerName = ::ToLowerCopy(processName);
+        
+        // Whitelist untuk proses inti Windows
+        const std::vector<std::wstring> systemWhitelist = {
+            L"system", L"smss.exe", L"csrss.exe", L"wininit.exe", L"services.exe", L"lsass.exe", L"svchost.exe", L"explorer.exe"
+        };
+        
+        // Whitelist untuk proses legitimate dari vendor hardware/software
+        const std::vector<std::wstring> legitimatePatterns = {
+            L"nvdisplay", L"nvcontainer", L"nvidia", L"nvbackend", L"nvspcap", L"nvstreamer",
+            L"amd", L"radeon", L"amdrsserv", L"amddvr",
+            L"intel", L"igfx", L"hkcmd",
+            L"realtek", L"rthdcpl",
+            L"microsoft", L"windows", L"skype", L"teams",
+            L"adobe", L"acrobat", L"creative cloud",
+            L"google", L"chrome", L"drive",
+            L"steam", L"origin", L"uplay", L"epicgames", L"battlenet",
+            L"discord", L"obs", L"streamlabs",
+            L"logitech", L"razer", L"corsair", L"steelseries",
+            L"dropbox", L"onedrive", L"icloud",
+            L"vscode", L"code.exe", L"cpptools", L"omnisharp",
+            L"devenv", L"msbuild", L"cl.exe", L"link.exe"
+        };
+        
+        // Cek whitelist sistem
+        for (const auto& pattern : systemWhitelist) {
+            if (lowerName == pattern) {
+                return false;
+            }
+        }
+        
+        // Cek whitelist legitimate (partial match)
+        for (const auto& pattern : legitimatePatterns) {
+            if (lowerName.find(pattern) != std::wstring::npos) {
+                return false;
+            }
+        }
+        
+        // Scan semua proses lain
+        return true;
+    }
+
+    // Heuristik perilaku: deteksi proses dengan aktivitas mencurigakan
+    bool IsSuspiciousBehavior(DWORD processId) {
+        // Deteksi sederhana: cek apakah proses menggunakan CreateRemoteThread atau WriteProcessMemory
+        // (Biasanya digunakan untuk DLL injection atau manipulasi memory)
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+        if (!hProcess) return false;
+
+        HMODULE hMods[1024];
+        DWORD cbNeeded;
+        bool suspicious = false;
+        if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+                wchar_t szModName[MAX_PATH];
+                if (GetModuleBaseNameW(hProcess, hMods[i], szModName, sizeof(szModName) / sizeof(wchar_t))) {
+                    std::wstring modName = szModName;
+                    if (modName.find(L"inject") != std::wstring::npos ||
+                        modName.find(L"hook") != std::wstring::npos ||
+                        modName.find(L"cheat") != std::wstring::npos) {
+                        suspicious = true;
+                        break;
+                    }
+                }
+            }
+        }
+        CloseHandle(hProcess);
+        return suspicious;
+    }
+
+    void LogSuspiciousProcess(const std::wstring& processName, DWORD processId, const std::string& reason) {
+        // Logging/reporting detail untuk proses mencurigakan
+        std::wcout << L"[Heuristics] Suspicious process detected: " << processName << L" (PID: " << processId << L") Reason: " << reason.c_str() << std::endl;
+        // TODO: Integrasi dengan ReportViolationAndExit jika ingin langsung blokir
+    }
+
     AdvancedProcessHeuristics::AdvancedProcessHeuristics() : m_heartbeatCallback(nullptr) {}
 
     AdvancedProcessHeuristics::~AdvancedProcessHeuristics() = default;
