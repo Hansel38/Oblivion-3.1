@@ -5,6 +5,7 @@
 #include "self_integrity_guard.h"
 #include <windows.h>
 #include <thread>
+#include <iostream>
 
 // Global instance dari ProcessWatcher
 static Oblivion::ProcessWatcher* g_pProcessWatcher = nullptr;
@@ -53,35 +54,104 @@ void ReportViolationAndExit(const std::wstring& message, const std::string& type
 
 // Fungsi inisialisasi yang dijalankan di thread terpisah
 void InitializeSecuritySystem() {
-    // --- LANGKAH PERTAMA: BUAT NETWORK REPORTER ---
-    g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321);
+    // --- LANGKAH PERTAMA: BUAT CONSOLE UNTUK DEBUGGING ---
+    // Sesuai requirement: client menggunakan Console
+    AllocConsole();
+    FILE* fDummy;
+    freopen_s(&fDummy, "CONOUT$", "w", stdout);
+    freopen_s(&fDummy, "CONOUT$", "w", stderr);
+    freopen_s(&fDummy, "CONIN$", "r", stdin);
+    std::cout.clear();
+    std::clog.clear();
+    std::cerr.clear();
+    std::cin.clear();
+    
+    SetConsoleTitleW(L"Oblivion Hack Shield - Debug Console");
+    std::cout << "==================================================" << std::endl;
+    std::cout << "  OBLIVION HACK SHIELD - Anti-Cheat System" << std::endl;
+    std::cout << "  Version 1.0 - Ragnarok Online Protection" << std::endl;
+    std::cout << "==================================================" << std::endl;
+    std::cout << "[INIT] Console initialized" << std::endl;
+    
+    // --- LANGKAH KEDUA: BUAT NETWORK REPORTER ---
+    std::cout << "[INIT] Creating network reporter..." << std::endl;
+    try {
+        g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321);
+        std::cout << "[INIT] Network reporter created" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Failed to create network reporter: " << e.what() << std::endl;
+        MessageBoxW(NULL, L"Gagal menginisialisasi network reporter.\n\nClient akan ditutup.", 
+                    L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        ExitProcess(1);
+    } catch (...) {
+        std::cerr << "[ERROR] Unknown error creating network reporter" << std::endl;
+        MessageBoxW(NULL, L"Kesalahan tidak diketahui saat inisialisasi.\n\nClient akan ditutup.", 
+                    L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        ExitProcess(1);
+    }
 
-    // --- LANGKAH KEDUA: CEK BAN STATUS DARI SERVER ---
-    // Cek apakah HWID sudah di-ban sebelum melanjutkan
-    if (!g_pNetworkReporter->CheckBanStatus()) {
-        // Jika di-ban, CheckBanStatus sudah memanggil ExitProcess, jadi tidak akan sampai di sini
+    // --- LANGKAH KETIGA: CEK BAN STATUS DARI SERVER ---
+    std::cout << "[INIT] Checking ban status with server..." << std::endl;
+    try {
+        if (!g_pNetworkReporter->CheckBanStatus()) {
+            // Jika di-ban, CheckBanStatus sudah memanggil ExitProcess, jadi tidak akan sampai di sini
+            return;
+        }
+        std::cout << "[INIT] Ban check passed" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception during ban check: " << e.what() << std::endl;
+        MessageBoxW(NULL, L"Kesalahan saat memeriksa status ban.\n\nClient akan ditutup.", 
+                    L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        ExitProcess(1);
+    }
+
+    // --- LANGKAH KEEMPAT: PERIKSA INTEGRITAS FILE ---
+    std::cout << "[INIT] Performing file integrity check..." << std::endl;
+    try {
+        Oblivion::FileIntegrityChecker integrityChecker;
+        integrityChecker.PerformCheck();
+        std::cout << "[INIT] File integrity check passed" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] File integrity check failed: " << e.what() << std::endl;
+        ReportViolationAndExit(L"", "FILE_INTEGRITY_EXCEPTION", e.what());
+        return;
+    } catch (...) {
+        std::cerr << "[ERROR] Unknown error during file integrity check" << std::endl;
+        ReportViolationAndExit(L"", "FILE_INTEGRITY_UNKNOWN_ERROR", "Unknown exception");
         return;
     }
 
-    // --- LANGKAH KETIGA: PERIKSA INTEGRITAS FILE ---
-    // Jika ini gagal, ExitProcess(0) akan dipanggil dan game tidak akan berjalan lebih lanjut.
-    {
-        Oblivion::FileIntegrityChecker integrityChecker;
-        integrityChecker.PerformCheck();
-    }
-
-    // --- LANGKAH KEEMPAT: AKTIFKAN SELF-INTEGRITY GUARD ---
-    if (!g_pSelfIntegrityGuard) {
-        g_pSelfIntegrityGuard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
-        if (!g_pSelfIntegrityGuard->Start()) {
-            ReportViolationAndExit(L"", "SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
-            return;
+    // --- LANGKAH KELIMA: AKTIFKAN SELF-INTEGRITY GUARD ---
+    std::cout << "[INIT] Starting self-integrity guard..." << std::endl;
+    try {
+        if (!g_pSelfIntegrityGuard) {
+            g_pSelfIntegrityGuard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
+            if (!g_pSelfIntegrityGuard->Start()) {
+                std::cerr << "[ERROR] Self-integrity guard failed to start" << std::endl;
+                ReportViolationAndExit(L"", "SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
+                return;
+            }
+            std::cout << "[INIT] Self-integrity guard active" << std::endl;
         }
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception starting self-integrity guard: " << e.what() << std::endl;
+        ReportViolationAndExit(L"", "SELF_GUARD_EXCEPTION", e.what());
+        return;
     }
 
-    // --- KELIMA: MULAI SISTEM PEMANTAUAN --
-    g_pProcessWatcher = new Oblivion::ProcessWatcher();
-    g_pProcessWatcher->Start();
+    // --- LANGKAH KEENAM: MULAI SISTEM PEMANTAUAN ---
+    std::cout << "[INIT] Starting process watcher..." << std::endl;
+    try {
+        g_pProcessWatcher = new Oblivion::ProcessWatcher();
+        g_pProcessWatcher->Start();
+        std::cout << "[SUCCESS] Oblivion Hack Shield fully initialized!" << std::endl;
+        std::cout << "[INFO] Protection active - monitoring for threats..." << std::endl;
+        std::cout << "==================================================" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception starting process watcher: " << e.what() << std::endl;
+        ReportViolationAndExit(L"", "PROCESS_WATCHER_EXCEPTION", e.what());
+        return;
+    }
 }
 
 // DLL Entry Point
@@ -101,21 +171,44 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
 
     case DLL_PROCESS_DETACH:
-        if (g_pSelfIntegrityGuard) {
-            g_pSelfIntegrityGuard->Stop();
-            delete g_pSelfIntegrityGuard;
-            g_pSelfIntegrityGuard = nullptr;
-        }
-        // Hentikan dan dealokasikan ProcessWatcher
+        std::cout << "[CLEANUP] Shutting down Oblivion Hack Shield..." << std::endl;
+        
+        // Stop process watcher terlebih dahulu (ini akan stop monitoring)
         if (g_pProcessWatcher) {
-            g_pProcessWatcher->Stop();
-            delete g_pProcessWatcher;
-            g_pProcessWatcher = nullptr;
+            std::cout << "[CLEANUP] Stopping process watcher..." << std::endl;
+            try {
+                g_pProcessWatcher->Stop();
+                delete g_pProcessWatcher;
+                g_pProcessWatcher = nullptr;
+            } catch (...) {
+                // Ignore exceptions during cleanup
+            }
         }
+        
+        // Kemudian stop self-integrity guard
+        if (g_pSelfIntegrityGuard) {
+            std::cout << "[CLEANUP] Stopping self-integrity guard..." << std::endl;
+            try {
+                g_pSelfIntegrityGuard->Stop();
+                delete g_pSelfIntegrityGuard;
+                g_pSelfIntegrityGuard = nullptr;
+            } catch (...) {
+                // Ignore exceptions during cleanup
+            }
+        }
+        
+        // Terakhir cleanup network reporter
         if (g_pNetworkReporter) {
-            delete g_pNetworkReporter;
-            g_pNetworkReporter = nullptr;
+            std::cout << "[CLEANUP] Cleaning up network reporter..." << std::endl;
+            try {
+                delete g_pNetworkReporter;
+                g_pNetworkReporter = nullptr;
+            } catch (...) {
+                // Ignore exceptions during cleanup
+            }
         }
+        
+        std::cout << "[CLEANUP] Shutdown complete" << std::endl;
         break;
 
     case DLL_THREAD_ATTACH:

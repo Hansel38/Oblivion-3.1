@@ -134,19 +134,24 @@ void HandleClient(SOCKET clientSocket) {
     char buffer[BUFFER_LEN] = {0};
     int bytesReceived;
 
-    bytesReceived = recv(clientSocket, buffer, BUFFER_LEN, 0);
-    if (bytesReceived > 0) {
-        std::string report(buffer, bytesReceived);
-        
-        // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID; ---
-        size_t pos1 = report.find(':');
-        size_t pos2 = report.find(':', pos1 + 1);
-        size_t pos3 = report.find(';', pos2 + 1);
+    try {
+        bytesReceived = recv(clientSocket, buffer, BUFFER_LEN, 0);
+        if (bytesReceived > 0) {
+            std::string report(buffer, bytesReceived);
+            
+            std::cout << "[DEBUG] Received raw data (" << bytesReceived << " bytes): " << report << std::endl;
+            
+            // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID; ---
+            size_t pos1 = report.find(':');
+            size_t pos2 = report.find(':', pos1 + 1);
+            size_t pos3 = report.find(';', pos2 + 1);
 
-        if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
-            std::string type = report.substr(0, pos1);
-            std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1);
-            std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
+            if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
+                std::string type = report.substr(0, pos1);
+                std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1);
+                std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
+
+                std::cout << "[PARSE] TYPE: " << type << " | DETAILS: " << details << " | HWID: " << hwid << std::endl;
 
             // --- CEK JIKA INI CHECK-IN (bukan pelanggaran) ---
             if (type == "CHECKIN") {
@@ -203,10 +208,18 @@ void HandleClient(SOCKET clientSocket) {
             }
 
         } else {
-            std::cout << "[ERROR] Laporan tidak valid diterima: " << report << std::endl;
+            std::cout << "[ERROR] Laporan tidak valid diterima (malformed format): " << report << std::endl;
+            std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID;" << std::endl;
         }
+    } else if (bytesReceived == 0) {
+        std::cout << "[INFO] Client closed connection gracefully" << std::endl;
     } else {
-        std::cout << "[ERROR] Gagal menerima data dari client." << std::endl;
+        std::cout << "[ERROR] recv() failed with error code: " << WSAGetLastError() << std::endl;
+    }
+    } catch (const std::exception& e) {
+        std::cerr << "[EXCEPTION] Error handling client: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[EXCEPTION] Unknown error handling client" << std::endl;
     }
 
     closesocket(clientSocket);
@@ -273,19 +286,27 @@ int main() {
         return 1;
     }
 
-    std::cout << "Oblivion Hack Shield Server berjalan dan mendengarkan di port " << DEFAULT_PORT << "..." << std::endl;
+    std::cout << "==================================================" << std::endl;
+    std::cout << "  OBLIVION HACK SHIELD - Server Component" << std::endl;
+    std::cout << "  Version 1.0 - Ragnarok Online Protection" << std::endl;
+    std::cout << "==================================================" << std::endl;
+    std::cout << "[INFO] Server berjalan dan mendengarkan di port " << DEFAULT_PORT << std::endl;
+    std::cout << "[INFO] Ban list file: " << GetFilePath(BAN_LIST_FILE) << std::endl;
+    std::cout << "[INFO] Violation log file: " << GetFilePath(VIOLATION_LOG_FILE) << std::endl;
+    std::cout << "[INFO] Menunggu koneksi dari client..." << std::endl;
+    std::cout << "==================================================" << std::endl;
 
     // Loop utama untuk menerima koneksi
     while (true) {
         // Terima koneksi dari client
         ClientSocket = accept(ListenSocket, NULL, NULL);
         if (ClientSocket == INVALID_SOCKET) {
-            std::cerr << "Accept gagal dengan error: " << WSAGetLastError() << std::endl;
-            closesocket(ListenSocket);
-            WSACleanup();
-            return 1;
+            std::cerr << "[ERROR] Accept gagal dengan error: " << WSAGetLastError() << std::endl;
+            continue; // Jangan shutdown server, coba accept lagi
         }
 
+        std::cout << "\n[CONNECTION] New client connected" << std::endl;
+        
         // Buat thread baru untuk menangani client agar server bisa menerima client lain
         std::thread clientThread(HandleClient, ClientSocket);
         clientThread.detach(); // Lepaskan thread agar bisa berjalan mandiri
