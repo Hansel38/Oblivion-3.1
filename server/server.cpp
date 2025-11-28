@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <string>
@@ -10,12 +10,16 @@
 #include <ctime>
 #include <algorithm>
 #include <windows.h>
-#include "include/secret_obf.h"
+#include "secret_obf.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 #define DEFAULT_PORT "54321"
-#define BUFFER_LEN 512
+#define BUFFER_LEN 4096
+#define MAX_TYPE_LEN 64
+#define MAX_DETAILS_LEN 2048
+#define MAX_HWID_LEN 128
+#define MAX_SECRET_LEN 128
 // Ambil secret yang di-obfuscate agar tidak muncul sebagai literal.
 static std::string SERVER_SECRET = OblivionServer::GetServerSecret();
 #define BAN_LIST_FILE "bans.txt"
@@ -135,31 +139,238 @@ bool IsSeriousViolation(const std::string& type) {
     return false;
 }
 
+// Fungsi untuk mencoba extract HWID dari raw data (best effort)
+std::string ExtractHWIDFromRawData(const std::string& rawData) {
+    // Format yang diharapkan: TYPE:DETAILS:HWID:SECRET;
+    // Kita akan coba extract HWID bahkan jika format tidak sempurna
+    
+    size_t firstColon = rawData.find(':');
+    if (firstColon == std::string::npos) return "UNKNOWN";
+    
+    size_t secondColon = rawData.find(':', firstColon + 1);
+    if (secondColon == std::string::npos) return "UNKNOWN";
+    
+    size_t thirdColon = rawData.find(':', secondColon + 1);
+    if (thirdColon == std::string::npos) return "UNKNOWN";
+    
+    // Extract HWID (antara colon ke-2 dan ke-3)
+    std::string hwid = rawData.substr(secondColon + 1, thirdColon - secondColon - 1);
+    
+    // Validasi panjang minimal dan maksimal
+    if (hwid.empty() || hwid.length() > MAX_HWID_LEN) return "UNKNOWN";
+    
+    // Sanitasi: hanya izinkan alphanumeric dan dash (untuk SHA256 hash: 0-9a-f dan dash)
+    // Tidak perlu filter ketat, cukup buang karakter berbahaya
+    std::string sanitizedHwid;
+    for (char c : hwid) {
+        // Izinkan: alphanumeric (0-9, a-z, A-Z) dan dash
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-') {
+            sanitizedHwid += c;
+        }
+    }
+    
+    return sanitizedHwid.empty() ? "UNKNOWN" : sanitizedHwid;
+}
+
+// Fungsi untuk sanitasi string input (menghapus karakter berbahaya)
+std::string SanitizeInput(const std::string& input, size_t maxLen) {
+    std::string sanitized;
+    size_t reserveSize = input.length() < maxLen ? input.length() : maxLen;
+    sanitized.reserve(reserveSize);
+    
+    for (size_t i = 0; i < input.length() && sanitized.length() < maxLen; i++) {
+        char c = input[i];
+        // Hanya izinkan karakter printable ASCII dan beberapa karakter khusus yang aman
+        if ((c >= 0x20 && c <= 0x7E) || c == '\n' || c == '\r' || c == '\t') {
+            // Filter karakter yang bisa digunakan untuk injection
+            if (c != '<' && c != '>' && c != '&' && c != '"' && c != '\'') {
+                sanitized += c;
+            }
+        }
+    }
+    
+    return sanitized;
+}
+
+// Struktur untuk hasil parsing protokol
+struct ParsedReport {
+    bool valid;
+    std::string type;
+    std::string details;
+    std::string hwid;
+    std::string secret;
+    std::string errorMessage;
+};
+
+// Fungsi untuk validasi format protokol dan parsing yang aman
+ParsedReport ParseProtocol(const std::string& report) {
+    ParsedReport result;
+    result.valid = false;
+    
+    // Validasi panjang minimum
+    if (report.length() < 10) { // Minimal TYPE::HWID:SECRET;
+        result.errorMessage = "Report too short (minimum 10 characters required)";
+        return result;
+    }
+    
+    // Validasi panjang maksimum
+    if (report.length() > BUFFER_LEN - 1) {
+        result.errorMessage = "Report exceeds maximum length";
+        return result;
+    }
+    
+    // Validasi format: harus diakhiri dengan semicolon
+    if (report.back() != ';') {
+        result.errorMessage = "Report must end with semicolon";
+        return result;
+    }
+    
+    // Hitung jumlah delimiter
+    size_t colonCount = std::count(report.begin(), report.end(), ':');
+    if (colonCount != 3) {
+        result.errorMessage = "Invalid format: expected 3 colons, found " + std::to_string(colonCount);
+        return result;
+    }
+    
+    // Parse dengan validasi posisi
+    size_t pos1 = report.find(':');
+    if (pos1 == std::string::npos || pos1 == 0) {
+        result.errorMessage = "Invalid TYPE field position";
+        return result;
+    }
+    
+    size_t pos2 = report.find(':', pos1 + 1);
+    if (pos2 == std::string::npos) {
+        result.errorMessage = "Invalid DETAILS field position";
+        return result;
+    }
+    
+    size_t pos3 = report.find(':', pos2 + 1);
+    if (pos3 == std::string::npos) {
+        result.errorMessage = "Invalid HWID field position";
+        return result;
+    }
+    
+    size_t pos4 = report.find(';', pos3 + 1);
+    if (pos4 == std::string::npos || pos4 == pos3 + 1) {
+        result.errorMessage = "Invalid SECRET field position";
+        return result;
+    }
+    
+    // Extract fields dengan boundary checking
+    try {
+        result.type = report.substr(0, pos1);
+        result.details = report.substr(pos1 + 1, pos2 - pos1 - 1);
+        result.hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
+        result.secret = report.substr(pos3 + 1, pos4 - pos3 - 1);
+    } catch (const std::out_of_range& e) {
+        result.errorMessage = std::string("Parsing error: ") + e.what();
+        return result;
+    }
+    
+    // Validasi panjang setiap field
+    if (result.type.length() > MAX_TYPE_LEN) {
+        result.errorMessage = "TYPE field exceeds maximum length (" + std::to_string(MAX_TYPE_LEN) + ")";
+        return result;
+    }
+    
+    if (result.details.length() > MAX_DETAILS_LEN) {
+        result.errorMessage = "DETAILS field exceeds maximum length (" + std::to_string(MAX_DETAILS_LEN) + ")";
+        return result;
+    }
+    
+    if (result.hwid.length() > MAX_HWID_LEN) {
+        result.errorMessage = "HWID field exceeds maximum length (" + std::to_string(MAX_HWID_LEN) + ")";
+        return result;
+    }
+    
+    if (result.secret.length() > MAX_SECRET_LEN) {
+        result.errorMessage = "SECRET field exceeds maximum length (" + std::to_string(MAX_SECRET_LEN) + ")";
+        return result;
+    }
+    
+    // Validasi TYPE tidak kosong dan hanya berisi karakter alphanumeric + underscore
+    if (result.type.empty()) {
+        result.errorMessage = "TYPE field cannot be empty";
+        return result;
+    }
+    
+    for (char c : result.type) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+            result.errorMessage = "TYPE field contains invalid characters";
+            return result;
+        }
+    }
+    
+    // Validasi HWID tidak kosong dan hanya berisi karakter hexadecimal + dash
+    if (result.hwid.empty()) {
+        result.errorMessage = "HWID field cannot be empty";
+        return result;
+    }
+    
+    for (char c : result.hwid) {
+        if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '-') {
+            result.errorMessage = "HWID field contains invalid characters (expected hex + dash)";
+            return result;
+        }
+    }
+    
+    // Validasi SECRET tidak kosong
+    if (result.secret.empty()) {
+        result.errorMessage = "SECRET field cannot be empty";
+        return result;
+    }
+    
+    // Sanitasi DETAILS (bisa kosong untuk CHECKIN)
+    result.details = SanitizeInput(result.details, MAX_DETAILS_LEN);
+    
+    result.valid = true;
+    return result;
+}
+
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
     char buffer[BUFFER_LEN] = {0};
     int bytesReceived;
+    std::string extractedHwid = "UNKNOWN"; // Untuk logging jika parsing gagal
 
     try {
-        bytesReceived = recv(clientSocket, buffer, BUFFER_LEN, 0);
+        bytesReceived = recv(clientSocket, buffer, BUFFER_LEN - 1, 0);
         if (bytesReceived > 0) {
+            // Null-terminate untuk keamanan
+            buffer[bytesReceived] = '\0';
+            
             std::string report(buffer, bytesReceived);
             
-            std::cout << "[DEBUG] Received raw data (" << bytesReceived << " bytes): " << report << std::endl;
+            // Extract HWID untuk logging (best effort, sebelum parsing)
+            extractedHwid = ExtractHWIDFromRawData(report);
             
-            // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID:SECRET; --- (DETAILS bisa kosong untuk CHECKIN)
-            size_t pos1 = report.find(':');
-            size_t pos2 = report.find(':', pos1 == std::string::npos ? std::string::npos : pos1 + 1);
-            size_t pos3 = report.find(':', pos2 == std::string::npos ? std::string::npos : pos2 + 1);
-            size_t pos4 = report.find(';', pos3 == std::string::npos ? std::string::npos : pos3 + 1);
-
-            if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos && pos4 != std::string::npos) {
-                std::string type = report.substr(0, pos1);
-                std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1); // bisa kosong
-                std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
-                std::string secret = report.substr(pos3 + 1, pos4 - pos3 - 1);
-
-                std::cout << "[PARSE] TYPE: " << type << " | DETAILS: " << details << " | HWID: " << hwid << std::endl;
+            std::cout << "[DEBUG] Received raw data (" << bytesReceived << " bytes) from HWID: " << extractedHwid << std::endl;
+            
+            // --- PARSING DENGAN VALIDASI ROBUST ---
+            ParsedReport parsed = ParseProtocol(report);
+            
+            if (!parsed.valid) {
+                std::cout << "[ERROR] Invalid protocol format: " << parsed.errorMessage << std::endl;
+                std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID:SECRET;" << std::endl;
+                
+                // Log attempt dengan data mentah (truncated untuk keamanan)
+                std::string truncatedReport = report.length() > 100 ? report.substr(0, 100) + "..." : report;
+                LogViolation("MALFORMED_REQUEST", parsed.errorMessage + " | Data: " + truncatedReport, extractedHwid);
+                
+                // Kirim error response dan tutup koneksi
+                const char* errorResponse = "ERROR:INVALID_FORMAT;";
+                send(clientSocket, errorResponse, (int)strlen(errorResponse), 0);
+                closesocket(clientSocket);
+                return;
+            }
+            
+            std::string type = parsed.type;
+            std::string details = parsed.details;
+            std::string hwid = parsed.hwid;
+            std::string secret = parsed.secret;
+            
+            std::cout << "[PARSE] TYPE: " << type << " | HWID: " << hwid << " | DETAILS_LEN: " << details.length() << std::endl;
 
             // --- CEK SECRET KEY TERLEBIH DAHULU ---
             if (secret != SERVER_SECRET) {
@@ -224,20 +435,19 @@ void HandleClient(SOCKET clientSocket) {
                     // Tidak kirim KICK - client tetap berjalan sampai admin memutuskan ban manual
                 }
             }
-
+        } else if (bytesReceived == 0) {
+            std::cout << "[INFO] Client closed connection gracefully" << std::endl;
         } else {
-            std::cout << "[ERROR] Laporan tidak valid diterima (malformed format): " << report << std::endl;
-            std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID:SECRET;" << std::endl;
+            int errorCode = WSAGetLastError();
+            std::cout << "[ERROR] recv() failed with error code: " << errorCode << std::endl;
+            LogViolation("RECV_ERROR", "Error code: " + std::to_string(errorCode), extractedHwid);
         }
-    } else if (bytesReceived == 0) {
-        std::cout << "[INFO] Client closed connection gracefully" << std::endl;
-    } else {
-        std::cout << "[ERROR] recv() failed with error code: " << WSAGetLastError() << std::endl;
-    }
     } catch (const std::exception& e) {
         std::cerr << "[EXCEPTION] Error handling client: " << e.what() << std::endl;
+        LogViolation("EXCEPTION", std::string("Exception: ") + e.what(), extractedHwid);
     } catch (...) {
         std::cerr << "[EXCEPTION] Unknown error handling client" << std::endl;
+        LogViolation("EXCEPTION", "Unknown exception occurred", extractedHwid);
     }
 
     closesocket(clientSocket);

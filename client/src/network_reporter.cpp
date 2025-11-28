@@ -213,7 +213,14 @@ namespace Oblivion {
         }
 
         // --- FORMAT LAPORAN BARU MENGGUNAKAN HWID ---
-        std::string report = type + ":" + details + ":" + m_hwid + ":" + m_secretKey + ";";
+        // Sanitasi details: replace colon dengan pipe untuk menghindari konflik parsing
+        std::string sanitizedDetails = details;
+        for (char& c : sanitizedDetails) {
+            if (c == ':') c = '|';  // Replace colon dengan pipe
+            if (c == ';') c = ',';  // Replace semicolon dengan comma (delimiter utama)
+        }
+        
+        std::string report = type + ":" + sanitizedDetails + ":" + m_hwid + ":" + m_secretKey + ";";
         int bytesSent = send(connectSocket, report.c_str(), (int)report.length(), 0);
         if (bytesSent == SOCKET_ERROR || bytesSent == 0) {
             // Gagal mengirim laporan - Fail-Closed

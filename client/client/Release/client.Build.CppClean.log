@@ -16,6 +16,7 @@ h:\oblivion\client\client\release\anti_suspend.obj
 h:\oblivion\client\client\release\advanced_process_heuristics.obj
 h:\oblivion\client\client\release\antidebug.obj
 h:\oblivion\client\client\release\dllmain.obj
+h:\oblivion\client\client\release\secret_obf.obj
 h:\oblivion\client\release\client.dll
 h:\oblivion\client\release\client.pdb
 h:\oblivion\client\release\client.lib

@@ -18,5 +18,13 @@
     <ClCompile Include="server.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\secret_obf.cpp">
+      <Filter>Resource Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\secret_obf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
