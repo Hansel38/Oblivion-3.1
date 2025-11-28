@@ -11,8 +11,8 @@
 #pragma comment(lib, "Ws2_32.lib")
 
 namespace Oblivion {
-    NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort)
-        : m_serverIP(serverIP), m_serverPort(serverPort) {
+    NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
+        : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey) {
         // Inisialisasi Winsock sekali saja untuk seluruh aplikasi
         // Catatan: WSAStartup bisa dipanggil beberapa kali, setiap panggilan harus diikuti WSACleanup
         WSADATA wsaData;
@@ -85,8 +85,8 @@ namespace Oblivion {
             ExitProcess(0);
         }
 
-        // Kirim check-in: "CHECKIN::HWID;"
-        std::string checkin = "CHECKIN::" + m_hwid + ";";
+        // Kirim check-in dengan secret: "CHECKIN::HWID:SECRET;"
+        std::string checkin = "CHECKIN::" + m_hwid + ":" + m_secretKey + ";";
         int bytesSent = send(connectSocket, checkin.c_str(), (int)checkin.length(), 0);
         if (bytesSent == SOCKET_ERROR || bytesSent == 0) {
             closesocket(connectSocket);
@@ -213,7 +213,7 @@ namespace Oblivion {
         }
 
         // --- FORMAT LAPORAN BARU MENGGUNAKAN HWID ---
-        std::string report = type + ":" + details + ":" + m_hwid + ";";
+        std::string report = type + ":" + details + ":" + m_hwid + ":" + m_secretKey + ";";
         int bytesSent = send(connectSocket, report.c_str(), (int)report.length(), 0);
         if (bytesSent == SOCKET_ERROR || bytesSent == 0) {
             // Gagal mengirim laporan - Fail-Closed

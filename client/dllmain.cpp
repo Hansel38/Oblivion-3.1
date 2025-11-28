@@ -3,6 +3,7 @@
 #include "file_integrity_check.h"
 #include "network_reporter.h"
 #include "self_integrity_guard.h"
+#include "secret_obf.h"
 #include <windows.h>
 #include <thread>
 #include <iostream>
@@ -76,7 +77,9 @@ void InitializeSecuritySystem() {
     // --- LANGKAH KEDUA: BUAT NETWORK REPORTER ---
     std::cout << "[INIT] Creating network reporter..." << std::endl;
     try {
-        g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321);
+        // Ambil secret yang di-obfuscate (bukan string literal langsung)
+        const std::string kClientSecret = Oblivion::GetClientSecret();
+        g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
         std::cout << "[INIT] Network reporter created" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Failed to create network reporter: " << e.what() << std::endl;

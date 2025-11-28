@@ -10,11 +10,14 @@
 #include <ctime>
 #include <algorithm>
 #include <windows.h>
+#include "include/secret_obf.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 #define DEFAULT_PORT "54321"
 #define BUFFER_LEN 512
+// Ambil secret yang di-obfuscate agar tidak muncul sebagai literal.
+static std::string SERVER_SECRET = OblivionServer::GetServerSecret();
 #define BAN_LIST_FILE "bans.txt"
 #define VIOLATION_LOG_FILE "violations.log"
 
@@ -144,20 +147,34 @@ void HandleClient(SOCKET clientSocket) {
             
             std::cout << "[DEBUG] Received raw data (" << bytesReceived << " bytes): " << report << std::endl;
             
-            // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID; ---
+            // --- PARSING FORMAT BARU: TYPE:DETAILS:HWID:SECRET; --- (DETAILS bisa kosong untuk CHECKIN)
             size_t pos1 = report.find(':');
-            size_t pos2 = report.find(':', pos1 + 1);
-            size_t pos3 = report.find(';', pos2 + 1);
+            size_t pos2 = report.find(':', pos1 == std::string::npos ? std::string::npos : pos1 + 1);
+            size_t pos3 = report.find(':', pos2 == std::string::npos ? std::string::npos : pos2 + 1);
+            size_t pos4 = report.find(';', pos3 == std::string::npos ? std::string::npos : pos3 + 1);
 
-            if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
+            if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos && pos4 != std::string::npos) {
                 std::string type = report.substr(0, pos1);
-                std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1);
+                std::string details = report.substr(pos1 + 1, pos2 - pos1 - 1); // bisa kosong
                 std::string hwid = report.substr(pos2 + 1, pos3 - pos2 - 1);
+                std::string secret = report.substr(pos3 + 1, pos4 - pos3 - 1);
 
                 std::cout << "[PARSE] TYPE: " << type << " | DETAILS: " << details << " | HWID: " << hwid << std::endl;
 
-            // --- CEK JIKA INI CHECK-IN (bukan pelanggaran) ---
-            if (type == "CHECKIN") {
+            // --- CEK SECRET KEY TERLEBIH DAHULU ---
+            if (secret != SERVER_SECRET) {
+                std::cout << "[AUTH] Secret key tidak valid dari HWID [" << hwid << "]" << std::endl;
+                std::cout << "[AUTH] Expected: " << SERVER_SECRET << " | Received: " << secret << std::endl;
+
+                // Log pelanggaran autentikasi (tanpa auto-ban)
+                LogViolation("AUTH_FAILED", "Invalid secret key", hwid);
+
+                // Kirim KICK saja; keputusan ban tetap manual via bans.txt
+                const char* kickCommand = "KICK;";
+                send(clientSocket, kickCommand, (int)strlen(kickCommand), 0);
+                std::cout << "[INFO] KICK dikirim (secret invalid). Review manual untuk ban jika diperlukan." << std::endl;
+            }
+            else if (type == "CHECKIN") {
                 // Ini adalah check-in dari client saat pertama kali start
                 std::cout << "[CHECKIN] Client check-in dari HWID [" << hwid << "]" << std::endl;
                 
@@ -210,7 +227,7 @@ void HandleClient(SOCKET clientSocket) {
 
         } else {
             std::cout << "[ERROR] Laporan tidak valid diterima (malformed format): " << report << std::endl;
-            std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID;" << std::endl;
+            std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID:SECRET;" << std::endl;
         }
     } else if (bytesReceived == 0) {
         std::cout << "[INFO] Client closed connection gracefully" << std::endl;

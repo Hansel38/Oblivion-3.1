@@ -69,6 +69,9 @@
     <ClInclude Include="include\self_integrity_guard.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\secret_obf.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -117,6 +120,9 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="src\self_integrity_guard.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\secret_obf.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>

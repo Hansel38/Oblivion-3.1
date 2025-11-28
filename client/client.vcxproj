@@ -142,6 +142,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="include\secret_obf.h" />
     <ClInclude Include="include\AntiDebug.h" />
     <ClInclude Include="include\advanced_process_heuristics.h" />
     <ClInclude Include="include\anti_suspend.h" />
@@ -180,6 +181,7 @@
     <ClCompile Include="src\overlay_scanner.cpp" />
     <ClCompile Include="src\process_watcher.cpp" />
     <ClCompile Include="src\self_integrity_guard.cpp" />
+    <ClCompile Include="src\secret_obf.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
