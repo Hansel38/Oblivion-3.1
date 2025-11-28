@@ -11,8 +11,16 @@
 #include <algorithm>
 #include <windows.h>
 #include "secret_obf.h"
+#include "include/heartbeat_protocol.h"
+#include <bcrypt.h>
 
 #pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "Bcrypt.lib")
+
+// Fallback define for older SDKs where BCRYPT_ALG_HANDLE_HMAC is missing
+#ifndef BCRYPT_ALG_HANDLE_HMAC
+#define BCRYPT_ALG_HANDLE_HMAC 0x00000008
+#endif
 
 #define DEFAULT_PORT "54321"
 #define BUFFER_LEN 4096
@@ -194,12 +202,12 @@ std::string SanitizeInput(const std::string& input, size_t maxLen) {
 
 // Struktur untuk hasil parsing protokol
 struct ParsedReport {
-    bool valid;
-    std::string type;
-    std::string details;
-    std::string hwid;
-    std::string secret;
-    std::string errorMessage;
+    bool valid = false;
+    std::string type = "";
+    std::string details = "";
+    std::string hwid = "";
+    std::string secret = "";
+    std::string errorMessage = "";
 };
 
 // Fungsi untuk validasi format protokol dan parsing yang aman
@@ -399,13 +407,176 @@ void HandleClient(SOCKET clientSocket) {
                     std::cout << "[BAN] HWID [" << hwid << "] terdeteksi di ban list. Perintah KICK dikirim." << std::endl;
                     std::cout << "[INFO] Untuk unban, hapus HWID dari bans.txt dan restart client." << std::endl;
                 } else {
-                    // HWID tidak di-ban, kirim OK
-                    const char* okCommand = "OK;";
-                    send(clientSocket, okCommand, (int)strlen(okCommand), 0);
-                    std::cout << "[OK] HWID [" << hwid << "] diizinkan untuk melanjutkan (tidak ada di ban list)." << std::endl;
+                    // HWID tidak di-ban, kirim OK dan mulai heartbeat ping
+                    // HWID tidak di-ban, kirim OK dan session nonce dalam satu pesan
+                    uint64_t sessionNonce = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+                    std::string response = "OK;SESSION_NONCE:" + std::to_string(sessionNonce) + ";";
+                    send(clientSocket, response.c_str(), (int)response.length(), 0);
+                    std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
+
+                    // Basic ping scheduler over the same socket (line-based)
+                    Oblivion::HeartbeatConfig cfg; 
+                    uint32_t seq = 1;
+                    uint32_t consecutiveMiss = 0;
+                    uint64_t rttSum = 0; uint32_t rttCount = 0; 
+                    // Cumulative metrics across the connection
+                    uint64_t rttSumCumulative = 0; uint64_t rttCountCumulative = 0; 
+                    uint32_t totalMisses = 0;
+                    enum class HbState { Healthy, Warning, Flagged } state = HbState::Healthy;
+
+                    // derive session key: key' = HMAC_SHA256(SERVER_SECRET, hwid|nonce)
+                    auto hmacSha256 = [](const std::string& key, const std::string& data){
+                        BCRYPT_ALG_HANDLE hAlg = NULL; BCRYPT_HASH_HANDLE hHash = NULL;
+                        NTSTATUS st = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC);
+                        if (st != 0) return std::string(); DWORD objLen=0, dlen=0;
+                        (void)BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objLen, sizeof(DWORD), &dlen, 0);
+                        std::vector<UCHAR> obj(objLen);
+                        st = BCryptCreateHash(hAlg, &hHash, obj.data(), objLen, (PUCHAR)key.data(), (ULONG)key.size(), 0);
+                        if (st != 0) { BCryptCloseAlgorithmProvider(hAlg,0); return std::string(); }
+                        st = BCryptHashData(hHash, (PUCHAR)data.data(), (ULONG)data.size(), 0);
+                        if (st != 0) { BCryptDestroyHash(hHash); BCryptCloseAlgorithmProvider(hAlg,0); return std::string(); }
+                        UCHAR hash[32]; st = BCryptFinishHash(hHash, hash, sizeof(hash), 0);
+                        BCryptDestroyHash(hHash); BCryptCloseAlgorithmProvider(hAlg,0);
+                        if (st != 0) return std::string(); static const char* hex = "0123456789abcdef";
+                        std::string out; out.reserve(64); for(int i=0;i<32;++i){ out.push_back(hex[(hash[i]>>4)&0xF]); out.push_back(hex[hash[i]&0xF]); }
+                        return out;
+                    };
+                    std::string sessionKey = hmacSha256(SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
+                    
+                    std::cout << "[HEARTBEAT] Started for HWID [" << hwid << "]" << std::endl;
+
+                    while (true) {
+                        // Compose ping: PING:seq:ts:nonce;
+                        uint64_t ping_ts = (uint64_t)GetTickCount64();
+                        // naive nonce
+                        uint64_t ping_nonce = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+                        std::string ping = "PING:" + std::to_string(seq) + ":" + std::to_string(ping_ts) + ":" + std::to_string(ping_nonce) + ";";
+                        int sres = send(clientSocket, ping.c_str(), (int)ping.length(), 0);
+                        if (sres <= 0) { 
+                            std::cout << "[HEARTBEAT] Connection closed for HWID [" << hwid << "] - send failed" << std::endl; 
+                            break; 
+                        }
+
+                        // Wait for PONG with timeout
+                        fd_set fdset; FD_ZERO(&fdset); FD_SET(clientSocket, &fdset);
+                        timeval tv; tv.tv_sec = (cfg.timeout_ms/1000); tv.tv_usec = (cfg.timeout_ms%1000)*1000;
+                        int sel = select(0, &fdset, NULL, NULL, &tv);
+                        if (sel > 0) {
+                            char rbuf[512] = {0};
+                            int rcv = recv(clientSocket, rbuf, sizeof(rbuf)-1, 0);
+                            if (rcv > 0) {
+                                std::string resp(rbuf, rcv);
+                                // trim to semicolon
+                                size_t sc = resp.find(';'); if (sc != std::string::npos) resp = resp.substr(0, sc);
+                                if (resp.rfind("PONG:", 0) == 0) {
+                                    // Parse: PONG:seq:ts_client:nonce:status:hwid:hmac
+                                    // Find all colons
+                                    std::vector<size_t> col;
+                                    size_t pos = 0;
+                                    while ((pos = resp.find(':', pos)) != std::string::npos) {
+                                        col.push_back(pos);
+                                        pos++; // Move past this colon
+                                    }
+                                    if (col.size() >= 6) {
+                                        try {
+                                            // col[0] = after "PONG"
+                                            // col[1] = after seq
+                                            // col[2] = after ts_client
+                                            // col[3] = after nonce
+                                            // col[4] = after status
+                                            // col[5] = after hwid
+                                            uint32_t pseq = std::stoul(resp.substr(col[0]+1, col[1]-col[0]-1));
+                                            uint64_t tclient = std::stoull(resp.substr(col[1]+1, col[2]-col[1]-1));
+                                            uint64_t pnonce = std::stoull(resp.substr(col[2]+1, col[3]-col[2]-1));
+                                            std::string status = resp.substr(col[3]+1, col[4]-col[3]-1);
+                                            std::string phwid = resp.substr(col[4]+1, col[5]-col[4]-1);
+                                            std::string hmac = resp.substr(col[5]+1);
+
+                                            // Verify seq/nonce
+                                            if (pseq != seq || pnonce != ping_nonce) {
+                                                std::cout << "[HB] seq/nonce mismatch - Expected seq=" << seq << " nonce=" << ping_nonce 
+                                                          << " | Got seq=" << pseq << " nonce=" << pnonce << std::endl;
+                                                consecutiveMiss++;
+                                                totalMisses++;
+                                            } else {
+                                                // Verify HMAC
+                                                std::string data = std::to_string(pseq) + ":" + std::to_string(ping_ts) + ":" + std::to_string(pnonce) + ":" + phwid;
+                                                std::string expect = hmacSha256(sessionKey, data);
+                                                if (expect != hmac) {
+                                                    std::cout << "[HB] hmac mismatch" << std::endl;
+                                                    consecutiveMiss++;
+                                                    totalMisses++;
+                                                } else {
+                                                    // RTT estimate
+                                                    uint64_t rtt = (uint64_t)GetTickCount64() - ping_ts;
+                                                    rttSum += rtt; rttCount++;
+                                                    rttSumCumulative += rtt; rttCountCumulative++;
+                                                    consecutiveMiss = 0;
+                                                    // State transitions based on RTT average over last N (5) samples
+                                                    if (rttCount >= 5) {
+                                                        uint64_t avg = rttSum / rttCount;
+                                                        if (avg > cfg.rtt_warn_ms) {
+                                                            if (state == HbState::Healthy) {
+                                                                state = HbState::Warning;
+                                                                std::cout << "[HB] state->WARNING (avg RTT=" << avg << ")" << std::endl;
+                                                                double avgCumSnap = rttCountCumulative ? (double)rttSumCumulative / (double)rttCountCumulative : 0.0;
+                                                                LogViolation("HB_WARNING", std::string("High average RTT ") + std::to_string(avg) +
+                                                                    "ms | avgCum=" + std::to_string((int)avgCumSnap) + "ms | missesTotal=" + std::to_string(totalMisses), hwid);
+                                                            }
+                                                        } else if (state != HbState::Healthy) {
+                                                            state = HbState::Healthy; std::cout << "[HB] state->HEALTHY (avg RTT=" << avg << ")" << std::endl;
+                                                        }
+                                                        // reset window
+                                                        rttSum = 0; rttCount = 0;
+                                                    }
+                                                }
+                                            }
+                                        } catch (...) {
+                                            std::cout << "[HB] parse error" << std::endl;
+                                            consecutiveMiss++;
+                                            totalMisses++;
+                                        }
+                                    } else {
+                                        consecutiveMiss++;
+                                        totalMisses++;
+                                    }
+                                } else {
+                                    consecutiveMiss++;
+                                    totalMisses++;
+                                }
+                            } else {
+                                consecutiveMiss++;
+                                totalMisses++;
+                            }
+                        } else {
+                            consecutiveMiss++;
+                            totalMisses++;
+                        }
+
+                        // Check consecutive miss threshold
+                        if (consecutiveMiss >= cfg.max_consecutive_miss) {
+                            if (consecutiveMiss == 3) {
+                                state = HbState::Warning;
+                                double avgCumSnap = rttCountCumulative ? (double)rttSumCumulative / (double)rttCountCumulative : 0.0;
+                                std::cout << "[HEARTBEAT] WARNING for HWID [" << hwid << "] - 3 consecutive misses | avgRTT=" << (int)avgCumSnap << "ms" << std::endl;
+                                LogViolation("HB_WARNING", std::string("3 consecutive heartbeat misses | avgCum=") + std::to_string((int)avgCumSnap) +
+                                    "ms | missesTotal=" + std::to_string(totalMisses), hwid);
+                            } else if (consecutiveMiss >= 5) {
+                                state = HbState::Flagged;
+                                double avgCumSnap = rttCountCumulative ? (double)rttSumCumulative / (double)rttCountCumulative : 0.0;
+                                std::cout << "[HEARTBEAT] FLAGGED for HWID [" << hwid << "] - Connection terminated (5+ misses) | avgRTT=" << (int)avgCumSnap << "ms" << std::endl;
+                                LogViolation("HB_FLAGGED", std::string("5+ consecutive heartbeat misses | avgCum=") + std::to_string((int)avgCumSnap) +
+                                    "ms | missesTotal=" + std::to_string(totalMisses), hwid);
+                                break;
+                            }
+                        }
+
+                        seq++;
+                        Sleep(cfg.interval_ms);
+                    }
                 }
             } else {
-                // Ini adalah laporan pelanggaran
+                // Handler untuk violation reports lainnya
                 std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;
                 
                 // --- LOGIKA SERVER: CEK BAN LIST DAN LOG PELANGGARAN ---
@@ -524,6 +695,22 @@ int main() {
     std::cout << "[INFO] Menunggu koneksi dari client..." << std::endl;
     std::cout << "==================================================" << std::endl;
 
+    // Optional: read heartbeat config overrides from environment
+    auto readEnvUint = [](const char* name, uint32_t defVal){
+        char buf[64]; DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
+        if (n == 0 || n >= sizeof(buf)) return defVal; 
+        try { return (uint32_t)std::stoul(std::string(buf)); } catch (...) { return defVal; }
+    };
+    Oblivion::HeartbeatConfig globalHbCfg;
+    globalHbCfg.interval_ms = readEnvUint("OBLV_HB_INTERVAL_MS", globalHbCfg.interval_ms);
+    globalHbCfg.jitter_ms = readEnvUint("OBLV_HB_JITTER_MS", globalHbCfg.jitter_ms);
+    globalHbCfg.timeout_ms = readEnvUint("OBLV_HB_TIMEOUT_MS", globalHbCfg.timeout_ms);
+    globalHbCfg.max_consecutive_miss = readEnvUint("OBLV_HB_MAX_MISS", globalHbCfg.max_consecutive_miss);
+    globalHbCfg.rtt_warn_ms = readEnvUint("OBLV_HB_RTT_WARN_MS", globalHbCfg.rtt_warn_ms);
+    std::cout << "[HB CFG] interval=" << globalHbCfg.interval_ms << "ms jitter=" << globalHbCfg.jitter_ms
+              << "ms timeout=" << globalHbCfg.timeout_ms << "ms maxMiss=" << globalHbCfg.max_consecutive_miss
+              << " rttWarn=" << globalHbCfg.rtt_warn_ms << "ms" << std::endl;
+
     // Loop utama untuk menerima koneksi
     while (true) {
         // Terima koneksi dari client
@@ -536,6 +723,7 @@ int main() {
         std::cout << "\n[CONNECTION] New client connected" << std::endl;
         
         // Buat thread baru untuk menangani client agar server bisa menerima client lain
+        // Pass socket to handler; handler will use defaults; environment already logged
         std::thread clientThread(HandleClient, ClientSocket);
         clientThread.detach(); // Lepaskan thread agar bisa berjalan mandiri
     }

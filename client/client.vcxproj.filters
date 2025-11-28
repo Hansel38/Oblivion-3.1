@@ -72,6 +72,9 @@
     <ClInclude Include="include\secret_obf.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="include\heartbeat_protocol.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
