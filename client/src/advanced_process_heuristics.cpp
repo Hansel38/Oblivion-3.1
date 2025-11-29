@@ -415,9 +415,8 @@ namespace {
         
         // Signature verified successfully
         std::wcout << L"[AdvHeuristics] Signature verified: " << processName 
-                   << L" (PID: " << processId << L") - Publisher: " << expectedPublisher << std::endl;
+               << L" (PID: " << processId << L") - Publisher: " << expectedPublisher << std::endl;
         return true;
-        return false;
     }
 
     // Enable SeDebugPrivilege untuk akses system-wide handles
@@ -762,7 +761,19 @@ namespace Oblivion {
     void LogSuspiciousProcess(const std::wstring& processName, DWORD processId, const std::string& reason) {
         // Logging/reporting detail untuk proses mencurigakan
         std::wcout << L"[Heuristics] Suspicious process detected: " << processName << L" (PID: " << processId << L") Reason: " << reason.c_str() << std::endl;
-        // TODO: Integrasi dengan ReportViolationAndExit jika ingin langsung blokir
+        // Integrasi blokir langsung dengan report ke server
+        // Build details
+        std::wstringstream detailsStream;
+        detailsStream << L"Process: " << processName << L" (PID: " << processId << L") | Reason: " << std::wstring(reason.begin(), reason.end());
+        // Convert ke UTF-8
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, detailsStream.str().c_str(), (int)detailsStream.str().length(), NULL, 0, NULL, NULL);
+        std::string details_utf8;
+        if (size_needed > 0) {
+            details_utf8.resize(size_needed);
+            WideCharToMultiByte(CP_UTF8, 0, detailsStream.str().c_str(), (int)detailsStream.str().length(), &details_utf8[0], size_needed, NULL, NULL);
+        }
+        // Report dan exit
+        ReportViolationAndExit(L"", "ADV_HEURISTIC_DETECTED", details_utf8);
     }
 
     AdvancedProcessHeuristics::AdvancedProcessHeuristics() : m_heartbeatCallback(nullptr) {}

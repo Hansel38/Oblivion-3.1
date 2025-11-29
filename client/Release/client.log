@@ -1,1 +1,23 @@
-﻿
+﻿  pch.cpp
+  dllmain.cpp
+  AntiDebug.cpp
+  advanced_process_heuristics.cpp
+  anti_suspend.cpp
+  blacklist.cpp
+  digital_signature_validator.cpp
+  file_integrity_check.cpp
+  hwid_generator.cpp
+  iat_hook_scanner.cpp
+  injection_scanner.cpp
+  memory_scanner.cpp
+  network_reporter.cpp
+  overlay_scanner.cpp
+  process_watcher.cpp
+  self_integrity_guard.cpp
+  secret_obf.cpp
+     Creating library H:\Oblivion\Release\client.lib and object H:\Oblivion\Release\client.exp
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 2052 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+  client.vcxproj -> H:\Oblivion\Release\client.dll
