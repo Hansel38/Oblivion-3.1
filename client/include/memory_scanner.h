@@ -20,12 +20,12 @@ namespace Oblivion {
 
     // Struktur untuk PE section header info
     struct PESectionInfo {
-        std::string name;
-        uint32_t virtualAddress;
-        uint32_t virtualSize;
-        uint32_t rawDataOffset;
-        uint32_t rawDataSize;
-        uint32_t characteristics;
+        std::string name{};
+        uint32_t virtualAddress{0};
+        uint32_t virtualSize{0};
+        uint32_t rawDataOffset{0};
+        uint32_t rawDataSize{0};
+        uint32_t characteristics{0};
     };
 
     // Embedded signature (diisi saat build-time)
