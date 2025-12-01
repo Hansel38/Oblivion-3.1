@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <thread>
 #include <iostream>
+#include <string>
 #include <objidl.h>
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
@@ -54,6 +55,12 @@ void ReportViolationAndExit(const std::wstring& message, const std::string& type
         }
         ExitProcess(0);
     }
+}
+
+// buat disable atau enable debug console
+bool ShouldHideDebugConsole() {
+    constexpr int kConsoleToggle = 1; // 0 = console tampil, 1 = console tersembunyi
+    return kConsoleToggle == 1;
 }
 
 // Fungsi inisialisasi yang dijalankan di thread terpisah
@@ -163,23 +170,28 @@ void InitializeSecuritySystem() {
     ShowSplash();
 
     // --- LANGKAH PERTAMA: BUAT CONSOLE UNTUK DEBUGGING ---
-    // Sesuai requirement: client menggunakan Console
-    AllocConsole();
-    FILE* fDummy;
-    freopen_s(&fDummy, "CONOUT$", "w", stdout);
-    freopen_s(&fDummy, "CONOUT$", "w", stderr);
-    freopen_s(&fDummy, "CONIN$", "r", stdin);
-    std::cout.clear();
-    std::clog.clear();
-    std::cerr.clear();
-    std::cin.clear();
-    
-    SetConsoleTitleW(L"Oblivion Hack Shield - Debug Console");
-    std::cout << "==================================================" << std::endl;
-    std::cout << "  OBLIVION HACK SHIELD - Anti-Cheat System" << std::endl;
-    std::cout << "  Version 1.0 - Ragnarok Online Protection" << std::endl;
-    std::cout << "==================================================" << std::endl;
-    std::cout << "[INIT] Console initialized" << std::endl;
+    const bool hideConsole = ShouldHideDebugConsole();
+    if (!hideConsole) {
+        // Sesuai requirement: client menggunakan Console
+        AllocConsole();
+        FILE* fDummy;
+        freopen_s(&fDummy, "CONOUT$", "w", stdout);
+        freopen_s(&fDummy, "CONOUT$", "w", stderr);
+        freopen_s(&fDummy, "CONIN$", "r", stdin);
+        std::cout.clear();
+        std::clog.clear();
+        std::cerr.clear();
+        std::cin.clear();
+
+        SetConsoleTitleW(L"Oblivion Hack Shield - Debug Console");
+        std::cout << "==================================================" << std::endl;
+        std::cout << "  OBLIVION HACK SHIELD - Anti-Cheat System" << std::endl;
+        std::cout << "  Version 1.0 - Ragnarok Online Protection" << std::endl;
+        std::cout << "==================================================" << std::endl;
+        std::cout << "[INIT] Console initialized" << std::endl;
+    } else {
+        OutputDebugStringW(L"[INFO] Oblivion Hack Shield debug console disabled via configuration.");
+    }
     
     // --- LANGKAH KEDUA: BUAT NETWORK REPORTER ---
     std::cout << "[INIT] Creating network reporter..." << std::endl;
