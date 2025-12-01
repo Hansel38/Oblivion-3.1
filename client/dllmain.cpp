@@ -7,6 +7,9 @@
 #include <windows.h>
 #include <thread>
 #include <iostream>
+#include <objidl.h>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 
 // Global instance dari ProcessWatcher
 static Oblivion::ProcessWatcher* g_pProcessWatcher = nullptr;
@@ -55,6 +58,110 @@ void ReportViolationAndExit(const std::wstring& message, const std::string& type
 
 // Fungsi inisialisasi yang dijalankan di thread terpisah
 void InitializeSecuritySystem() {
+    // Tampilkan Splash Screen (non-blocking terhadap loader, tapi menjalankan loop singkat)
+    auto ShowSplash = []() {
+        using namespace Gdiplus;
+        ULONG_PTR gdiplusToken = 0;
+        GdiplusStartupInput gdiplusStartupInput;
+        if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) {
+            return; // Jika GDI+ gagal, lanjut tanpa splash
+        }
+
+        wchar_t modulePath[MAX_PATH];
+        GetModuleFileNameW(g_hSelfModule ? g_hSelfModule : GetModuleHandleW(nullptr), modulePath, MAX_PATH);
+        wchar_t *lastSlash = wcsrchr(modulePath, L'\\');
+        if (lastSlash) *lastSlash = L'\0';
+        std::wstring imagePath = std::wstring(modulePath) + L"\\logo\\OblivionHS.png";
+
+        HWND hwndSplash = nullptr;
+        HBITMAP hBmp = nullptr;
+        Bitmap *img = nullptr;
+        img = Bitmap::FromFile(imagePath.c_str(), FALSE);
+        if (!img || img->GetLastStatus() != Ok) {
+            delete img;
+            GdiplusShutdown(gdiplusToken);
+            return; // Tidak ada gambar, abaikan
+        }
+
+        const int imgW = static_cast<int>(img->GetWidth());
+        const int imgH = static_cast<int>(img->GetHeight());
+
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = [](HWND h, UINT m, WPARAM w, LPARAM l)->LRESULT {
+            if (m == WM_PAINT) {
+                PAINTSTRUCT ps; HDC hdc = BeginPaint(h, &ps);
+                RECT rc; GetClientRect(h, &rc);
+                Graphics g(hdc);
+                g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+                g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+                g.SetSmoothingMode(SmoothingModeHighQuality);
+                // Tarik pointer image dari properti window
+                Bitmap* pImg = reinterpret_cast<Bitmap*>(GetPropW(h, L"__OBV_IMG"));
+                if (pImg) {
+                    // Render image dengan ukuran penuh sesuai client area
+                    g.DrawImage(pImg, 0, 0, rc.right, rc.bottom);
+                }
+                EndPaint(h, &ps);
+                return 0;
+            }
+            return DefWindowProcW(h, m, w, l);
+        };
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"OblivionSplashClass";
+        RegisterClassW(&wc);
+
+        // Hitung ukuran window dengan border adjustment untuk WS_POPUP
+        RECT rect = {0, 0, imgW, imgH};
+        AdjustWindowRectEx(&rect, WS_POPUP, FALSE, WS_EX_TOPMOST | WS_EX_TOOLWINDOW);
+        int windowW = rect.right - rect.left;
+        int windowH = rect.bottom - rect.top;
+
+        // Posisi center layar
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+        int x = (screenW - windowW) / 2;
+        int y = (screenH - windowH) / 2;
+
+        hwndSplash = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            wc.lpszClassName,
+            L"Oblivion Hack Shield",
+            WS_POPUP,
+            x, y, windowW, windowH,
+            nullptr, nullptr, wc.hInstance, nullptr);
+
+        if (!hwndSplash) {
+            delete img;
+            GdiplusShutdown(gdiplusToken);
+            return;
+        }
+
+        SetPropW(hwndSplash, L"__OBV_IMG", reinterpret_cast<HANDLE>(img));
+        ShowWindow(hwndSplash, SW_SHOW);
+        UpdateWindow(hwndSplash);
+
+        // Jalankan message loop singkat selama 2000 ms
+        const DWORD durationMs = 2000;
+        DWORD start = GetTickCount();
+        MSG msg;
+        while (GetTickCount() - start < durationMs) {
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(10);
+        }
+
+        RemovePropW(hwndSplash, L"__OBV_IMG");
+        DestroyWindow(hwndSplash);
+        delete img;
+        GdiplusShutdown(gdiplusToken);
+    };
+
+    // Tampilkan splash sebelum console init
+    ShowSplash();
+
     // --- LANGKAH PERTAMA: BUAT CONSOLE UNTUK DEBUGGING ---
     // Sesuai requirement: client menggunakan Console
     AllocConsole();
