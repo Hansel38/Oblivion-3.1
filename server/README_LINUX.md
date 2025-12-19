@@ -25,9 +25,37 @@ cd server
 make
 ```
 
-### 3. Run the server
+### 3. Make management script executable and fix line endings
 ```bash
-./server
+# Install dos2unix (if not already installed)
+sudo apt-get install -y dos2unix
+
+# Fix Windows line endings (if transferred from Windows)
+dos2unix oblivion-start
+
+# Make executable
+chmod +x oblivion-start
+
+# Test the script
+./oblivion-start
+```
+
+**Note:** If you get "bad interpreter" error, it means the file has Windows line endings (CRLF). Run `dos2unix oblivion-start` to fix it.
+
+### 4. Run the server
+
+**Option A: Using management script (recommended)**
+```bash
+# Interactive mode (shows usage and prompts for input)
+./oblivion-start
+
+# Or with command directly
+./oblivion-start start
+```
+
+**Option B: Run directly**
+```bash
+./oblivion-server
 ```
 
 ## Configuration
@@ -62,6 +90,53 @@ The server requires a secret key. You can set it via:
 - `bans.txt` - Ban list (one HWID per line, comments with #)
 - `violations.log` - Log of all violations detected
 - `secret.dat` - Optional: XOR-encoded server secret
+
+## Server Management Script
+
+The `oblivion-start` script provides easy server management with interactive mode:
+
+### Interactive Mode
+```bash
+# Run without arguments to enter interactive mode
+./oblivion-start
+# Output:
+# Usage: ./oblivion-start { start | stop | restart | status | watch | help | log }
+# Enter a valid option: 
+```
+
+### Direct Commands
+```bash
+# Start server
+./oblivion-start start
+
+# Stop server
+./oblivion-start stop
+
+# Restart server
+./oblivion-start restart
+
+# Check status
+./oblivion-start status
+
+# View log (last 50 lines)
+./oblivion-start log
+
+# View live log (follow mode)
+./oblivion-start watch
+# or
+./oblivion-start log tail
+
+# Show help
+./oblivion-start help
+```
+
+### Status Output
+The status command shows:
+- Server running status (RUNNING/STOPPED)
+- Process ID (PID)
+- Port listening status
+- Recent log entries
+- Process information
 
 ## Running as a Service
 
