@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cwctype>
 #include <map>
+#include <sstream>
+
+// Forward declaration
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
@@ -260,8 +264,24 @@ namespace Oblivion {
                     message += L"\n\nPath: ";
                     message += modulePath;
                     message += L"\n\nClient akan ditutup.";
-                    MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                    ExitProcess(0);
+                    
+                    // Build details untuk server report
+                    std::wstringstream detailsStream;
+                    detailsStream << L"Module: " << me32.szModule
+                                  << L" | Path: " << modulePath;
+                    
+                    std::wstring detailsWide = detailsStream.str();
+                    
+                    // Convert ke UTF-8 untuk server
+                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), NULL, 0, NULL, NULL);
+                    std::string details_utf8;
+                    if (size_needed > 0) {
+                        details_utf8.resize(size_needed);
+                        WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), &details_utf8[0], size_needed, NULL, NULL);
+                    }
+                    
+                    // Report ke server dan exit (ReportViolationAndExit akan mengirim laporan ke server sebelum ExitProcess)
+                    ReportViolationAndExit(message, "UNTRUSTED_MODULE", details_utf8);
                 }
 
             } while (Module32NextW(hSnapshot, &me32));

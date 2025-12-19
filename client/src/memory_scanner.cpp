@@ -532,8 +532,23 @@ namespace Oblivion {
                 // berarti sudah ada injection SEBELUM kita load!
                 // Tapi HANYA untuk .text section (core code)
                 if (baseline.diskCRC32 != baseline.memoryCRC32 && baseline.isCodeSection) {
+                    // Extract executable filename from path
+                    std::string exeName = "unknown";
+                    if (!filePath.empty()) {
+                        size_t lastSlash = filePath.find_last_of(L"\\/");
+                        if (lastSlash != std::wstring::npos && lastSlash + 1 < filePath.length()) {
+                            std::wstring exeNameWide = filePath.substr(lastSlash + 1);
+                            int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                            if (size_needed > 0) {
+                                exeName.assign(size_needed, 0);
+                                WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                            }
+                        }
+                    }
+                    
                     std::stringstream ss;
-                    ss << "EARLY INJECTION DETECTED! Section " << section.name 
+                    ss << "File: " << exeName
+                       << " | EARLY INJECTION DETECTED! Section " << section.name 
                        << " already modified before baseline creation. "
                        << "Disk CRC32: 0x" << std::hex << baseline.diskCRC32
                        << " Memory CRC32: 0x" << baseline.memoryCRC32;
@@ -602,11 +617,26 @@ namespace Oblivion {
                 // Code modification detected!
                 std::string sectionName = (it != m_sectionMap.end()) ? it->second.name : "unknown";
 
+                // Extract executable filename from path
+                std::string exeName = "unknown";
+                if (!m_executablePath.empty()) {
+                    size_t lastSlash = m_executablePath.find_last_of(L"\\/");
+                    if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
+                        std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
+                        int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                        if (size_needed > 0) {
+                            exeName.assign(size_needed, 0);
+                            WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                        }
+                    }
+                }
+
                 std::stringstream ss;
-                ss << "Code modification detected in section: " << sectionName
-                   << " RVA: 0x" << std::hex << baseline.rva
-                   << " Expected: 0x" << baseline.diskCRC32
-                   << " Got: 0x" << currentMemoryCRC32;
+                ss << "File: " << exeName
+                   << " | Section: " << sectionName
+                   << " | RVA: 0x" << std::hex << baseline.rva
+                   << " | Expected CRC32: 0x" << baseline.diskCRC32
+                   << " | Got CRC32: 0x" << currentMemoryCRC32;
 
                 ReportViolationAndExit(L"", "CODE_MODIFICATION", ss.str());
                 return false;
@@ -710,8 +740,23 @@ namespace Oblivion {
                 // Additional check: Code cave detection untuk code sections
                 if (baseline.isCodeSection) {
                     if (DetectCodeCaveInjection(memoryBase, regionSize)) {
+                        // Extract executable filename from path
+                        std::string exeName = "unknown";
+                        if (!m_executablePath.empty()) {
+                            size_t lastSlash = m_executablePath.find_last_of(L"\\/");
+                            if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
+                                std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
+                                int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                                if (size_needed > 0) {
+                                    exeName.assign(size_needed, 0);
+                                    WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                                }
+                            }
+                        }
+                        
                         std::stringstream ss;
-                        ss << "Suspicious code pattern detected (NOP sled/code cave) at RVA: 0x" 
+                        ss << "File: " << exeName
+                           << " | Suspicious code pattern detected (NOP sled/code cave) at RVA: 0x" 
                            << std::hex << rva;
                         ReportViolationAndExit(L"", "CODE_CAVE_DETECTED", ss.str());
                         return true;
@@ -855,8 +900,23 @@ namespace Oblivion {
 
                             // Detect RWX pages (very suspicious)
                             if (DetectSuspiciousMemoryRegion(regionBase, regionSize)) {
+                                // Extract executable filename from path
+                                std::string exeName = "unknown";
+                                if (!m_executablePath.empty()) {
+                                    size_t lastSlash = m_executablePath.find_last_of(L"\\/");
+                                    if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
+                                        std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
+                                        int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                                        if (size_needed > 0) {
+                                            exeName.assign(size_needed, 0);
+                                            WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                                        }
+                                    }
+                                }
+                                
                                 std::stringstream ss;
-                                ss << "Suspicious RWX memory region at 0x" 
+                                ss << "File: " << exeName
+                                   << " | Suspicious RWX memory region at 0x" 
                                    << std::hex << reinterpret_cast<uintptr_t>(regionBase);
                                 CloseHandle(hSnapshot);
                                 ReportViolationAndExit(L"", "SUSPICIOUS_MEMORY", ss.str());
@@ -868,8 +928,23 @@ namespace Oblivion {
                                 uintptr_t rva = reinterpret_cast<uintptr_t>(regionBase) - m_moduleBaseAddress;
                                 
                                 if (VerifyRegionIntegrity(regionBase, regionSize, rva)) {
+                                    // Extract executable filename from path
+                                    std::string exeName = "unknown";
+                                    if (!m_executablePath.empty()) {
+                                        size_t lastSlash = m_executablePath.find_last_of(L"\\/");
+                                        if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
+                                            std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
+                                            int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                                            if (size_needed > 0) {
+                                                exeName.assign(size_needed, 0);
+                                                WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                                            }
+                                        }
+                                    }
+                                    
                                     std::stringstream ss;
-                                    ss << "Code modification detected at RVA 0x" << std::hex << rva;
+                                    ss << "File: " << exeName
+                                       << " | Code modification detected at RVA 0x" << std::hex << rva;
                                     CloseHandle(hSnapshot);
                                     ReportViolationAndExit(L"", "CODE_MODIFICATION", ss.str());
                                     return;

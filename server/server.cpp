@@ -111,15 +111,218 @@ void AddToBanList(const std::string& hwid) {
     }
 }
 
+// Helper function untuk extract file/software name dari details
+std::string ExtractDetectedFile(const std::string& type, const std::string& details) {
+    std::string detectedFile = "UNKNOWN";
+    
+    // Untuk PROCESS_DETECTED, details biasanya berisi nama process
+    if (type == "PROCESS_DETECTED") {
+        // Details biasanya berisi nama file .exe
+        size_t dotExe = details.find(".exe");
+        if (dotExe != std::string::npos) {
+            size_t start = details.rfind(' ', dotExe);
+            if (start == std::string::npos) start = 0;
+            else start++;
+            detectedFile = details.substr(start, dotExe - start + 4);
+        } else {
+            detectedFile = details; // Ambil seluruh details jika tidak ada .exe
+        }
+    }
+    // Untuk INJECTION_DETECTED, details berisi nama DLL
+    else if (type == "INJECTION_DETECTED") {
+        size_t dotDll = details.find(".dll");
+        if (dotDll != std::string::npos) {
+            size_t start = details.rfind(' ', dotDll);
+            if (start == std::string::npos) start = 0;
+            else start++;
+            detectedFile = details.substr(start, dotDll - start + 4);
+        } else {
+            detectedFile = details;
+        }
+    }
+    // Untuk UNTRUSTED_MODULE, extract nama modul dari details
+    else if (type == "UNTRUSTED_MODULE") {
+        // Format: "Module: WpeSpy.dll | Path: H:\..."
+        size_t modulePos = details.find("Module: ");
+        if (modulePos != std::string::npos) {
+            size_t start = modulePos + 8; // len("Module: ")
+            size_t end = details.find(" | ", start);
+            if (end != std::string::npos) {
+                detectedFile = details.substr(start, end - start);
+            } else {
+                detectedFile = details.substr(start);
+                // Truncate jika terlalu panjang
+                if (detectedFile.length() > 100) {
+                    detectedFile = detectedFile.substr(0, 100);
+                }
+            }
+        } else {
+            // Fallback: cari .dll dalam details
+            size_t dotDll = details.find(".dll");
+            if (dotDll != std::string::npos) {
+                size_t start = details.rfind(' ', dotDll);
+                if (start == std::string::npos) start = 0;
+                else start++;
+                detectedFile = details.substr(start, dotDll - start + 4);
+            } else {
+                detectedFile = details.length() > 100 ? details.substr(0, 100) + "..." : details;
+            }
+        }
+    }
+    // Untuk FILE_MODIFIED atau FILE_INTEGRITY_FAILED, extract nama file
+    else if (type == "FILE_MODIFIED" || type == "FILE_INTEGRITY_FAILED") {
+        // Format biasanya: "filename.ext - Hash mismatch..." atau "filename.ext - File not found"
+        size_t dash = details.find(" - ");
+        if (dash != std::string::npos) {
+            detectedFile = details.substr(0, dash);
+        } else {
+            detectedFile = details;
+        }
+    }
+    // Untuk ADV_HEURISTIC_DETECTED, extract process name
+    else if (type == "ADV_HEURISTIC_DETECTED") {
+        // Format: "[DETECTION_TYPE] processName.exe (PID:123) => indicator"
+        size_t bracket = details.find(']');
+        if (bracket != std::string::npos) {
+            size_t spaceAfter = details.find(' ', bracket + 1);
+            if (spaceAfter != std::string::npos) {
+                size_t spaceBeforePid = details.find(" (PID:", spaceAfter);
+                if (spaceBeforePid != std::string::npos) {
+                    detectedFile = details.substr(spaceAfter + 1, spaceBeforePid - spaceAfter - 1);
+                } else {
+                    // Fallback: ambil setelah bracket sampai spasi berikutnya
+                    detectedFile = details.substr(spaceAfter + 1);
+                    size_t nextSpace = detectedFile.find(' ');
+                    if (nextSpace != std::string::npos) {
+                        detectedFile = detectedFile.substr(0, nextSpace);
+                    }
+                }
+            }
+        }
+        // Fallback: cari .exe dalam details
+        if (detectedFile == "UNKNOWN") {
+            size_t dotExe = details.find(".exe");
+            if (dotExe != std::string::npos) {
+                size_t start = details.rfind(' ', dotExe);
+                if (start == std::string::npos) start = 0;
+                else start++;
+                detectedFile = details.substr(start, dotExe - start + 4);
+            }
+        }
+    }
+    // Untuk OVERLAY_DETECTED, details berisi window class name
+    else if (type == "OVERLAY_DETECTED") {
+        detectedFile = "Overlay Window: " + details;
+    }
+    // Untuk SIGNATURE_SPOOFING, extract process name dari details
+    else if (type == "SIGNATURE_SPOOFING") {
+        // Format: "Process: processName.exe (PID:123) | Path: ... | Expected: ... | Actual: ..."
+        size_t processPos = details.find("Process: ");
+        if (processPos != std::string::npos) {
+            size_t start = processPos + 9; // len("Process: ")
+            size_t end = details.find(" (PID:", start);
+            if (end != std::string::npos) {
+                detectedFile = details.substr(start, end - start);
+            } else {
+                size_t spaceAfter = details.find(' ', start);
+                if (spaceAfter != std::string::npos) {
+                    detectedFile = details.substr(start, spaceAfter - start);
+                } else {
+                    detectedFile = details.substr(start);
+                }
+            }
+        } else {
+            // Fallback: cari .exe dalam details
+            size_t dotExe = details.find(".exe");
+            if (dotExe != std::string::npos) {
+                size_t start = details.rfind(' ', dotExe);
+                if (start == std::string::npos) start = 0;
+                else start++;
+                detectedFile = details.substr(start, dotExe - start + 4);
+            } else {
+                detectedFile = details.length() > 100 ? details.substr(0, 100) + "..." : details;
+            }
+        }
+    }
+    // Untuk CODE_MODIFICATION, EARLY_INJECTION, CODE_CAVE_DETECTED, SUSPICIOUS_MEMORY
+    else if (type == "CODE_MODIFICATION" || type == "EARLY_INJECTION" || 
+             type == "CODE_CAVE_DETECTED" || type == "SUSPICIOUS_MEMORY") {
+        // Format: "File: filename.exe | Section: ... | ..." atau "File: filename.exe | ..."
+        size_t filePos = details.find("File: ");
+        if (filePos != std::string::npos) {
+            size_t start = filePos + 6; // len("File: ")
+            size_t end = details.find(" | ", start);
+            if (end != std::string::npos) {
+                detectedFile = details.substr(start, end - start);
+            } else {
+                // Jika tidak ada " | ", ambil sampai akhir string atau sampai karakter tertentu
+                size_t spaceAfter = details.find(' ', start);
+                if (spaceAfter != std::string::npos && spaceAfter < start + 200) {
+                    detectedFile = details.substr(start, spaceAfter - start);
+                } else {
+                    detectedFile = details.substr(start);
+                    if (detectedFile.length() > 100) {
+                        detectedFile = detectedFile.substr(0, 100);
+                    }
+                }
+            }
+        } else {
+            // Fallback untuk format lama
+            size_t dotExe = details.find(".exe");
+            if (dotExe != std::string::npos) {
+                size_t start = details.rfind(' ', dotExe);
+                if (start == std::string::npos) start = 0;
+                else start++;
+                detectedFile = details.substr(start, dotExe - start + 4);
+            } else {
+                detectedFile = details.length() > 100 ? details.substr(0, 100) + "..." : details;
+            }
+        }
+    }
+    // Untuk deteksi lain, coba extract dari details
+    else {
+        // Coba cari .exe atau .dll dalam details
+        size_t dotExe = details.find(".exe");
+        size_t dotDll = details.find(".dll");
+        
+        if (dotExe != std::string::npos && (dotDll == std::string::npos || dotExe < dotDll)) {
+            size_t start = details.rfind(' ', dotExe);
+            if (start == std::string::npos) start = 0;
+            else start++;
+            detectedFile = details.substr(start, dotExe - start + 4);
+        } else if (dotDll != std::string::npos) {
+            size_t start = details.rfind(' ', dotDll);
+            if (start == std::string::npos) start = 0;
+            else start++;
+            detectedFile = details.substr(start, dotDll - start + 4);
+        } else {
+            // Jika tidak ada, gunakan detail lengkap (mungkin sudah jelas)
+            detectedFile = details.length() > 100 ? details.substr(0, 100) + "..." : details;
+        }
+    }
+    
+    return detectedFile;
+}
+
 // Fungsi untuk mencatat pelanggaran ke log file
 void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
+        // Extract file/software yang terdeteksi
+        std::string detectedFile = ExtractDetectedFile(type, details);
+        
+        // Log dengan format yang lebih jelas
         logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << type 
                 << " | HWID: " << hwid 
+                << " | DETECTED_FILE/SOFTWARE: " << detectedFile
                 << " | DETAILS: " << details << std::endl;
         logFile.close();
+        
+        // Also log to console dengan format yang jelas
+        std::cout << "[VIOLATION] TYPE: " << type 
+                  << " | HWID: " << hwid 
+                  << " | FILE/SOFTWARE: " << detectedFile << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file log untuk menulis." << std::endl;
     }
