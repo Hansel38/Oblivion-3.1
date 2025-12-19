@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstring>
 #include "secret_obf.h"
 #if defined(_WIN32)
 #include <windows.h>

@@ -198,7 +198,9 @@ void InitializeSecuritySystem() {
     try {
         // Ambil secret yang di-obfuscate (bukan string literal langsung)
         const std::string kClientSecret = Oblivion::GetClientSecret();
-        g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
+        // TODO: Ganti "127.0.0.1" dengan IP VPS server Anda
+        // Contoh: "192.168.1.100" atau "your-server-ip.com"
+        g_pNetworkReporter = new Oblivion::NetworkReporter("202.10.47.200", 54321, kClientSecret);
         std::cout << "[INIT] Network reporter created" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Failed to create network reporter: " << e.what() << std::endl;

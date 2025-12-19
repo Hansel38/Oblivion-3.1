@@ -206,6 +206,9 @@ namespace {
         L"applicationframehost.exe",
         L"systemsettings.exe",
         
+        // Windows Audio Services
+        L"audiodg.exe",  // Audio Device Graph Isolation (Windows audio service)
+        
         // Open-source utilities (no signature verification - often unsigned)
         L"notepad++.exe",
         L"7zfm.exe",
@@ -213,11 +216,15 @@ namespace {
         L"vlc.exe",
         L"winrar.exe",
         
+        // Development tools (no signature verification - often unsigned during development)
+        L"vcpkgsrv.exe",  // Visual Studio Package Server
+        
         // Common legitimate software (REQUIRES SIGNATURE VERIFICATION)
         // These processes MUST be verified with digital signature to prevent spoofing
         L"chrome.exe",
         L"firefox.exe",
         L"msedge.exe",
+        L"msedgewebview2.exe",  // Microsoft Edge WebView2 Runtime
         L"discord.exe",
         L"steam.exe",
         L"steamwebhelper.exe",
@@ -247,6 +254,7 @@ namespace {
         L"chrome.exe",
         L"firefox.exe",
         L"msedge.exe",
+        L"msedgewebview2.exe",  // Microsoft Edge WebView2 Runtime
         L"discord.exe",
         L"steam.exe",
         L"steamwebhelper.exe",
@@ -701,7 +709,9 @@ namespace Oblivion {
             L"amd", L"radeon", L"amdrsserv", L"amddvr",
             L"intel", L"igfx", L"hkcmd",
             L"realtek", L"rthdcpl",
-            L"microsoft", L"windows", L"skype", L"teams",
+            L"microsoft", L"windows", L"skype", L"teams", L"msedge", L"msedgewebview",
+            L"audiodg", L"audio",  // Windows audio services
+            L"vcpkgsrv",  // Visual Studio Package Server
             L"adobe", L"acrobat", L"creative cloud",
             L"google", L"chrome", L"drive",
             L"steam", L"origin", L"uplay", L"epicgames", L"battlenet",

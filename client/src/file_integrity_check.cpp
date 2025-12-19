@@ -26,7 +26,7 @@ const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIn
     // Contoh: { L"ragexe.exe", "HASH_SHA_256_DARI_RAGEXE.EXE_ANDA" },
     // TAMBAHKAN FILE LAIN YANG PENTING DI SINI
     { L"rro.exe", "93b55476db2efdd45aa9127da60a64e100b8bfa00f59b5d58a425fad6151ef15" }, // CONTOH HASH (ini adalah hash dari file kosong)
-    { L"Republic.grf", "b1a957bd07ec5d228a4b7c6aafb4bb492782ebf477354a073d667bce39454eca" }  // CONTOH HASH
+    { L"Republic.grf", "7dac3104d7aba80a8264cb70d9916287615f68099de67710668e8896b66338dc" }  // CONTOH HASH
 };
 
 namespace Oblivion {
