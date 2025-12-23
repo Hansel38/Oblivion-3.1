@@ -25,8 +25,9 @@ const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIn
     // Contoh: { L"data.grf", "HASH_SHA_256_DARI_DATA.GRF_ANDA" },
     // Contoh: { L"ragexe.exe", "HASH_SHA_256_DARI_RAGEXE.EXE_ANDA" },
     // TAMBAHKAN FILE LAIN YANG PENTING DI SINI
-    { L"rro.exe", "93b55476db2efdd45aa9127da60a64e100b8bfa00f59b5d58a425fad6151ef15" }, // CONTOH HASH (ini adalah hash dari file kosong)
-    { L"Republic.grf", "7dac3104d7aba80a8264cb70d9916287615f68099de67710668e8896b66338dc" }  // CONTOH HASH
+    { L"RRO.exe", "d5d0dbed64767dd3cf65c4d0bb930c1fa5bb17f3b54770c451a1d9f26528e2e0" }, // Hash SHA256 dari RRO.exe
+    { L"Republic.grf", "3bd9d7d1cda7235595f0b3ba9ec178b3d3738c358ff45ac5824805ba4b232581" },  // CONTOH HASH
+    { L"DATA.ini", "7b5cea254e67b3cfbc58f710658bdadbb07109146c92f837f467d3c9b8bf5af5" }
 };
 
 namespace Oblivion {
@@ -77,8 +78,19 @@ namespace Oblivion {
     }
 
     std::string FileIntegrityChecker::CalculateSHA256(const std::wstring& filePath) {
-        std::ifstream file(filePath, std::ios::binary);
-        if (!file.is_open()) {
+        // Gunakan CreateFile dengan share mode untuk membaca file yang sedang dieksekusi
+        // Ini penting karena std::ifstream tidak bisa membaca file yang sedang dieksekusi dengan benar
+        HANDLE hFile = CreateFileW(
+            filePath.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, // Penting: allow sharing untuk file yang sedang dieksekusi
+            NULL,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, // Optimize untuk sequential read
+            NULL
+        );
+        
+        if (hFile == INVALID_HANDLE_VALUE) {
             return ""; // File tidak bisa dibuka
         }
 
@@ -88,13 +100,13 @@ namespace Oblivion {
         DWORD cbData = 0, cbHash = 0, cbHashObject = 0;
         PBYTE pbHashObject = NULL;
         PBYTE pbHash = NULL;
-        std::string result = ""; // Inisialisasi di awal untuk menghindari masalah dengan goto
-        const DWORD BUFFER_SIZE = 4096; // Pindahkan ke atas untuk menghindari masalah dengan goto
+        std::string result = "";
+        const DWORD BUFFER_SIZE = 4096;
 
         // Buka algoritma SHA-256
         status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
         if (!BCRYPT_SUCCESS(status)) { 
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
@@ -102,14 +114,14 @@ namespace Oblivion {
         status = BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PBYTE)&cbHashObject, sizeof(DWORD), &cbData, 0);
         if (!BCRYPT_SUCCESS(status)) { 
             BCryptCloseAlgorithmProvider(hAlg, 0);
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
         status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0);
         if (!BCRYPT_SUCCESS(status)) { 
             BCryptCloseAlgorithmProvider(hAlg, 0);
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
@@ -120,7 +132,7 @@ namespace Oblivion {
             if (pbHashObject) HeapFree(GetProcessHeap(), 0, pbHashObject);
             if (pbHash) HeapFree(GetProcessHeap(), 0, pbHash);
             BCryptCloseAlgorithmProvider(hAlg, 0);
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
@@ -130,34 +142,34 @@ namespace Oblivion {
             HeapFree(GetProcessHeap(), 0, pbHashObject);
             HeapFree(GetProcessHeap(), 0, pbHash);
             BCryptCloseAlgorithmProvider(hAlg, 0);
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
-        // Baca file dan hashkan kontennya
+        // Baca file dan hashkan kontennya menggunakan ReadFile
         BYTE buffer[BUFFER_SIZE];
-        while (file.read(reinterpret_cast<char*>(buffer), BUFFER_SIZE)) {
-            status = BCryptHashData(hHash, buffer, (ULONG)file.gcount(), 0);
+        DWORD bytesRead = 0;
+        while (ReadFile(hFile, buffer, BUFFER_SIZE, &bytesRead, NULL) && bytesRead > 0) {
+            status = BCryptHashData(hHash, buffer, bytesRead, 0);
             if (!BCRYPT_SUCCESS(status)) { 
                 BCryptDestroyHash(hHash);
                 HeapFree(GetProcessHeap(), 0, pbHashObject);
                 HeapFree(GetProcessHeap(), 0, pbHash);
                 BCryptCloseAlgorithmProvider(hAlg, 0);
-                file.close();
+                CloseHandle(hFile);
                 return ""; 
             }
         }
-        // Hash sisa byte terakhir jika ada
-        if (file.gcount() > 0) {
-            status = BCryptHashData(hHash, buffer, (ULONG)file.gcount(), 0);
-            if (!BCRYPT_SUCCESS(status)) { 
-                BCryptDestroyHash(hHash);
-                HeapFree(GetProcessHeap(), 0, pbHashObject);
-                HeapFree(GetProcessHeap(), 0, pbHash);
-                BCryptCloseAlgorithmProvider(hAlg, 0);
-                file.close();
-                return ""; 
-            }
+        
+        // Periksa error dari ReadFile (bukan EOF)
+        DWORD lastError = GetLastError();
+        if (lastError != ERROR_SUCCESS && lastError != ERROR_HANDLE_EOF) {
+            BCryptDestroyHash(hHash);
+            HeapFree(GetProcessHeap(), 0, pbHashObject);
+            HeapFree(GetProcessHeap(), 0, pbHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            CloseHandle(hFile);
+            return "";
         }
 
         // Selesaikan perhitungan hash
@@ -167,7 +179,7 @@ namespace Oblivion {
             HeapFree(GetProcessHeap(), 0, pbHashObject);
             HeapFree(GetProcessHeap(), 0, pbHash);
             BCryptCloseAlgorithmProvider(hAlg, 0);
-            file.close();
+            CloseHandle(hFile);
             return ""; 
         }
 
@@ -184,7 +196,7 @@ namespace Oblivion {
         HeapFree(GetProcessHeap(), 0, pbHashObject);
         HeapFree(GetProcessHeap(), 0, pbHash);
         BCryptCloseAlgorithmProvider(hAlg, 0);
-        file.close();
+        CloseHandle(hFile);
 
         return result;
     }

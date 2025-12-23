@@ -149,10 +149,10 @@ void InitializeSecuritySystem() {
         UpdateWindow(hwndSplash);
 
         // Jalankan message loop singkat selama 2000 ms
-        const DWORD durationMs = 2000;
-        DWORD start = GetTickCount();
+        const ULONGLONG durationMs = 2000;
+        ULONGLONG start = GetTickCount64();
         MSG msg;
-        while (GetTickCount() - start < durationMs) {
+        while (GetTickCount64() - start < durationMs) {
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);

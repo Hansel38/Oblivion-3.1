@@ -525,36 +525,73 @@ namespace Oblivion {
             
             MEMORY_BASIC_INFORMATION mbi;
             if (VirtualQuery(memoryAddr, &mbi, sizeof(mbi)) > 0 && mbi.State == MEM_COMMIT) {
+                // Gunakan ukuran yang sama dengan baseline.size untuk konsistensi
+                // baseline.size = section.virtualSize, jadi gunakan ukuran minimum antara
+                // virtualSize dan regionSize yang tersedia
                 size_t sizeToHash = (section.virtualSize < static_cast<uint32_t>(mbi.RegionSize)) ? section.virtualSize : static_cast<size_t>(mbi.RegionSize);
+                // Pastikan sizeToHash tidak melebihi baseline.size
+                if (sizeToHash > baseline.size) {
+                    sizeToHash = baseline.size;
+                }
                 baseline.memoryCRC32 = CalculateCRC32(memoryAddr, sizeToHash);
                 
                 // CRITICAL CHECK: Jika memory sudah berbeda dari disk saat baseline creation,
                 // berarti sudah ada injection SEBELUM kita load!
                 // Tapi HANYA untuk .text section (core code)
+                // CATATAN: Relocations (ASLR) dapat menyebabkan perbedaan kecil yang legitimate
                 if (baseline.diskCRC32 != baseline.memoryCRC32 && baseline.isCodeSection) {
-                    // Extract executable filename from path
-                    std::string exeName = "unknown";
-                    if (!filePath.empty()) {
-                        size_t lastSlash = filePath.find_last_of(L"\\/");
-                        if (lastSlash != std::wstring::npos && lastSlash + 1 < filePath.length()) {
-                            std::wstring exeNameWide = filePath.substr(lastSlash + 1);
-                            int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
-                            if (size_needed > 0) {
-                                exeName.assign(size_needed, 0);
-                                WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                    // Hitung perbedaan byte-byte untuk membedakan relocations dari injection
+                    // Relocations biasanya hanya mengubah beberapa bytes (< 0.1% dari section)
+                    size_t rawDataSize = section.rawDataSize;
+                    if (rawDataSize > 0 && rawDataSize <= fileData.size() - section.rawDataOffset) {
+                        const uint8_t* diskData = fileData.data() + section.rawDataOffset;
+                        size_t differentBytes = 0;
+                        size_t bytesToCompare = (sizeToHash < rawDataSize) ? sizeToHash : rawDataSize;
+                        
+                        // Hitung jumlah byte yang berbeda
+                        for (size_t i = 0; i < bytesToCompare; i++) {
+                            if (diskData[i] != memoryAddr[i]) {
+                                differentBytes++;
                             }
                         }
+                        
+                        // Relocations biasanya mengubah < 0.1% dari section (atau < 100 bytes untuk section kecil)
+                        // Jika perbedaannya terlalu besar, kemungkinan ada injection
+                        double diffPercentage = (bytesToCompare > 0) ? (100.0 * differentBytes / bytesToCompare) : 0.0;
+                        size_t diffThreshold = (bytesToCompare > 100000) ? (bytesToCompare / 1000) : 100; // 0.1% atau max 100 bytes
+                        
+                        if (differentBytes > diffThreshold || diffPercentage > 0.1) {
+                            // Extract executable filename from path
+                            std::string exeName = "unknown";
+                            if (!filePath.empty()) {
+                                size_t lastSlash = filePath.find_last_of(L"\\/");
+                                if (lastSlash != std::wstring::npos && lastSlash + 1 < filePath.length()) {
+                                    std::wstring exeNameWide = filePath.substr(lastSlash + 1);
+                                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                                    if (size_needed > 0) {
+                                        exeName.assign(size_needed, 0);
+                                        WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                                    }
+                                }
+                            }
+                            
+                            std::stringstream ss;
+                            ss << "File: " << exeName
+                               << " | EARLY INJECTION DETECTED! Section " << section.name 
+                               << " already modified before baseline creation. "
+                               << "Disk CRC32: 0x" << std::hex << baseline.diskCRC32
+                               << " Memory CRC32: 0x" << baseline.memoryCRC32
+                               << " Different bytes: " << std::dec << differentBytes 
+                               << " (" << std::fixed << std::setprecision(2) << diffPercentage << "%)";
+                            
+                            ReportViolationAndExit(L"", "EARLY_INJECTION", ss.str());
+                            return;
+                        }
+                        // Jika perbedaannya kecil, anggap sebagai relocations yang legitimate
+                        // Log untuk debugging (optional, bisa di-comment jika tidak perlu)
+                        // std::cout << "Note: Small difference in .text section (likely relocations): " 
+                        //           << differentBytes << " bytes (" << diffPercentage << "%)" << std::endl;
                     }
-                    
-                    std::stringstream ss;
-                    ss << "File: " << exeName
-                       << " | EARLY INJECTION DETECTED! Section " << section.name 
-                       << " already modified before baseline creation. "
-                       << "Disk CRC32: 0x" << std::hex << baseline.diskCRC32
-                       << " Memory CRC32: 0x" << baseline.memoryCRC32;
-                    
-                    ReportViolationAndExit(L"", "EARLY_INJECTION", ss.str());
-                    return;
                 }
             } else {
                 baseline.memoryCRC32 = 0;
@@ -612,8 +649,50 @@ namespace Oblivion {
             size_t sizeToCheck = (baseline.size < static_cast<size_t>(mbi.RegionSize)) ? baseline.size : static_cast<size_t>(mbi.RegionSize);
             uint32_t currentMemoryCRC32 = CalculateCRC32(memoryAddr, sizeToCheck);
 
-            // Compare dengan disk baseline (ground truth)
-            if (currentMemoryCRC32 != baseline.diskCRC32) {
+            // CRITICAL: Bandingkan dengan memory baseline (bukan disk baseline)
+            // karena relocations membuat memory berbeda dari disk sejak awal
+            // baseline.memoryCRC32 adalah snapshot memory saat baseline dibuat (setelah relocations)
+            // baseline.diskCRC32 digunakan untuk verifikasi bahwa file disk belum diubah
+            
+            bool memoryModified = false;
+            if (baseline.memoryCRC32 != 0) {
+                // Gunakan memory baseline jika tersedia (setelah relocations)
+                memoryModified = (currentMemoryCRC32 != baseline.memoryCRC32);
+            } else {
+                // Fallback: jika memory baseline tidak tersedia, bandingkan dengan disk
+                // tapi perlu toleransi untuk relocations (perbedaan kecil adalah normal)
+                if (currentMemoryCRC32 != baseline.diskCRC32) {
+                    // Hitung perbedaan untuk membedakan relocations dari injection
+                    auto it_section_info = m_sectionMap.find(baseline.rva);
+                    if (it_section_info != m_sectionMap.end() && !fileData.empty()) {
+                        const auto& section = it_section_info->second;
+                        if (section.rawDataOffset + section.rawDataSize <= fileData.size()) {
+                            const uint8_t* diskData = fileData.data() + section.rawDataOffset;
+                            size_t differentBytes = 0;
+                            size_t bytesToCompare = (sizeToCheck < section.rawDataSize) ? sizeToCheck : section.rawDataSize;
+                            
+                            for (size_t i = 0; i < bytesToCompare; i++) {
+                                if (diskData[i] != memoryAddr[i]) {
+                                    differentBytes++;
+                                }
+                            }
+                            
+                            // Relocations biasanya < 0.1% atau < 100 bytes
+                            double diffPercentage = (bytesToCompare > 0) ? (100.0 * differentBytes / bytesToCompare) : 0.0;
+                            size_t diffThreshold = (bytesToCompare > 100000) ? (bytesToCompare / 1000) : 100;
+                            
+                            // Hanya flag jika perbedaannya signifikan
+                            memoryModified = (differentBytes > diffThreshold || diffPercentage > 0.1);
+                        } else {
+                            memoryModified = true; // Tidak bisa verifikasi, anggap modified
+                        }
+                    } else {
+                        memoryModified = true; // Tidak bisa verifikasi, anggap modified
+                    }
+                }
+            }
+
+            if (memoryModified) {
                 // Code modification detected!
                 std::string sectionName = (it != m_sectionMap.end()) ? it->second.name : "unknown";
 
@@ -635,11 +714,46 @@ namespace Oblivion {
                 ss << "File: " << exeName
                    << " | Section: " << sectionName
                    << " | RVA: 0x" << std::hex << baseline.rva
-                   << " | Expected CRC32: 0x" << baseline.diskCRC32
+                   << " | Expected CRC32: 0x" << (baseline.memoryCRC32 != 0 ? baseline.memoryCRC32 : baseline.diskCRC32)
                    << " | Got CRC32: 0x" << currentMemoryCRC32;
 
                 ReportViolationAndExit(L"", "CODE_MODIFICATION", ss.str());
                 return false;
+            }
+
+            // Verifikasi bahwa file disk belum diubah (optional check)
+            // Ini memastikan file di disk masih sama dengan baseline
+            auto it_disk_check = m_sectionMap.find(baseline.rva);
+            if (it_disk_check != m_sectionMap.end() && !fileData.empty()) {
+                const auto& section = it_disk_check->second;
+                if (section.rawDataOffset + section.rawDataSize <= fileData.size()) {
+                    uint32_t currentDiskCRC32 = CalculateSectionHashFromDisk(fileData, section);
+                    if (currentDiskCRC32 != baseline.diskCRC32) {
+                        // File disk telah diubah!
+                        std::string sectionName = it->second.name;
+                        std::string exeName = "unknown";
+                        if (!m_executablePath.empty()) {
+                            size_t lastSlash = m_executablePath.find_last_of(L"\\/");
+                            if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
+                                std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
+                                int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
+                                if (size_needed > 0) {
+                                    exeName.assign(size_needed, 0);
+                                    WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
+                                }
+                            }
+                        }
+                        
+                        std::stringstream ss;
+                        ss << "File: " << exeName
+                           << " | Section: " << sectionName
+                           << " | Disk file has been modified! Expected CRC32: 0x" << std::hex << baseline.diskCRC32
+                           << " | Got CRC32: 0x" << currentDiskCRC32;
+                        
+                        ReportViolationAndExit(L"", "DISK_FILE_MODIFIED", ss.str());
+                        return false;
+                    }
+                }
             }
 
             m_verifiedSections.insert(baseline.rva);
@@ -712,35 +826,99 @@ namespace Oblivion {
             return false; // Baseline belum valid
         }
 
-        // Cari baseline untuk RVA ini
+        // Cari baseline untuk RVA ini (toleransi ukuran sedikit berbeda karena alignment)
         for (const auto& baseline : m_diskBaseline) {
-            if (baseline.rva == rva && baseline.size == regionSize) {
-                uint32_t currentCRC32 = CalculateCRC32(memoryBase, regionSize);
+            // Match RVA dan ukuran harus sama atau sangat dekat (untuk toleransi alignment)
+            long long sizeDiff = (long long)baseline.size - (long long)regionSize;
+            if (baseline.rva == rva && (baseline.size == regionSize || (sizeDiff >= 0 ? sizeDiff : -sizeDiff) < 0x1000)) {
+                size_t sizeToCheck = (baseline.size < regionSize) ? baseline.size : regionSize;
+                uint32_t currentCRC32 = CalculateCRC32(memoryBase, sizeToCheck);
 
-                // ALWAYS compare dengan DISK baseline, bukan memory baseline!
-                if (currentCRC32 != baseline.diskCRC32) {
-                    // Tambahan heuristik: gunakan hash SHA256 32-bit untuk mengurangi false positive
-                    uint64_t sha32 = CalculateSHA256_32bit(memoryBase, regionSize);
-                    uint32_t sha32_lo = static_cast<uint32_t>(sha32);
-
-                    // Untuk .text, perubahan apapun adalah pelanggaran
-                    if (baseline.isCodeSection) {
-                        return true; // Modification detected di code section
+                // CRITICAL: Bandingkan dengan memory baseline (bukan disk baseline)
+                // karena relocations membuat memory berbeda dari disk sejak awal
+                bool memoryModified = false;
+                
+                if (baseline.memoryCRC32 != 0) {
+                    // Gunakan memory baseline jika tersedia (setelah relocations)
+                    // baseline.memoryCRC32 dihitung dengan ukuran baseline.size saat baseline dibuat
+                    // Jadi kita harus menggunakan ukuran yang sama untuk perbandingan
+                    
+                    // Gunakan ukuran baseline.size untuk perbandingan (bukan sizeToCheck)
+                    // karena baseline.memoryCRC32 dihitung dengan ukuran baseline.size
+                    size_t sizeForComparison = baseline.size;
+                    if (sizeForComparison > regionSize) {
+                        sizeForComparison = regionSize; // Jangan melebihi region yang tersedia
                     }
-
-                    // Untuk non-code section, jika kedua hash (CRC & SHA32) menunjukkan perubahan, flag
-                    if (sha32_lo != baseline.memoryCRC32) {
-                        return true; // Modification detected
+                    
+                    uint32_t currentCRC32ForComparison = CalculateCRC32(memoryBase, sizeForComparison);
+                    
+                    // Jika ukuran berbeda dari baseline.size, perlu recalculate baseline memory CRC32
+                    uint32_t baselineMemoryCRC32 = baseline.memoryCRC32;
+                    if (sizeForComparison != baseline.size) {
+                        // Recalculate baseline memory CRC32 dengan ukuran yang sesuai
+                        uint8_t* baselineMemoryAddr = reinterpret_cast<uint8_t*>(m_moduleBaseAddress + baseline.rva);
+                        MEMORY_BASIC_INFORMATION mbi;
+                        if (VirtualQuery(baselineMemoryAddr, &mbi, sizeof(mbi)) > 0 && mbi.State == MEM_COMMIT) {
+                            size_t availableSize = (baseline.size < static_cast<size_t>(mbi.RegionSize)) ? baseline.size : static_cast<size_t>(mbi.RegionSize);
+                            if (availableSize >= sizeForComparison) {
+                                baselineMemoryCRC32 = CalculateCRC32(baselineMemoryAddr, sizeForComparison);
+                            } else {
+                                // Tidak bisa recalculate, gunakan baseline yang ada
+                                sizeForComparison = baseline.size;
+                                currentCRC32ForComparison = CalculateCRC32(memoryBase, sizeForComparison);
+                            }
+                        }
                     }
-
-                    // Jika hanya CRC berubah (misalignment/relocation kecil), toleransi minimal: tidak flag langsung
-                    return false;
+                    
+                    memoryModified = (currentCRC32ForComparison != baselineMemoryCRC32);
+                } else {
+                    // Fallback: jika memory baseline tidak tersedia, bandingkan dengan disk
+                    // tapi perlu toleransi untuk relocations
+                    if (currentCRC32 != baseline.diskCRC32) {
+                        // Untuk code sections, hitung perbedaan byte untuk membedakan relocations
+                        if (baseline.isCodeSection) {
+                            auto it_section = m_sectionMap.find(baseline.rva);
+                            if (it_section != m_sectionMap.end()) {
+                                const auto& section = it_section->second;
+                                // Baca disk data untuk perbandingan
+                                std::vector<uint8_t> fileData;
+                                if (ReadExecutableFile(m_executablePath, fileData) && 
+                                    section.rawDataOffset + section.rawDataSize <= fileData.size()) {
+                                    const uint8_t* diskData = fileData.data() + section.rawDataOffset;
+                                    size_t differentBytes = 0;
+                                    size_t bytesToCompare = (sizeToCheck < section.rawDataSize) ? sizeToCheck : section.rawDataSize;
+                                    
+                                    for (size_t i = 0; i < bytesToCompare; i++) {
+                                        if (diskData[i] != memoryBase[i]) {
+                                            differentBytes++;
+                                        }
+                                    }
+                                    
+                                    // Relocations biasanya < 0.1% atau < 100 bytes
+                                    double diffPercentage = (bytesToCompare > 0) ? (100.0 * differentBytes / bytesToCompare) : 0.0;
+                                    size_t diffThreshold = (bytesToCompare > 100000) ? (bytesToCompare / 1000) : 100;
+                                    
+                                    // Hanya flag jika perbedaannya signifikan
+                                    memoryModified = (differentBytes > diffThreshold || diffPercentage > 0.1);
+                                } else {
+                                    memoryModified = true; // Tidak bisa verifikasi, anggap modified
+                                }
+                            } else {
+                                memoryModified = true; // Tidak bisa verifikasi, anggap modified
+                            }
+                        } else {
+                            // Untuk non-code sections, gunakan heuristik SHA256
+                            uint64_t sha32 = CalculateSHA256_32bit(memoryBase, sizeToCheck);
+                            uint32_t sha32_lo = static_cast<uint32_t>(sha32);
+                            memoryModified = (sha32_lo != baseline.memoryCRC32 && baseline.memoryCRC32 != 0);
+                        }
+                    }
                 }
 
-                // Additional check: Code cave detection untuk code sections
-                if (baseline.isCodeSection) {
-                    if (DetectCodeCaveInjection(memoryBase, regionSize)) {
-                        // Extract executable filename from path
+                if (memoryModified) {
+                    // Jika memang ada modifikasi, baru lakukan deteksi code cave sebagai konfirmasi tambahan
+                    if (baseline.isCodeSection && DetectCodeCaveInjection(memoryBase, regionSize)) {
+                        // Extract executable filename dari path
                         std::string exeName = "unknown";
                         if (!m_executablePath.empty()) {
                             size_t lastSlash = m_executablePath.find_last_of(L"\\/");
@@ -761,9 +939,13 @@ namespace Oblivion {
                         ReportViolationAndExit(L"", "CODE_CAVE_DETECTED", ss.str());
                         return true;
                     }
+
+                    // Jika tidak terdeteksi code cave spesifik, tetap anggap modifikasi
+                    return true;
                 }
 
-                return false; // OK
+                // Tidak ada modifikasi terdeteksi
+                return false;
             }
         }
 
