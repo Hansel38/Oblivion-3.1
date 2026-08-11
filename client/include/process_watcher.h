@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <thread>
 #include <atomic>
-#include <set>
+#include <unordered_set>
 
 namespace Oblivion {
     // Forward declarations
@@ -40,7 +40,8 @@ namespace Oblivion {
         IATHookScanner* m_pIATHookScanner;
         AdvancedProcessHeuristics* m_pAdvancedHeuristics;
         
-        // Cache untuk menghindari log spam
-        std::set<DWORD> m_scannedProcesses;
+        // PID aktif yang sudah diperiksa. Cache ini dibersihkan setiap siklus agar
+        // PID yang dipakai ulang tetap diperlakukan sebagai proses baru.
+        std::unordered_set<DWORD> m_scannedProcesses;
     };
 }

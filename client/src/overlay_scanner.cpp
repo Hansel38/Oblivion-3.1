@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "overlay_scanner.h"
-#include <vector>
 #include <string>
+#include <array>
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
@@ -98,7 +98,7 @@ namespace Oblivion {
         // Daftar class name dari overlay yang diizinkan.
         // PERHATIAN: Daftar ini sangat penting untuk mencegah false positive.
         // Tambahkan jika menemukan software sah yang diblokir.
-        static const std::vector<std::wstring> whitelistedClasses = {
+        static constexpr std::array<const wchar_t*, 19> whitelistedClasses = {
             L"Windows.UI.Core.CoreWindow", // UWP apps
             L"ApplicationFrameWindow", // UWP apps
             L"Shell_TrayWnd", // Taskbar
@@ -121,7 +121,7 @@ namespace Oblivion {
         };
 
         for (const auto& whitelistedName : whitelistedClasses) {
-            if (wcscmp(className, whitelistedName.c_str()) == 0) {
+            if (wcscmp(className, whitelistedName) == 0) {
                 return true;
             }
         }

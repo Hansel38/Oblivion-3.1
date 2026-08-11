@@ -307,6 +307,24 @@ namespace Oblivion {
             return false; // Tidak bisa dapatkan path, anggap tidak tepercaya
         }
 
+        std::wstring cacheKey(filePath);
+        std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
+
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        const bool hasAttributes = GetFileAttributesExW(
+            filePath, GetFileExInfoStandard, &attributes) != FALSE;
+        if (hasAttributes) {
+            const ULARGE_INTEGER size = {
+                attributes.nFileSizeLow, attributes.nFileSizeHigh
+            };
+            const auto cached = m_moduleTrustCache.find(cacheKey);
+            if (cached != m_moduleTrustCache.end() &&
+                cached->second.fileSize == size.QuadPart &&
+                CompareFileTime(&cached->second.lastWriteTime, &attributes.ftLastWriteTime) == 0) {
+                return cached->second.isTrusted;
+            }
+        }
+
         // Catatan: Pengecekan folder Windows system dan Program Files sudah dilakukan di PerformScan()
         // Jadi fungsi ini hanya akan dipanggil untuk modul yang berasal dari folder game atau folder mencurigakan
 
@@ -343,6 +361,12 @@ namespace Oblivion {
         WinVerifyTrust(NULL, &policyGUID, &winTrustData);
 
         if (!isSignatureValid) {
+            if (hasAttributes) {
+                const ULARGE_INTEGER size = {
+                    attributes.nFileSizeLow, attributes.nFileSizeHigh
+                };
+                m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
+            }
             return false; // Signature tidak valid atau tidak ada
         }
 
@@ -351,11 +375,23 @@ namespace Oblivion {
         if (GetCertificateSubjectName(hModule, publisherName)) {
             for (const auto& trustedName : m_trustedPublishers) {
                 if (publisherName.find(trustedName) != std::wstring::npos) {
+                    if (hasAttributes) {
+                        const ULARGE_INTEGER size = {
+                            attributes.nFileSizeLow, attributes.nFileSizeHigh
+                        };
+                        m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, true };
+                    }
                     return true; // Penerbit tepercaya
                 }
             }
         }
 
+        if (hasAttributes) {
+            const ULARGE_INTEGER size = {
+                attributes.nFileSizeLow, attributes.nFileSizeHigh
+            };
+            m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
+        }
         return false; // Penerbit tidak ada di whitelist
     }
 

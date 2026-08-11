@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_map>
 
 namespace Oblivion {
     class DigitalSignatureValidator {
@@ -25,6 +26,12 @@ namespace Oblivion {
         static const std::map<std::wstring, std::wstring> m_expectedPublishers;
 
     private:
+        struct ModuleTrustCacheEntry {
+            ULONGLONG fileSize;
+            FILETIME lastWriteTime;
+            bool isTrusted;
+        };
+
         // Fungsi untuk memeriksa apakah sebuah modul tepercaya
         bool IsModuleTrusted(HMODULE hModule, std::wstring& moduleName);
 
@@ -39,5 +46,9 @@ namespace Oblivion {
         
         // Daftar DLL yang diizinkan meskipun tidak ditandatangani (DLL legitimate dari game/engine)
         static const std::vector<std::wstring> m_allowedUnsignedDlls;
+
+        // WinVerifyTrust relatif mahal. Cache dibatalkan otomatis bila ukuran atau
+        // waktu modifikasi file berubah, sehingga modul yang diganti tetap diverifikasi.
+        std::unordered_map<std::wstring, ModuleTrustCacheEntry> m_moduleTrustCache;
     };
 }

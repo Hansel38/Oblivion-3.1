@@ -17,12 +17,22 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <unordered_set>
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
 namespace Oblivion {
-    ProcessWatcher::ProcessWatcher() : m_isRunning(false) {
+    ProcessWatcher::ProcessWatcher()
+        : m_isRunning(false)
+        , m_pAntiDebug(nullptr)
+        , m_pInjectionScanner(nullptr)
+        , m_pAntiSuspend(nullptr)
+        , m_pOverlayScanner(nullptr)
+        , m_pMemoryScanner(nullptr)
+        , m_pDigitalSignatureValidator(nullptr)
+        , m_pIATHookScanner(nullptr)
+        , m_pAdvancedHeuristics(nullptr) {
         std::cout << "[ProcessWatcher] Initializing components..." << std::endl;
         try {
             m_pAntiDebug = new AntiDebug();
@@ -107,81 +117,78 @@ namespace Oblivion {
             }
         };
 
-        heartbeat();
-        // Pemindaian awal
-        PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pAntiDebug->PerformCheck();
-        heartbeat();
-
-        if (m_isRunning) m_pInjectionScanner->PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pOverlayScanner->PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pMemoryScanner->PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pIATHookScanner->PerformScan();
-        heartbeat();
-
-        if (m_isRunning) m_pAdvancedHeuristics->PerformScan();
-        heartbeat();
-
-        // Gunakan generator angka acak modern untuk interval tidur acak
+        // Jalur cepat selalu responsif; jalur mahal dipisahkan supaya proses game
+        // tidak melakukan snapshot, verifikasi signature, dan disk I/O bersamaan.
+        // Jitter kecil menghindari pola pemindaian yang benar-benar deterministik.
+        using Clock = std::chrono::steady_clock;
+        using Milliseconds = std::chrono::milliseconds;
         std::mt19937 rng(static_cast<unsigned int>(
-            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
-        std::uniform_int_distribution<int> sleepDist(500, 3000);
+            Clock::now().time_since_epoch().count()));
+        const auto nextDue = [&rng](Milliseconds interval, int jitterMs) {
+            std::uniform_int_distribution<int> jitter(-jitterMs, jitterMs);
+            return Clock::now() + interval + Milliseconds(jitter(rng));
+        };
 
-        // Loop pemantauan real-time
+        auto nextProcessScan = Clock::now();
+        auto nextAntiDebugScan = Clock::now();
+        auto nextInjectionScan = Clock::now();
+        auto nextOverlayScan = Clock::now();
+        auto nextIatScan = Clock::now();
+        auto nextMemoryScan = Clock::now();
+        auto nextSignatureScan = Clock::now();
+        auto nextHeuristicScan = Clock::now();
+
         while (m_isRunning) {
             heartbeat();
+            const auto now = Clock::now();
 
-            PerformScan();
-
-            if (m_isRunning) m_pAntiDebug->PerformCheck();
-
-            if (m_isRunning) m_pInjectionScanner->PerformScan();
-
-            if (m_isRunning) m_pOverlayScanner->PerformScan();
-
-            if (m_isRunning) m_pMemoryScanner->PerformScan();
-
-            if (m_isRunning) m_pDigitalSignatureValidator->PerformScan();
-
-            if (m_isRunning) m_pIATHookScanner->PerformScan();
-
-            if (m_isRunning) m_pAdvancedHeuristics->PerformScan();
-
-            if (m_isRunning) {
-                const int sleepDurationMs = sleepDist(rng);
-
-#ifdef _DEBUG
-                // Log waktu eksekusi loop untuk verifikasi interval acak.
-                auto now = std::chrono::system_clock::now();
-                auto tt = std::chrono::system_clock::to_time_t(now);
-                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-                std::tm localTime{};
-                localtime_s(&localTime, &tt);
-
-                std::ostringstream oss;
-                oss << "[ProcessWatcher] Scan loop at "
-                    << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S")
-                    << '.' << std::setw(3) << std::setfill('0') << ms.count()
-                    << " sleeping " << sleepDurationMs << " ms";
-
-                const auto message = oss.str();
-                OutputDebugStringA(message.c_str());
-                OutputDebugStringA("\n");
-#endif
-
-                Sleep(sleepDurationMs);
+            // Fast checks: maksimal ~1 detik sampai proses/DLL terlarang terdeteksi.
+            if (now >= nextProcessScan) {
+                PerformScan();
+                nextProcessScan = nextDue(Milliseconds(1000), 125);
             }
+
+            if (m_isRunning && now >= nextAntiDebugScan) {
+                m_pAntiDebug->PerformCheck();
+                nextAntiDebugScan = nextDue(Milliseconds(1500), 150);
+            }
+
+            if (m_isRunning && now >= nextInjectionScan) {
+                m_pInjectionScanner->PerformScan();
+                nextInjectionScan = nextDue(Milliseconds(1000), 125);
+            }
+
+            if (m_isRunning && now >= nextOverlayScan) {
+                m_pOverlayScanner->PerformScan();
+                nextOverlayScan = nextDue(Milliseconds(1000), 125);
+            }
+
+            if (m_isRunning && now >= nextIatScan) {
+                m_pIATHookScanner->PerformScan();
+                nextIatScan = nextDue(Milliseconds(5000), 500);
+            }
+
+            // Integrity scan memakai baseline memori, sedangkan disk re-check
+            // dilakukan internal setiap 60 detik.
+            if (m_isRunning && now >= nextMemoryScan) {
+                m_pMemoryScanner->PerformScan();
+                nextMemoryScan = nextDue(Milliseconds(5000), 500);
+            }
+
+            if (m_isRunning && now >= nextSignatureScan) {
+                m_pDigitalSignatureValidator->PerformScan();
+                nextSignatureScan = nextDue(Milliseconds(15000), 1500);
+            }
+
+            // Enumerasi handle sistem dan modul lintas-proses adalah pemeriksaan
+            // termahal, sehingga dijalankan terpisah tanpa mengurangi lapisan deteksi.
+            if (m_isRunning && now >= nextHeuristicScan) {
+                m_pAdvancedHeuristics->PerformScan();
+                nextHeuristicScan = nextDue(Milliseconds(5000), 500);
+            }
+
+            // Tick pendek menjaga anti-suspend heartbeat dan mempercepat Stop().
+            Sleep(100);
         }
     }
 
@@ -194,10 +201,12 @@ namespace Oblivion {
         PROCESSENTRY32 pe32;
         pe32.dwSize = sizeof(PROCESSENTRY32);
 
+        std::unordered_set<DWORD> activeProcesses;
         if (Process32First(hSnapshot, &pe32)) {
             do {
                 std::wstring processName = pe32.szExeFile;
                 DWORD processId = pe32.th32ProcessID;
+                activeProcesses.insert(processId);
 
                 // Deteksi blacklist
                 if (IsProcessBlacklisted(processName)) {
@@ -214,12 +223,9 @@ namespace Oblivion {
                 }
 
                 // Cek apakah proses sudah pernah di-scan
-                bool isNewProcess = m_scannedProcesses.find(processId) == m_scannedProcesses.end();
+                const bool isNewProcess = m_scannedProcesses.insert(processId).second;
                 
                 if (isNewProcess) {
-                    // Tambahkan ke cache
-                    m_scannedProcesses.insert(processId);
-                    
                     // Memory scan untuk proses non-whitelist
                     if (Oblivion::ShouldPerformMemoryScan(processName)) {
                         std::wcout << L"[SCAN] Memory scan scheduled for: " << processName << L" (PID: " << processId << L")" << std::endl;
@@ -243,5 +249,6 @@ namespace Oblivion {
         }
 
         CloseHandle(hSnapshot);
+        m_scannedProcesses.swap(activeProcesses);
     }
 }

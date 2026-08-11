@@ -2,10 +2,8 @@
 #include "injection_scanner.h"
 #include <windows.h>
 #include <tlhelp32.h>
-#include <vector>
 #include <string>
-#include <algorithm>
-#include <cwctype> // Untuk towlower
+#include <array>
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
@@ -55,7 +53,7 @@ namespace Oblivion {
         // Daftar nama DLL yang dicurigai.
         // PERHATIAN: Hati-hati menambahkan daftar ini untuk menghindari false positive.
         // Fokus pada DLL yang spesifik untuk cheat.
-        static const std::vector<std::wstring> blacklistedDlls = {
+        static constexpr std::array<const wchar_t*, 8> blacklistedDlls = {
             L"wexdist.dll", // Sering digunakan oleh OpenKore
             L"macro.dll",
             L"rpehook.dll",
@@ -66,12 +64,10 @@ namespace Oblivion {
             L"bot.dll"
         };
 
-        std::wstring moduleName = dllName;
-        // Ubah ke lowercase untuk perbandingan case-insensitive
-        std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
-
         for (const auto& blacklistedName : blacklistedDlls) {
-            if (moduleName == blacklistedName) {
+            // CompareStringOrdinal melakukan perbandingan Unicode case-insensitive
+            // tanpa alokasi string sementara untuk setiap modul yang diperiksa.
+            if (CompareStringOrdinal(dllName, -1, blacklistedName, -1, TRUE) == CSTR_EQUAL) {
                 return true;
             }
         }

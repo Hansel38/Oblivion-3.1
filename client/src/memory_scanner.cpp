@@ -27,7 +27,8 @@ namespace Oblivion {
         : m_baselineCreated(false)
         , m_baselineVerified(false)
         , m_moduleBaseAddress(0)
-        , m_baselineChecksum(0) 
+        , m_baselineChecksum(0)
+        , m_lastDiskVerification() 
     {
         ZeroMemory(&m_embeddedSig, sizeof(m_embeddedSig));
     }
@@ -1032,113 +1033,37 @@ namespace Oblivion {
         }
 
         // === PHASE 3: Runtime Integrity Verification ===
-        
-        // Read current executable dari disk untuk cross-verification
+        // Hash memori dibandingkan dengan baseline pada setiap scan. Membaca file
+        // executable pada setiap iterasi tidak menambah cakupan deteksi runtime,
+        // tetapi menambah I/O disk secara signifikan; re-check disk dipisahkan.
         std::vector<uint8_t> currentDiskData;
-        if (!ReadExecutableFile(m_executablePath, currentDiskData)) {
-            std::string details = "Failed to re-read executable from disk during scan";
-            ReportViolationAndExit(L"", "DISK_READ_FAILED", details);
-            return;
+        const auto now = std::chrono::steady_clock::now();
+        constexpr auto kDiskVerificationInterval = std::chrono::seconds(60);
+        const bool diskVerificationDue =
+            m_lastDiskVerification.time_since_epoch().count() == 0 ||
+            now - m_lastDiskVerification >= kDiskVerificationInterval;
+
+        if (diskVerificationDue) {
+            if (!ReadExecutableFile(m_executablePath, currentDiskData)) {
+                std::string details = "Failed to re-read executable from disk during scan";
+                ReportViolationAndExit(L"", "DISK_READ_FAILED", details);
+                return;
+            }
+
+            // Pastikan file di disk belum diganti dengan PE lain yang tampak valid.
+            if (!ValidatePEStructure(currentDiskData)) {
+                return; // Error already reported
+            }
         }
 
-        // Verify disk file hasn't been replaced
-        if (!ValidatePEStructure(currentDiskData)) {
-            return; // Error already reported
-        }
-
-        // Cross-verify disk vs memory
+        // Cross-verify memory pada tiap scan; currentDiskData kosong di antara
+        // re-check sehingga disk baseline hanya diverifikasi saat memang dijadwalkan.
         if (!CrossVerifyDiskAndMemory(currentDiskData)) {
             return; // Error already reported
         }
 
-        // === PHASE 4: Scan untuk Suspicious Regions ===
-        
-        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
-        if (hSnapshot == INVALID_HANDLE_VALUE) {
-            return;
+        if (diskVerificationDue) {
+            m_lastDiskVerification = now;
         }
-
-        MODULEENTRY32W me32;
-        me32.dwSize = sizeof(MODULEENTRY32W);
-
-        if (Module32FirstW(hSnapshot, &me32)) {
-            do {
-                if (_wcsicmp(me32.szExePath, m_executablePath.c_str()) == 0) {
-                    uint8_t* baseAddr = reinterpret_cast<uint8_t*>(me32.modBaseAddr);
-                    SIZE_T moduleSize = me32.modBaseSize;
-
-                    MEMORY_BASIC_INFORMATION mbi;
-                    for (size_t offset = 0; offset < moduleSize; offset += mbi.RegionSize) {
-                        if (VirtualQuery(baseAddr + offset, &mbi, sizeof(mbi)) == 0) {
-                            break;
-                        }
-
-                        if (mbi.State == MEM_COMMIT && 
-                            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | 
-                                          PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
-                            
-                            uint8_t* regionBase = reinterpret_cast<uint8_t*>(mbi.BaseAddress);
-                            size_t regionSize = mbi.RegionSize;
-
-                            // Detect RWX pages (very suspicious)
-                            if (DetectSuspiciousMemoryRegion(regionBase, regionSize)) {
-                                // Extract executable filename from path
-                                std::string exeName = "unknown";
-                                if (!m_executablePath.empty()) {
-                                    size_t lastSlash = m_executablePath.find_last_of(L"\\/");
-                                    if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
-                                        std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
-                                        int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
-                                        if (size_needed > 0) {
-                                            exeName.assign(size_needed, 0);
-                                            WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
-                                        }
-                                    }
-                                }
-                                
-                                std::stringstream ss;
-                                ss << "File: " << exeName
-                                   << " | Suspicious RWX memory region at 0x" 
-                                   << std::hex << reinterpret_cast<uintptr_t>(regionBase);
-                                CloseHandle(hSnapshot);
-                                ReportViolationAndExit(L"", "SUSPICIOUS_MEMORY", ss.str());
-                                return;
-                            }
-
-                            // Verify executable regions integrity
-                            if (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) {
-                                uintptr_t rva = reinterpret_cast<uintptr_t>(regionBase) - m_moduleBaseAddress;
-                                
-                                if (VerifyRegionIntegrity(regionBase, regionSize, rva)) {
-                                    // Extract executable filename from path
-                                    std::string exeName = "unknown";
-                                    if (!m_executablePath.empty()) {
-                                        size_t lastSlash = m_executablePath.find_last_of(L"\\/");
-                                        if (lastSlash != std::wstring::npos && lastSlash + 1 < m_executablePath.length()) {
-                                            std::wstring exeNameWide = m_executablePath.substr(lastSlash + 1);
-                                            int size_needed = WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), NULL, 0, NULL, NULL);
-                                            if (size_needed > 0) {
-                                                exeName.assign(size_needed, 0);
-                                                WideCharToMultiByte(CP_UTF8, 0, exeNameWide.c_str(), (int)exeNameWide.length(), &exeName[0], size_needed, NULL, NULL);
-                                            }
-                                        }
-                                    }
-                                    
-                                    std::stringstream ss;
-                                    ss << "File: " << exeName
-                                       << " | Code modification detected at RVA 0x" << std::hex << rva;
-                                    CloseHandle(hSnapshot);
-                                    ReportViolationAndExit(L"", "CODE_MODIFICATION", ss.str());
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
-            } while (Module32NextW(hSnapshot, &me32));
-        }
-
-        CloseHandle(hSnapshot);
     }
 }

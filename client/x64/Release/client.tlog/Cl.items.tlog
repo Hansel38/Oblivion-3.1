@@ -1,0 +1,17 @@
+I:\Oblivion\client\dllmain.cpp;I:\Oblivion\client\x64\Release\dllmain.obj
+I:\Oblivion\client\pch.cpp;I:\Oblivion\client\x64\Release\pch.obj
+I:\Oblivion\client\src\AntiDebug.cpp;I:\Oblivion\client\x64\Release\AntiDebug.obj
+I:\Oblivion\client\src\advanced_process_heuristics.cpp;I:\Oblivion\client\x64\Release\advanced_process_heuristics.obj
+I:\Oblivion\client\src\anti_suspend.cpp;I:\Oblivion\client\x64\Release\anti_suspend.obj
+I:\Oblivion\client\src\blacklist.cpp;I:\Oblivion\client\x64\Release\blacklist.obj
+I:\Oblivion\client\src\digital_signature_validator.cpp;I:\Oblivion\client\x64\Release\digital_signature_validator.obj
+I:\Oblivion\client\src\file_integrity_check.cpp;I:\Oblivion\client\x64\Release\file_integrity_check.obj
+I:\Oblivion\client\src\hwid_generator.cpp;I:\Oblivion\client\x64\Release\hwid_generator.obj
+I:\Oblivion\client\src\iat_hook_scanner.cpp;I:\Oblivion\client\x64\Release\iat_hook_scanner.obj
+I:\Oblivion\client\src\injection_scanner.cpp;I:\Oblivion\client\x64\Release\injection_scanner.obj
+I:\Oblivion\client\src\memory_scanner.cpp;I:\Oblivion\client\x64\Release\memory_scanner.obj
+I:\Oblivion\client\src\network_reporter.cpp;I:\Oblivion\client\x64\Release\network_reporter.obj
+I:\Oblivion\client\src\overlay_scanner.cpp;I:\Oblivion\client\x64\Release\overlay_scanner.obj
+I:\Oblivion\client\src\process_watcher.cpp;I:\Oblivion\client\x64\Release\process_watcher.obj
+I:\Oblivion\client\src\self_integrity_guard.cpp;I:\Oblivion\client\x64\Release\self_integrity_guard.obj
+I:\Oblivion\client\src\secret_obf.cpp;I:\Oblivion\client\x64\Release\secret_obf.obj

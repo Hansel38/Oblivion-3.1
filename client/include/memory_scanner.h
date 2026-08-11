@@ -7,11 +7,12 @@
 #include <fstream>
 #include <map>
 #include <unordered_set>
+#include <chrono>
 
 namespace Oblivion {
     // Struktur untuk menyimpan baseline yang diverifikasi dari disk
     struct ExecutableRegion {
-        uintptr_t rva;              // Relative Virtual Address (offset dari base)
+        uint32_t rva;               // PE RVA selalu 32-bit, bahkan pada proses x64
         size_t size;                // Ukuran region dalam bytes
         uint32_t diskCRC32;         // CRC32 dari file di disk (ground truth)
         uint32_t memoryCRC32;       // CRC32 dari memori saat pertama load (untuk cross-check)
@@ -103,5 +104,6 @@ namespace Oblivion {
         bool m_baselineVerified;                           // Flag baseline verification
         uint32_t m_baselineChecksum;                       // Checksum untuk baseline integrity
         std::wstring m_executablePath;                     // Path ke executable
+        std::chrono::steady_clock::time_point m_lastDiskVerification;
     };
 }
