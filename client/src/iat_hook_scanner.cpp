@@ -2,6 +2,10 @@
 #include "iat_hook_scanner.h"
 #include <iostream>
 
+// Semua temuan harus melalui reporter agar server dapat menyimpan bukti dan
+// menerapkan policy yang sama untuk setiap jenis pelanggaran.
+extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
 namespace Oblivion {
     IATHookScanner::IATHookScanner() {}
 
@@ -69,13 +73,14 @@ namespace Oblivion {
 
                     // BANDINGKAN! Jika tidak cocok, berarti ada HOOK.
                     if (pRealAddr != pIatAddr) {
-                        std::wstring message = L"IAT Hook terdeteksi!\n\nFungsi: ";
-                        message += std::wstring(szFuncName, szFuncName + strlen(szFuncName));
-                        message += L"\nDLL: ";
-                        message += std::wstring(szDllName, szDllName + strlen(szDllName));
-                        message += L"\n\nClient akan ditutup.";
-                        MessageBoxW(NULL, message.c_str(), L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                        ExitProcess(0);
+                        const std::string functionName(szFuncName);
+                        const std::string moduleName(szDllName);
+                        const std::string details = "Function=" + functionName + " | Module=" + moduleName;
+                        ReportViolationAndExit(
+                            L"IAT hook terdeteksi.\n\nClient akan ditutup.",
+                            "IAT_HOOK_DETECTED",
+                            details);
+                        return;
                     }
                 }
                 pOrigThunk++;

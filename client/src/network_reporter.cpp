@@ -19,6 +19,70 @@
 #endif
 
 namespace Oblivion {
+    static std::string HmacSha256(const std::string& key, const std::string& data);
+
+    namespace {
+        constexpr int kProtocolTimeoutSeconds = 3;
+        constexpr size_t kMaxProtocolMessageSize = 2048;
+
+        bool SendAll(SOCKET socket, const std::string& message) {
+            size_t sent = 0;
+            while (sent < message.size()) {
+                const int result = send(socket, message.data() + sent,
+                    static_cast<int>(message.size() - sent), 0);
+                if (result <= 0) {
+                    return false;
+                }
+                sent += static_cast<size_t>(result);
+            }
+            return true;
+        }
+
+        bool ReceiveFrame(SOCKET socket, std::string& message) {
+            fd_set fdset;
+            FD_ZERO(&fdset);
+            FD_SET(socket, &fdset);
+            timeval timeout{};
+            timeout.tv_sec = kProtocolTimeoutSeconds;
+
+            if (select(0, &fdset, nullptr, nullptr, &timeout) <= 0) {
+                return false;
+            }
+
+            char buffer[kMaxProtocolMessageSize]{};
+            const int received = recv(socket, buffer, static_cast<int>(sizeof(buffer) - 1), 0);
+            if (received <= 0) {
+                return false;
+            }
+
+            message.assign(buffer, received);
+            const size_t delimiter = message.find(';');
+            if (delimiter == std::string::npos) {
+                return false;
+            }
+            message.resize(delimiter);
+            return !message.empty();
+        }
+
+        bool ParseUnsigned64(const std::string& value, uint64_t& result) {
+            if (value.empty() || value.size() > 20 ||
+                !std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                return false;
+            }
+            try {
+                result = std::stoull(value);
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+
+        bool IsHexProof(const std::string& proof) {
+            return proof.size() == 64 && std::all_of(proof.begin(), proof.end(), [](unsigned char c) {
+                return std::isxdigit(c) != 0;
+            });
+        }
+    }
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
         : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
         // Inisialisasi Winsock sekali saja untuk seluruh aplikasi
@@ -56,7 +120,124 @@ namespace Oblivion {
         WSACleanup();
     }
 
+    bool NetworkReporter::OpenAuthenticatedConnection(const std::string& purpose,
+                                                       SOCKET& socket,
+                                                       uint64_t& sessionNonce,
+                                                       std::string& sessionKey) {
+        socket = INVALID_SOCKET;
+        sessionNonce = 0;
+        sessionKey.clear();
+
+        if ((purpose != "CHECKIN" && purpose != "REPORT") || m_hwid.empty() || m_secretKey.empty()) {
+            return false;
+        }
+
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+
+        addrinfo* results = nullptr;
+        const std::string port = std::to_string(m_serverPort);
+        if (getaddrinfo(m_serverIP.c_str(), port.c_str(), &hints, &results) != 0) {
+            return false;
+        }
+
+        for (auto* candidate = results; candidate != nullptr; candidate = candidate->ai_next) {
+            socket = ::socket(candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol);
+            if (socket == INVALID_SOCKET) {
+                continue;
+            }
+            if (connect(socket, candidate->ai_addr, static_cast<int>(candidate->ai_addrlen)) != SOCKET_ERROR) {
+                break;
+            }
+            closesocket(socket);
+            socket = INVALID_SOCKET;
+        }
+        freeaddrinfo(results);
+        if (socket == INVALID_SOCKET) {
+            return false;
+        }
+
+        const auto fail = [&socket]() {
+            if (socket != INVALID_SOCKET) {
+                closesocket(socket);
+                socket = INVALID_SOCKET;
+            }
+            return false;
+        };
+
+        if (!SendAll(socket, "HELLO:" + purpose + ":" + m_hwid + ";")) {
+            return fail();
+        }
+
+        std::string challenge;
+        if (!ReceiveFrame(socket, challenge)) {
+            return fail();
+        }
+
+        constexpr const char* kChallengePrefix = "CHALLENGE:";
+        if (challenge.rfind(kChallengePrefix, 0) != 0 ||
+            !ParseUnsigned64(challenge.substr(strlen(kChallengePrefix)), sessionNonce)) {
+            return fail();
+        }
+
+        const std::string proofData = "AUTH:" + purpose + ":" + m_hwid + ":" + std::to_string(sessionNonce);
+        const std::string proof = HmacSha256(m_secretKey, proofData);
+        if (!IsHexProof(proof) || !SendAll(socket, "AUTH:" + m_hwid + ":" + proof + ";")) {
+            return fail();
+        }
+
+        std::string response;
+        if (!ReceiveFrame(socket, response)) {
+            return fail();
+        }
+        if (response == "KICK") {
+            return fail();
+        }
+
+        constexpr const char* kOkPrefix = "OK:";
+        uint64_t serverSessionNonce = 0;
+        if (response.rfind(kOkPrefix, 0) != 0 ||
+            !ParseUnsigned64(response.substr(strlen(kOkPrefix)), serverSessionNonce)) {
+            return fail();
+        }
+
+        sessionKey = HmacSha256(m_secretKey,
+            "SESSION:" + purpose + ":" + m_hwid + ":" + std::to_string(sessionNonce) + ":" + std::to_string(serverSessionNonce));
+        if (!IsHexProof(sessionKey)) {
+            return fail();
+        }
+        sessionNonce = serverSessionNonce;
+        return true;
+    }
+
     bool NetworkReporter::CheckBanStatus() {
+        SOCKET authenticatedSocket = INVALID_SOCKET;
+        uint64_t sessionNonce = 0;
+        std::string sessionKey;
+        if (!OpenAuthenticatedConnection("CHECKIN", authenticatedSocket, sessionNonce, sessionKey)) {
+            MessageBoxW(nullptr, L"Autentikasi server keamanan gagal.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
+
+        m_hbSocket = authenticatedSocket;
+        m_sessionNonce = sessionNonce;
+        m_sessionKey = std::move(sessionKey);
+        // Barrier agar PING pertama tidak bergabung dengan frame OK pada TCP recv
+        // yang sama. Server baru memulai heartbeat setelah READY diterima.
+        if (!SendAll(m_hbSocket, "READY;")) {
+            closesocket(m_hbSocket);
+            m_hbSocket = INVALID_SOCKET;
+            MessageBoxW(nullptr, L"Gagal memulai sesi heartbeat keamanan.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
+        StartHeartbeat();
+        return true;
+
+#if 0 // Legacy plaintext protocol retained only for source-history reference.
         // Fungsi untuk check-in ke server dan mengecek apakah HWID di-ban
         SOCKET connectSocket = INVALID_SOCKET;
         struct addrinfo* result = NULL, * ptr = NULL, hints;
@@ -194,6 +375,7 @@ namespace Oblivion {
         }
         
         return true; // Tidak di-ban, boleh lanjut
+#endif
     }
 
     // --- HEARTBEAT IMPLEMENTATION (basic ping/pong) ---
@@ -234,9 +416,11 @@ namespace Oblivion {
 
         std::thread([this]() {
             SOCKET s = m_hbSocket; // Use existing socket from CheckBanStatus
-            
-            // Derive session key: key' = HMAC_SHA256(secretKey, hwid|nonce)
-            std::string sessionKey = HmacSha256(m_secretKey, m_hwid + ":" + std::to_string(m_sessionNonce));
+            const std::string sessionKey = m_sessionKey;
+            if (s == INVALID_SOCKET || !IsHexProof(sessionKey)) {
+                m_hbRunning = false;
+                return;
+            }
 
             // Heartbeat loop: receive Ping, reply Pong
             Oblivion::HeartbeatConfig cfg;
@@ -312,6 +496,48 @@ namespace Oblivion {
     }
 
     void NetworkReporter::ReportViolation(const std::string& type, const std::string& details) {
+        std::string sanitizedDetails = details;
+        for (char& character : sanitizedDetails) {
+            if (character == ':') character = '|';
+            if (character == ';') character = ',';
+        }
+
+        SOCKET authenticatedSocket = INVALID_SOCKET;
+        uint64_t sessionNonce = 0;
+        std::string sessionKey;
+        if (!OpenAuthenticatedConnection("REPORT", authenticatedSocket, sessionNonce, sessionKey)) {
+            MessageBoxW(nullptr, L"Gagal mengautentikasi laporan ke server keamanan.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
+
+        const uint64_t sequence = GetTickCount64();
+        const std::string signatureData = "REPORT:" + m_hwid + ":" + type + ":" + sanitizedDetails + ":" + std::to_string(sequence);
+        const std::string proof = HmacSha256(sessionKey, signatureData);
+        const std::string report = "REPORT:" + type + ":" + sanitizedDetails + ":" + std::to_string(sequence) + ":" + proof + ";";
+        if (!IsHexProof(proof) || !SendAll(authenticatedSocket, report)) {
+            closesocket(authenticatedSocket);
+            MessageBoxW(nullptr, L"Gagal mengirim laporan keamanan.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
+
+        std::string response;
+        const bool received = ReceiveFrame(authenticatedSocket, response);
+        closesocket(authenticatedSocket);
+        if (!received || (response != "ACK" && response != "KICK")) {
+            MessageBoxW(nullptr, L"Respons server keamanan tidak valid.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
+        if (response == "KICK") {
+            MessageBoxW(nullptr, L"Server mendeteksi pelanggaran.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(0);
+        }
+        return;
+
+#if 0 // Legacy plaintext report protocol retained only for source-history reference.
         // BLOCKING: Menunggu respons dari server sebelum kembali
         // Ini diperlukan agar client menunggu respons KICK dari server
         SOCKET connectSocket = INVALID_SOCKET;
@@ -421,5 +647,6 @@ namespace Oblivion {
 
         // Cleanup socket (jika masih terbuka)
         closesocket(connectSocket);
+#endif
     }
 }

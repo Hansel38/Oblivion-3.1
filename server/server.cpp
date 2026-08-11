@@ -9,6 +9,9 @@
 #include <iomanip>
 #include <ctime>
 #include <algorithm>
+#include <cctype>
+#include <mutex>
+#include <unordered_map>
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
@@ -539,6 +542,384 @@ ParsedReport ParseProtocol(const std::string& report) {
     return result;
 }
 
+// === Secure session protocol =================================================
+// The legacy protocol included the shared secret in every message. The active
+// handler below uses a server challenge and a session HMAC instead. This removes
+// the secret from the wire and makes captured messages unusable in a new session.
+namespace {
+    constexpr int kSecureProtocolTimeoutSeconds = 3;
+    constexpr size_t kSessionProofLength = 64;
+
+    struct ViolationRecord {
+        int score = 0;
+        unsigned int criticalCount = 0;
+        ULONGLONG lastSeenMs = 0;
+    };
+
+    struct EnforcementDecision {
+        int score = 0;
+        bool kick = false;
+        bool ban = false;
+    };
+
+    std::mutex g_violationMutex;
+    std::unordered_map<std::string, ViolationRecord> g_violationRecords;
+
+    bool SendAll(SOCKET socket, const std::string& message) {
+        size_t sent = 0;
+        while (sent < message.size()) {
+            const int result = send(socket, message.data() + sent,
+                static_cast<int>(message.size() - sent), 0);
+            if (result <= 0) {
+                return false;
+            }
+            sent += static_cast<size_t>(result);
+        }
+        return true;
+    }
+
+    bool ReceiveFrame(SOCKET socket, std::string& message) {
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(socket, &readSet);
+        timeval timeout{};
+        timeout.tv_sec = kSecureProtocolTimeoutSeconds;
+        if (select(0, &readSet, nullptr, nullptr, &timeout) <= 0) {
+            return false;
+        }
+
+        char buffer[BUFFER_LEN]{};
+        const int received = recv(socket, buffer, static_cast<int>(sizeof(buffer) - 1), 0);
+        if (received <= 0) {
+            return false;
+        }
+
+        message.assign(buffer, received);
+        const size_t delimiter = message.find(';');
+        if (delimiter == std::string::npos) {
+            return false;
+        }
+        message.resize(delimiter);
+        return !message.empty();
+    }
+
+    std::vector<std::string> SplitFields(const std::string& message) {
+        std::vector<std::string> fields;
+        size_t begin = 0;
+        while (begin <= message.size()) {
+            const size_t end = message.find(':', begin);
+            fields.emplace_back(message.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+            if (end == std::string::npos) {
+                break;
+            }
+            begin = end + 1;
+        }
+        return fields;
+    }
+
+    bool IsValidHwid(const std::string& hwid) {
+        return !hwid.empty() && hwid.size() <= MAX_HWID_LEN &&
+            std::all_of(hwid.begin(), hwid.end(), [](unsigned char character) {
+                return std::isxdigit(character) != 0 || character == '-';
+            });
+    }
+
+    bool IsUnsignedInteger(const std::string& value) {
+        return !value.empty() && value.size() <= 20 &&
+            std::all_of(value.begin(), value.end(), [](unsigned char character) {
+                return std::isdigit(character) != 0;
+            });
+    }
+
+    bool IsHexProof(const std::string& proof) {
+        return proof.size() == kSessionProofLength &&
+            std::all_of(proof.begin(), proof.end(), [](unsigned char character) {
+                return std::isxdigit(character) != 0;
+            });
+    }
+
+    bool ConstantTimeEquals(const std::string& left, const std::string& right) {
+        if (left.size() != right.size()) {
+            return false;
+        }
+        unsigned char difference = 0;
+        for (size_t index = 0; index < left.size(); ++index) {
+            difference |= static_cast<unsigned char>(left[index] ^ right[index]);
+        }
+        return difference == 0;
+    }
+
+    std::string HmacSha256(const std::string& key, const std::string& data) {
+        BCRYPT_ALG_HANDLE algorithm = nullptr;
+        BCRYPT_HASH_HANDLE hash = nullptr;
+        DWORD objectLength = 0;
+        DWORD bytesReturned = 0;
+        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC) != 0 ||
+            BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength), &bytesReturned, 0) != 0) {
+            if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+            return {};
+        }
+
+        std::vector<UCHAR> object(objectLength);
+        if (BCryptCreateHash(algorithm, &hash, object.data(), objectLength,
+            reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())), static_cast<ULONG>(key.size()), 0) != 0 ||
+            BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), static_cast<ULONG>(data.size()), 0) != 0) {
+            if (hash) BCryptDestroyHash(hash);
+            BCryptCloseAlgorithmProvider(algorithm, 0);
+            return {};
+        }
+
+        UCHAR digest[32]{};
+        const NTSTATUS status = BCryptFinishHash(hash, digest, sizeof(digest), 0);
+        BCryptDestroyHash(hash);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        if (status != 0) {
+            return {};
+        }
+
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string encoded;
+        encoded.reserve(kSessionProofLength);
+        for (const UCHAR byte : digest) {
+            encoded.push_back(kHex[(byte >> 4) & 0x0F]);
+            encoded.push_back(kHex[byte & 0x0F]);
+        }
+        return encoded;
+    }
+
+    bool GenerateNonce(uint64_t& nonce) {
+        nonce = 0;
+        return BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&nonce), sizeof(nonce),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 && nonce != 0;
+    }
+
+    int ViolationWeight(const std::string& type) {
+        if (type == "SELF_TAMPER_DETECTED" || type == "CODE_MODIFICATION" ||
+            type == "EARLY_INJECTION" || type == "BASELINE_TAMPERING" ||
+            type == "FILE_MODIFIED" || type == "INJECTION_DETECTED") {
+            return 100;
+        }
+        if (type == "ADV_HEURISTIC_DETECTED" || type == "PROCESS_DETECTED" ||
+            type == "UNTRUSTED_MODULE" || type == "IAT_HOOK_DETECTED") {
+            return 60;
+        }
+        if (type == "OVERLAY_DETECTED" || type == "DEBUGGER_DETECTED" ||
+            type == "HB_FLAGGED") {
+            return 35;
+        }
+        return 20;
+    }
+
+    EnforcementDecision RegisterViolation(const std::string& hwid, const std::string& type) {
+        constexpr ULONGLONG kScoreWindowMs = 30ULL * 60ULL * 1000ULL;
+        constexpr int kKickThreshold = 60;
+        constexpr int kBanThreshold = 200;
+        const int weight = ViolationWeight(type);
+        const ULONGLONG now = GetTickCount64();
+
+        std::lock_guard<std::mutex> lock(g_violationMutex);
+        auto& record = g_violationRecords[hwid];
+        if (record.lastSeenMs != 0 && now - record.lastSeenMs > kScoreWindowMs) {
+            record = {};
+        }
+        record.lastSeenMs = now;
+        record.score = (std::min)(kBanThreshold, record.score + weight);
+        if (weight >= 100) {
+            ++record.criticalCount;
+        }
+
+        EnforcementDecision decision;
+        decision.score = record.score;
+        decision.kick = record.score >= kKickThreshold;
+        decision.ban = record.score >= kBanThreshold || record.criticalCount >= 2;
+        return decision;
+    }
+
+    bool IsValidType(const std::string& type) {
+        return !type.empty() && type.size() <= MAX_TYPE_LEN &&
+            std::all_of(type.begin(), type.end(), [](unsigned char character) {
+                return std::isalnum(character) != 0 || character == '_';
+            });
+    }
+
+    bool IsValidDetails(const std::string& details) {
+        return details.size() <= MAX_DETAILS_LEN &&
+            std::all_of(details.begin(), details.end(), [](unsigned char character) {
+                return character >= 0x20 && character <= 0x7E && character != ':' && character != ';';
+            });
+    }
+
+    bool VerifyPong(const std::string& message, uint32_t sequence, uint64_t timestamp,
+                    uint64_t nonce, const std::string& hwid, const std::string& sessionKey) {
+        const auto fields = SplitFields(message);
+        if (fields.size() != 7 || fields[0] != "PONG" || !IsUnsignedInteger(fields[1]) ||
+            !IsUnsignedInteger(fields[2]) || !IsUnsignedInteger(fields[3]) ||
+            fields[4] != "1|1" || fields[5] != hwid || !IsHexProof(fields[6])) {
+            return false;
+        }
+        try {
+            if (std::stoul(fields[1]) != sequence || std::stoull(fields[3]) != nonce) {
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+        const std::string expected = HmacSha256(sessionKey,
+            fields[1] + ":" + std::to_string(timestamp) + ":" + fields[3] + ":" + hwid);
+        return ConstantTimeEquals(expected, fields[6]);
+    }
+
+    void RunHeartbeatSession(SOCKET socket, const std::string& hwid, const std::string& sessionKey) {
+        constexpr unsigned int kMaxMisses = 5;
+        unsigned int sequence = 1;
+        unsigned int misses = 0;
+
+        while (true) {
+            uint64_t nonce = 0;
+            if (!GenerateNonce(nonce)) {
+                LogViolation("SERVER_RNG_FAILURE", "Unable to generate heartbeat nonce", hwid);
+                break;
+            }
+            const uint64_t timestamp = GetTickCount64();
+            if (!SendAll(socket, "PING:" + std::to_string(sequence) + ":" +
+                std::to_string(timestamp) + ":" + std::to_string(nonce) + ";")) {
+                break;
+            }
+
+            std::string pong;
+            if (ReceiveFrame(socket, pong) && VerifyPong(pong, sequence, timestamp, nonce, hwid, sessionKey)) {
+                misses = 0;
+            } else {
+                ++misses;
+                LogViolation("HB_MISS", "Heartbeat proof missing or invalid", hwid);
+                if (misses >= kMaxMisses) {
+                    LogViolation("HB_FLAGGED", "Five consecutive heartbeat failures", hwid);
+                    break;
+                }
+            }
+            ++sequence;
+            Sleep(3000);
+        }
+    }
+}
+
+void HandleSecureClient(SOCKET clientSocket) {
+    std::string hello;
+    if (!ReceiveFrame(clientSocket, hello)) {
+        LogViolation("MALFORMED_REQUEST", "Missing HELLO frame", "UNKNOWN");
+        closesocket(clientSocket);
+        return;
+    }
+
+    const auto helloFields = SplitFields(hello);
+    if (helloFields.size() != 3 || helloFields[0] != "HELLO" ||
+        (helloFields[1] != "CHECKIN" && helloFields[1] != "REPORT") || !IsValidHwid(helloFields[2])) {
+        LogViolation("MALFORMED_REQUEST", "Invalid HELLO frame", "UNKNOWN");
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    const std::string purpose = helloFields[1];
+    const std::string hwid = helloFields[2];
+    uint64_t challengeNonce = 0;
+    if (!GenerateNonce(challengeNonce) || !SendAll(clientSocket, "CHALLENGE:" + std::to_string(challengeNonce) + ";")) {
+        LogViolation("AUTH_FAILURE", "Unable to issue challenge", hwid);
+        closesocket(clientSocket);
+        return;
+    }
+
+    std::string auth;
+    if (!ReceiveFrame(clientSocket, auth)) {
+        LogViolation("AUTH_FAILURE", "Missing AUTH frame", hwid);
+        closesocket(clientSocket);
+        return;
+    }
+
+    const auto authFields = SplitFields(auth);
+    const std::string expectedProof = HmacSha256(SERVER_SECRET,
+        "AUTH:" + purpose + ":" + hwid + ":" + std::to_string(challengeNonce));
+    if (authFields.size() != 3 || authFields[0] != "AUTH" || authFields[1] != hwid ||
+        !IsHexProof(authFields[2]) || !ConstantTimeEquals(expectedProof, authFields[2])) {
+        LogViolation("AUTH_FAILED", "Challenge proof invalid", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    if (IsHWIDBanned(hwid)) {
+        LogViolation("BANNED_CLIENT", "Banned HWID attempted authentication", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    uint64_t sessionNonce = 0;
+    if (!GenerateNonce(sessionNonce)) {
+        LogViolation("SERVER_RNG_FAILURE", "Unable to generate session nonce", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+    const std::string sessionKey = HmacSha256(SERVER_SECRET,
+        "SESSION:" + purpose + ":" + hwid + ":" + std::to_string(challengeNonce) + ":" + std::to_string(sessionNonce));
+    if (!IsHexProof(sessionKey) || !SendAll(clientSocket, "OK:" + std::to_string(sessionNonce) + ";")) {
+        closesocket(clientSocket);
+        return;
+    }
+
+    if (purpose == "CHECKIN") {
+        std::string ready;
+        if (!ReceiveFrame(clientSocket, ready) || ready != "READY") {
+            LogViolation("AUTH_FAILURE", "CHECKIN session did not send READY", hwid);
+            closesocket(clientSocket);
+            return;
+        }
+        std::cout << "[AUTH] Authenticated check-in for HWID [" << hwid << "]" << std::endl;
+        RunHeartbeatSession(clientSocket, hwid, sessionKey);
+        closesocket(clientSocket);
+        return;
+    }
+
+    std::string report;
+    if (!ReceiveFrame(clientSocket, report)) {
+        LogViolation("MALFORMED_REQUEST", "Missing REPORT frame", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    const auto fields = SplitFields(report);
+    if (fields.size() != 5 || fields[0] != "REPORT" || !IsValidType(fields[1]) ||
+        !IsValidDetails(fields[2]) || !IsUnsignedInteger(fields[3]) || !IsHexProof(fields[4])) {
+        LogViolation("MALFORMED_REQUEST", "Invalid REPORT frame", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    const std::string expectedReportProof = HmacSha256(sessionKey,
+        "REPORT:" + hwid + ":" + fields[1] + ":" + fields[2] + ":" + fields[3]);
+    if (!ConstantTimeEquals(expectedReportProof, fields[4])) {
+        LogViolation("AUTH_FAILED", "REPORT proof invalid", hwid);
+        SendAll(clientSocket, "KICK;");
+        closesocket(clientSocket);
+        return;
+    }
+
+    LogViolation(fields[1], fields[2], hwid);
+    const EnforcementDecision decision = RegisterViolation(hwid, fields[1]);
+    if (decision.ban) {
+        AddToBanList(hwid);
+        LogViolation("AUTO_BAN", "Confidence score=" + std::to_string(decision.score), hwid);
+    } else if (decision.kick) {
+        LogViolation("AUTO_KICK", "Confidence score=" + std::to_string(decision.score), hwid);
+    }
+
+    SendAll(clientSocket, (decision.kick || decision.ban) ? "KICK;" : "ACK;");
+    closesocket(clientSocket);
+}
+
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
     char buffer[BUFFER_LEN] = {0};
@@ -828,6 +1209,13 @@ void HandleClient(SOCKET clientSocket) {
 }
 
 int main() {
+    // Menjalankan server dengan fallback development membuat semua proof dapat
+    // dipalsukan. Produksi wajib menyediakan OBLIVION_SECRET atau secret.dat.
+    if (SERVER_SECRET.empty() || SERVER_SECRET == "DEV_SECRET_NOT_SET") {
+        std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat harus dikonfigurasi dengan secret produksi yang kuat." << std::endl;
+        return 1;
+    }
+
     WSADATA wsaData;
     int iResult;
 
@@ -927,7 +1315,7 @@ int main() {
         
         // Buat thread baru untuk menangani client agar server bisa menerima client lain
         // Pass socket to handler; handler will use defaults; environment already logged
-        std::thread clientThread(HandleClient, ClientSocket);
+        std::thread clientThread(HandleSecureClient, ClientSocket);
         clientThread.detach(); // Lepaskan thread agar bisa berjalan mandiri
     }
 

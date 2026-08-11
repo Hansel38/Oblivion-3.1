@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <atomic>
 #include <winsock2.h>
 
 namespace Oblivion {
@@ -24,11 +25,19 @@ namespace Oblivion {
         std::string m_serverIP;
         int m_serverPort;
         std::string m_hwid;  // Hardware ID yang di-generate saat konstruktor
-        std::string m_secretKey; // Secret sederhana untuk autentikasi dasar
+        // Hanya dipakai untuk membuat proof HMAC; nilainya tidak pernah dikirim
+        // sebagai plaintext melalui wire protocol.
+        std::string m_secretKey;
+
+        bool OpenAuthenticatedConnection(const std::string& purpose,
+                                         SOCKET& socket,
+                                         uint64_t& sessionNonce,
+                                         std::string& sessionKey);
 
         // Internal heartbeat state
-        volatile bool m_hbRunning = false;
+        std::atomic<bool> m_hbRunning{ false };
         SOCKET m_hbSocket = INVALID_SOCKET; // Socket untuk heartbeat
         uint64_t m_sessionNonce = 0; // Session nonce dari server
+        std::string m_sessionKey;
     };
 }
