@@ -6,20 +6,37 @@
 #include "secret_obf.h"
 #include <windows.h>
 #include <thread>
+#include <atomic>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <objidl.h>
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
 
 // Global instance dari ProcessWatcher
-static Oblivion::ProcessWatcher* g_pProcessWatcher = nullptr;
+//
+// Pointer ini diakses dari beberapa thread (thread inisialisasi, thread heartbeat
+// di NetworkReporter, dan jalur pelaporan), sehingga disimpan sebagai atomic supaya
+// pembacaan/penulisan tidak menjadi data race (secara formal UB) dan tidak membaca
+// pointer yang sedang dihapus.
+static std::atomic<Oblivion::ProcessWatcher*> g_pProcessWatcher{ nullptr };
 
 // Buat instance global NetworkReporter agar bisa diakses
 // Ganti 127.0.0.1 dengan IP server Anda
-static Oblivion::NetworkReporter* g_pNetworkReporter = nullptr;
-static Oblivion::SelfIntegrityGuard* g_pSelfIntegrityGuard = nullptr;
+static std::atomic<Oblivion::NetworkReporter*> g_pNetworkReporter{ nullptr };
+static std::atomic<Oblivion::SelfIntegrityGuard*> g_pSelfIntegrityGuard{ nullptr };
 static HMODULE g_hSelfModule = nullptr;
+
+// Menandai bahwa seluruh komponen pengaman sudah selesai diinisialisasi.
+// Dipakai sebagai gerbang status heartbeat supaya startup tidak pernah
+// dilaporkan sebagai "komponen mati" (lihat BuildClientStatus).
+static std::atomic<bool> g_initCompleted{ false };
+
+// Diset saat shutdown (FreeLibrary) dimulai. Dipakai supaya thread lain tidak
+// memblokir join() di dalam loader lock (mis. berhenti di MessageBox) ketika DLL
+// sedang dibongkar.
+static std::atomic<bool> g_shuttingDown{ false };
 
 // Fungsi export dari Stud_PE
 // Ini adalah fungsi yang akan dipanggil oleh client setelah DLL di-inject.
@@ -30,18 +47,29 @@ extern "C" __declspec(dllexport) void Oblivion_Entry() {
 
 // Fungsi helper untuk melaporkan pelanggaran
 void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details) {
+    if (g_shuttingDown.load()) {
+        // Shutdown (FreeLibrary) sedang berjalan: jangan lakukan pelaporan/MessageBox
+        // yang bisa memblokir join() thread di dalam loader lock. Proses/objek sudah
+        // dibongkar, jadi jejak audit di sini tidak lagi bermakna.
+        return;
+    }
+
     // Tunggu maksimal 5 detik untuk NetworkReporter siap (jika belum siap)
     int waitCount = 0;
-    while (!g_pNetworkReporter && waitCount < 50) {
+    while (g_pNetworkReporter.load() == nullptr && waitCount < 50) {
         Sleep(100); // Tunggu 100ms
         waitCount++;
     }
+
+    // Ambil pointer sekali saja: instance bisa dihapus oleh shutdown (FreeLibrary)
+    // di thread lain, sehingga pemeriksaan null harus memakai nilai lokal ini.
+    Oblivion::NetworkReporter* reporter = g_pNetworkReporter.load();
     
     // Kirim laporan ke server (BLOCKING - menunggu respons)
     // ReportViolation akan menunggu respons dari server dan menampilkan message box
     // Jika server mengirim KICK, ReportViolation akan memanggil ExitProcess
-    if (g_pNetworkReporter) {
-        g_pNetworkReporter->ReportViolation(type, details);
+    if (reporter) {
+        reporter->ReportViolation(type, details);
         // Jika sampai di sini, berarti server tidak mengirim KICK atau timeout
         // Tampilkan pesan default dan tutup client
         if (!message.empty()) {
@@ -55,6 +83,72 @@ void ReportViolationAndExit(const std::wstring& message, const std::string& type
         }
         ExitProcess(0);
     }
+}
+
+// Catat masalah internal client (bukan pelanggaran cheat).
+// Dipakai supaya kegagalan infrastruktur tetap bisa diaudit oleh admin melalui
+// file log lokal, tanpa men-kick / melaporkan pemain yang tidak bersalah.
+static void LogClientIssue(const std::string& type, const std::string& details) {
+    std::cerr << "[CLIENT_ISSUE] " << type << " - " << details << std::endl;
+
+    wchar_t exePath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
+        return;
+    }
+
+    wchar_t* lastSlash = wcsrchr(exePath, L'\\');
+    if (!lastSlash) {
+        return;
+    }
+    *(lastSlash + 1) = L'\0';
+
+    // Log ditulis di direktori executable (best-effort, kegagalan diabaikan).
+    std::ofstream logFile(std::wstring(exePath) + L"oblivion_client_errors.log", std::ios::app);
+    if (!logFile.is_open()) {
+        return;
+    }
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    logFile << st.wYear << '-' << st.wMonth << '-' << st.wDay << ' '
+            << st.wHour << ':' << st.wMinute << ':' << st.wSecond
+            << " [" << type << "] " << details << std::endl;
+}
+
+// Laporkan pelanggaran TANPA menutup client (report-only).
+//
+// Dipakai untuk temuan yang belum cukup kuat untuk men-kick pemain (mis. hash
+// integritas file yang belum diverifikasi pada build produksi). Laporan tetap
+// dikirim ke server supaya admin bisa memutuskan, dan kegagalan jaringan hanya
+// dicatat lokal sehingga tidak pernah menutup client pemain sah.
+void ReportViolationSoft(const std::string& type, const std::string& details) {
+    Oblivion::NetworkReporter* reporter = g_pNetworkReporter.load();
+    if (!reporter) {
+        LogClientIssue("VIOLATION_SOFT_NOT_READY", type + " - " + details);
+        return;
+    }
+    try {
+        reporter->ReportViolation(type, details);
+    } catch (...) {
+        LogClientIssue("VIOLATION_SOFT_FAILED", type + " - " + details);
+    }
+}
+
+// Sumber status runtime untuk heartbeat (PONG) yang dikirim ke server.
+static Oblivion::ClientStatus BuildClientStatus() {
+    // Sebelum inisialisasi selesai, komponen memang belum berjalan; status tetap
+    // "true" agar startup tidak salah dilaporkan sebagai kegagalan pengaman.
+    Oblivion::ClientStatus status{ true, true };
+    if (!g_initCompleted.load()) {
+        return status;
+    }
+
+    // Setelah inisialisasi selesai, laporkan kondisi nyata: false berarti lapisan
+    // pengaman tidak berjalan (pelanggaran sendiri tetap dilaporkan komponennya).
+    status.antiSuspendOk = (g_pProcessWatcher.load() != nullptr) && g_pProcessWatcher.load()->IsAntiSuspendRunning();
+    status.integrityOk = (g_pSelfIntegrityGuard.load() != nullptr) && g_pSelfIntegrityGuard.load()->IsRunning();
+
+    return status;
 }
 
 // buat disable atau enable debug console
@@ -198,10 +292,18 @@ void InitializeSecuritySystem() {
     try {
         // Ambil secret yang di-obfuscate (bukan string literal langsung)
         const std::string kClientSecret = Oblivion::GetClientSecret();
-        // TODO: Ganti "127.0.0.1" dengan IP VPS server Anda
-        // Contoh: "192.168.1.100" atau "your-server-ip.com"
-        g_pNetworkReporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
+        // 127.0.0.1:54321 hanya FALLBACK (dev). Untuk produksi arahkan client ke VPS
+        // lewat "oblivion.cfg" di folder executable, atau environment variable:
+        //   oblivion.cfg       -> server=your-vps.example.com:54321
+        //   OBLIVION_SERVER    -> your-vps.example.com:54321
+        //   OBLIVION_FAIL_MODE -> open | closed
+        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("45.66.153.148", 54321, kClientSecret);
+        g_pNetworkReporter.store(reporter);
         std::cout << "[INIT] Network reporter created" << std::endl;
+
+        // Pasang sumber status heartbeat SEBELUM check-in, karena CheckBanStatus()
+        // memulai thread heartbeat.
+        reporter->SetStatusProvider(BuildClientStatus);
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Failed to create network reporter: " << e.what() << std::endl;
         MessageBoxW(NULL, L"Gagal menginisialisasi network reporter.\n\nClient akan ditutup.", 
@@ -217,8 +319,12 @@ void InitializeSecuritySystem() {
     // --- LANGKAH KETIGA: CEK BAN STATUS DARI SERVER ---
     std::cout << "[INIT] Checking ban status with server..." << std::endl;
     try {
-        if (!g_pNetworkReporter->CheckBanStatus()) {
-            // Jika di-ban, CheckBanStatus sudah memanggil ExitProcess, jadi tidak akan sampai di sini
+        Oblivion::NetworkReporter* reporter = g_pNetworkReporter.load();
+        if (!reporter || !reporter->CheckBanStatus()) {
+            // Jalur ban normal sudah memanggil ExitProcess di dalam CheckBanStatus.
+            // Jika tidak (mis. reporter gagal dibuat), JANGAN lanjut dengan proteksi
+            // setengah jadi sambil melaporkan status "OK" ke server.
+            LogClientIssue("BAN_CHECK_ABORTED", "check-in gagal tanpa penutupan proses");
             return;
         }
         std::cout << "[INIT] Ban check passed" << std::endl;
@@ -236,45 +342,93 @@ void InitializeSecuritySystem() {
         integrityChecker.PerformCheck();
         std::cout << "[INIT] File integrity check passed" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[ERROR] File integrity check failed: " << e.what() << std::endl;
-        ReportViolationAndExit(L"", "FILE_INTEGRITY_EXCEPTION", e.what());
-        return;
+        // CATATAN KEBIJAKAN: kegagalan internal client (exception, file terkunci oleh
+        // antivirus, permission, dsb) DULU dilaporkan ke server sebagai pelanggaran
+        // sehingga pemain sah ikut di-kick sebagai cheater (false positive besar).
+        // Sekarang kegagalan infrastruktur hanya dicatat secara lokal dan client
+        // lanjut dengan lapisan proteksi yang masih bisa berjalan.
+        std::cerr << "[ERROR] File integrity check failed (dilanjutkan tanpa layer ini): " << e.what() << std::endl;
+        LogClientIssue("FILE_INTEGRITY_EXCEPTION", e.what());
     } catch (...) {
-        std::cerr << "[ERROR] Unknown error during file integrity check" << std::endl;
-        ReportViolationAndExit(L"", "FILE_INTEGRITY_UNKNOWN_ERROR", "Unknown exception");
-        return;
+        std::cerr << "[ERROR] Unknown error during file integrity check (dilanjutkan tanpa layer ini)" << std::endl;
+        LogClientIssue("FILE_INTEGRITY_UNKNOWN_ERROR", "Unknown exception");
     }
 
     // --- LANGKAH KELIMA: AKTIFKAN SELF-INTEGRITY GUARD ---
     std::cout << "[INIT] Starting self-integrity guard..." << std::endl;
     try {
-        if (!g_pSelfIntegrityGuard) {
-            g_pSelfIntegrityGuard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
-            if (!g_pSelfIntegrityGuard->Start()) {
-                std::cerr << "[ERROR] Self-integrity guard failed to start" << std::endl;
-                ReportViolationAndExit(L"", "SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
-                return;
+        if (g_pSelfIntegrityGuard.load() == nullptr) {
+            Oblivion::SelfIntegrityGuard* guard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
+            g_pSelfIntegrityGuard.store(guard);
+            if (!guard->Start()) {
+                // Kegagalan infrastruktur (mis. DLL sendiri tidak bisa dibaca karena
+                // dikunci antivirus) -> catat lokal, jangan ban pemain.
+                std::cerr << "[ERROR] Self-integrity guard failed to start (dilanjutkan)" << std::endl;
+                LogClientIssue("SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
+            } else {
+                std::cout << "[INIT] Self-integrity guard active" << std::endl;
             }
-            std::cout << "[INIT] Self-integrity guard active" << std::endl;
         }
     } catch (const std::exception& e) {
-        std::cerr << "[ERROR] Exception starting self-integrity guard: " << e.what() << std::endl;
-        ReportViolationAndExit(L"", "SELF_GUARD_EXCEPTION", e.what());
-        return;
+        // Kegagalan infrastruktur (bukan bukti cheat) -> catat lokal, jangan ban.
+        std::cerr << "[ERROR] Exception starting self-integrity guard (dilanjutkan): " << e.what() << std::endl;
+        LogClientIssue("SELF_GUARD_EXCEPTION", e.what());
     }
 
     // --- LANGKAH KEENAM: MULAI SISTEM PEMANTAUAN ---
     std::cout << "[INIT] Starting process watcher..." << std::endl;
     try {
-        g_pProcessWatcher = new Oblivion::ProcessWatcher();
-        g_pProcessWatcher->Start();
+        Oblivion::ProcessWatcher* watcher = new Oblivion::ProcessWatcher();
+        g_pProcessWatcher.store(watcher);
+        watcher->Start();
         std::cout << "[SUCCESS] Oblivion Hack Shield fully initialized!" << std::endl;
         std::cout << "[INFO] Protection active - monitoring for threats..." << std::endl;
         std::cout << "==================================================" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[ERROR] Exception starting process watcher: " << e.what() << std::endl;
-        ReportViolationAndExit(L"", "PROCESS_WATCHER_EXCEPTION", e.what());
-        return;
+        // Kegagalan infrastruktur (bukan bukti cheat) -> catat lokal, jangan ban.
+        std::cerr << "[ERROR] Exception starting process watcher (dilanjutkan): " << e.what() << std::endl;
+        LogClientIssue("PROCESS_WATCHER_EXCEPTION", e.what());
+    }
+
+    // --- LANGKAH KETUJUH: TANDAI INISIALISASI SELESAI ---
+    // Mulai titik ini, bit status heartbeat mencerminkan kondisi komponen nyata
+    // (anti-suspend guard & self-integrity guard), bukan lagi nilai default.
+    g_initCompleted = true;
+}
+
+// Shutdown tertib dipakai pada jalur FreeLibrary (lpReserved == NULL).
+// CATATAN: DllMain selalu berjalan sambil memegang loader lock, sehingga fungsi ini
+// sengaja TIDAK melakukan I/O (tanpa std::cout) dan berhenti pada join() yang sudah
+// dijamin tidak menggantung (ReportViolationAndExit dinonaktifkan via g_shuttingDown).
+static void ShutdownSecuritySystem() {
+    g_shuttingDown = true;
+
+    // exchange(nullptr) memastikan objek hanya dihapus sekali walaupun fungsi ini
+    // dipanggil dari jalur lain yang berjalan bersamaan.
+    Oblivion::ProcessWatcher* watcher = g_pProcessWatcher.exchange(nullptr);
+    if (watcher) {
+        try {
+            watcher->Stop();
+        } catch (...) {
+        }
+        delete watcher;
+    }
+
+    Oblivion::SelfIntegrityGuard* guard = g_pSelfIntegrityGuard.exchange(nullptr);
+    if (guard) {
+        try {
+            guard->Stop();
+        } catch (...) {
+        }
+        delete guard;
+    }
+
+    Oblivion::NetworkReporter* reporter = g_pNetworkReporter.exchange(nullptr);
+    if (reporter) {
+        try {
+            delete reporter;
+        } catch (...) {
+        }
     }
 }
 
@@ -295,44 +449,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
 
     case DLL_PROCESS_DETACH:
-        std::cout << "[CLEANUP] Shutting down Oblivion Hack Shield..." << std::endl;
-        
-        // Stop process watcher terlebih dahulu (ini akan stop monitoring)
-        if (g_pProcessWatcher) {
-            std::cout << "[CLEANUP] Stopping process watcher..." << std::endl;
-            try {
-                g_pProcessWatcher->Stop();
-                delete g_pProcessWatcher;
-                g_pProcessWatcher = nullptr;
-            } catch (...) {
-                // Ignore exceptions during cleanup
-            }
+        // PENTING (loader lock): DllMain selalu dipanggil sambil memegang loader lock.
+        //  - lpReserved != NULL  -> proses sedang berakhir (ExitProcess/TerminateProcess):
+        //    OS akan membebaskan seluruh resource. JANGAN join/delete/WSACleanup/I/O di
+        //    sini; kombinasi itu adalah penyebab umum hang & crash saat keluar game.
+        //  - lpReserved == NULL  -> FreeLibrary: lakukan shutdown tertib (hentikan dan
+        //    join thread, lalu release objek) tanpa I/O.
+        if (lpReserved != nullptr) {
+            break;
         }
-        
-        // Kemudian stop self-integrity guard
-        if (g_pSelfIntegrityGuard) {
-            std::cout << "[CLEANUP] Stopping self-integrity guard..." << std::endl;
-            try {
-                g_pSelfIntegrityGuard->Stop();
-                delete g_pSelfIntegrityGuard;
-                g_pSelfIntegrityGuard = nullptr;
-            } catch (...) {
-                // Ignore exceptions during cleanup
-            }
-        }
-        
-        // Terakhir cleanup network reporter
-        if (g_pNetworkReporter) {
-            std::cout << "[CLEANUP] Cleaning up network reporter..." << std::endl;
-            try {
-                delete g_pNetworkReporter;
-                g_pNetworkReporter = nullptr;
-            } catch (...) {
-                // Ignore exceptions during cleanup
-            }
-        }
-        
-        std::cout << "[CLEANUP] Shutdown complete" << std::endl;
+
+        ShutdownSecuritySystem();
         break;
 
     case DLL_THREAD_ATTACH:

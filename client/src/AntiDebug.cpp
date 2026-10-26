@@ -27,20 +27,56 @@ static LONG CALLBACK VehProbeHandler(PEXCEPTION_POINTERS p) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+// Probe untuk CheckInt3Trap: handler dipasang tepat sebelum __debugbreak().
+// Debugger menerima exception breakpoint LEBIH DULU daripada VEH, jadi bila handler
+// ini sampai dipanggil berarti tidak ada debugger yang mengambil exception tersebut
+// (mis. hanya VEH sah seperti crash reporter / overlay / antivirus).
+// Exception diteruskan (CONTINUE_SEARCH) supaya ditangani blok __except di pemanggil.
+static volatile LONG gInt3VehCalled = 0;
+static LONG CALLBACK Int3VehHandler(PEXCEPTION_POINTERS p) {
+    if (p && p->ExceptionRecord && p->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT) {
+        InterlockedExchange(&gInt3VehCalled, 1);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// ============================================================================
+//  OVERRIDE DEVELOPMENT (ANTI-DEBUG)
+//
+//  Pada build produksi, override anti-debug melalui environment variable
+//  DIMATIKAN: pemain tidak boleh bisa mematikan seluruh anti-debug hanya dengan
+//  menyetel OBLIVION_ANTIDEBUG=0. Untuk build development, definisikan
+//  OBLIVION_ALLOW_ANTIDEBUG_OVERRIDE=1 (mis. di PreprocessorDefinitions).
+// ============================================================================
+#ifndef OBLIVION_ALLOW_ANTIDEBUG_OVERRIDE
+#define OBLIVION_ALLOW_ANTIDEBUG_OVERRIDE 0
+#endif
+
 static bool IsAntiDebugDisabled() {
+#if OBLIVION_ALLOW_ANTIDEBUG_OVERRIDE
     wchar_t buf[8] = {0};
     DWORD n = GetEnvironmentVariableW(L"OBLIVION_ANTIDEBUG", buf, 8);
     if (n == 0 || n >= 8) return false;
     if (_wcsicmp(buf, L"0") == 0 || _wcsicmp(buf, L"false") == 0 || _wcsicmp(buf, L"off") == 0) return true;
     return false;
+#else
+    // Build produksi: tidak ada jalur bypass.
+    return false;
+#endif
 }
 
 static bool IsStrictAntiDebug() {
+#if OBLIVION_ALLOW_ANTIDEBUG_OVERRIDE
     wchar_t buf[8] = {0};
     DWORD n = GetEnvironmentVariableW(L"OBLIVION_ANTIDEBUG_STRICT", buf, 8);
     if (n == 0 || n >= 8) return false;
     if (_wcsicmp(buf, L"1") == 0 || _wcsicmp(buf, L"true") == 0 || _wcsicmp(buf, L"on") == 0) return true;
     return false;
+#else
+    // Build produksi: mode strict (yang membuat SATU sinyal lemah bersifat fatal)
+    // tidak boleh diaktifkan pemain karena berisiko men-kick dirinya sendiri.
+    return false;
+#endif
 }
 
 static bool ShouldLogAntiDebug() {
@@ -106,34 +142,82 @@ namespace Oblivion {
             return;
         }
 
-        bool strict = IsStrictAntiDebug();
-        int hits = 0;
-        std::string details;
+        const bool strict = IsStrictAntiDebug();
 
-        auto add = [&](const char* name, bool v) {
-            if (v) {
-                if (!details.empty()) details += ";";
-                details += name;
-                ++hits;
+        // Pemisahan sinyal KUAT vs LEMAH.
+        //
+        // - KUAT   : debugger memang benar-benar terpasang (IsDebuggerPresent,
+        //            ProcessDebugPort, PEB flags, kernel debugger, hardware breakpoint,
+        //            INT3 trap).
+        // - LEMAH  : bisa muncul di lingkungan yang sah - anomali timing (CPU sibuk /
+        //            disk penuh), integritas API hook (antivirus/EDR/overlay yang
+        //            meng-hook ntdll di dalam process), integritas rantai SEH/VEH
+        //            (crash reporter, overlay, IME).
+        //
+        // Versi sebelumnya men-kick bila ada 2 sinyal APA PUN. Akibatnya kombinasi
+        // "antivirus meng-hook ntdll" + "CPU sedang sibuk" sudah cukup untuk menendang
+        // pemain yang sama sekali tidak memakai debugger (false positive besar).
+        constexpr int kWeakSignalThreshold = 3;
+
+        int strongHits = 0;
+        int weakHits = 0;
+        std::string strongDetails;
+        std::string weakDetails;
+
+        auto record = [&](const char* name, bool detected, bool strong) {
+            if (!detected) {
+                return;
             }
-            if (strict && v) {
-                LogAntiDebugEvent(details);
-                ReportViolationAndExit(L"", "DEBUGGER_DETECTED", details);
+
+            std::string& bucket = strong ? strongDetails : weakDetails;
+            if (!bucket.empty()) {
+                bucket += ";";
+            }
+            bucket += name;
+
+            if (strong) {
+                ++strongHits;
+            } else {
+                ++weakHits;
             }
         };
 
-        add("IsDebuggerPresent", CheckDebuggerPresentAPI());
-        add("NtQueryInfoProcess(DebugPort)", CheckNtQueryInfoProcess());
-        add("INT3Trap", CheckInt3Trap());
-        add("HWBreakpoints", CheckHardwareBreakpoints());
-        add("KernelDebugger", CheckKernelDebugger());
-        add("TimingAnomalies", CheckTimingAnomalies());
-        add("ApiHookIntegrity", CheckApiHookIntegrity());
-        add("PEBFlags", CheckPEBFlags());
-        add("SEHChainIntegrity", CheckSEHChainIntegrity());
-        add("VEHIntegrity", CheckVEHIntegrity());
+        record("IsDebuggerPresent", CheckDebuggerPresentAPI(), true);
+        record("NtQueryInfoProcess(DebugPort)", CheckNtQueryInfoProcess(), true);
+        record("INT3Trap", CheckInt3Trap(), true);
+        record("HWBreakpoints", CheckHardwareBreakpoints(), true);
+        record("KernelDebugger", CheckKernelDebugger(), true);
+        record("PEBFlags", CheckPEBFlags(), true);
+        record("TimingAnomalies", CheckTimingAnomalies(), false);
+        record("ApiHookIntegrity", CheckApiHookIntegrity(), false);
+        record("SEHChainIntegrity", CheckSEHChainIntegrity(), false);
+        record("VEHIntegrity", CheckVEHIntegrity(), false);
 
-        if (hits >= 2 && !details.empty()) {
+        if (strongHits == 0 && weakHits == 0) {
+            return;
+        }
+
+        std::string details;
+        if (strongHits > 0) {
+            details += "STRONG:" + strongDetails;
+        }
+        if (weakHits > 0) {
+            if (!details.empty()) {
+                details += "|";
+            }
+            details += "WEAK:" + weakDetails;
+        }
+
+        // Mode strict: tetap laporkan setiap sinyal (dipakai untuk debugging/uji).
+        if (strict) {
+            LogAntiDebugEvent(details);
+            ReportViolationAndExit(L"", "DEBUGGER_DETECTED", details);
+            return;
+        }
+
+        // Satu sinyal kuat sudah cukup. Sinyal lemah perlu beberapa sekaligus supaya
+        // antivirus / CPU sibuk tidak dianggap debugger.
+        if (strongHits >= 1 || weakHits >= kWeakSignalThreshold) {
             LogAntiDebugEvent(details);
             ReportViolationAndExit(L"", "DEBUGGER_DETECTED", details);
         }
@@ -173,21 +257,42 @@ namespace Oblivion {
     }
 
     bool AntiDebug::CheckInt3Trap() {
-        // Metode yang sangat kuat.
-        // Kita mencoba menjalankan __debugbreak() yang memicu INT 3.
-        // Jika debugger ada, ia akan menangkap exception.
-        // Jika tidak, exception handler kita (dalam __except) yang akan menanganinya.
+        // Menjalankan __debugbreak() (INT 3).
+        //
+        // Urutan penanganan exception breakpoint:
+        //   1. Debugger (jika terpasang) - debugger mengambil exception lebih dulu.
+        //   2. VEH, dari yang terakhir dipasang.
+        //   3. SEH (blok __except di bawah).
+        //
+        // Versi lama menganggap "eksekusi berlanjut setelah INT3" selalu berarti ada
+        // debugger. Padahal VEH sah (crash reporter, overlay, antivirus, IME) yang
+        // memanggil EXCEPTION_CONTINUE_EXECUTION juga membuat eksekusi berlanjut,
+        // sehingga pemain tanpa debugger bisa di-kick (false positive).
+        //
+        // Sekarang dipasang VEH probe: bila VEH kita sempat dipanggil, berarti tidak
+        // ada debugger yang mengambil exception tersebut.
+        InterlockedExchange(&gInt3VehCalled, 0);
+
+        PVOID hVeh = AddVectoredExceptionHandler(1, Int3VehHandler);
+
         __try {
-            __debugbreak(); // Ini setara dengan int 3
+            __debugbreak(); // Setara dengan int 3
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            // Kode di dalam blok ini hanya dijalankan jika TIDAK ADA debugger.
-            // Jika kita sampai di sini, berarti aman.
+            // Tidak ada debugger yang menangani INT3; exception sampai ke SEH kita.
+        }
+
+        if (hVeh) {
+            RemoveVectoredExceptionHandler(hVeh);
+        }
+
+        if (InterlockedCompareExchange(&gInt3VehCalled, 0, 0) != 0) {
+            // VEH kita dipanggil -> exception diambil oleh handler process, bukan
+            // debugger -> bukan indikasi debugger.
             return false;
         }
 
-        // Jika eksekusi berlanjut ke sini, berarti exception ditangkap oleh debugger,
-        // bukan oleh handler kita.
+        // Exception di-"continue" oleh pihak di luar process (debugger) -> terdeteksi.
         return true;
     }
 

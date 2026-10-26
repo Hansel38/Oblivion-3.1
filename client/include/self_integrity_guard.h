@@ -31,6 +31,10 @@ namespace Oblivion {
         bool Start();
         void Stop();
 
+        // True bila thread pemantauan integritas sedang aktif. Dipakai sebagai bit
+        // status pada heartbeat (PONG) supaya server tahu lapisan ini benar berjalan.
+        bool IsRunning() const;
+
     private:
         bool LoadDiskImage();
         bool ParseRelocations();

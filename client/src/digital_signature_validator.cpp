@@ -573,4 +573,48 @@ namespace Oblivion {
         // Publisher mismatch
         return false;
     }
+
+    // Verifikasi signature file + kategorikan hasilnya.
+    // Tujuan: memisahkan "benar-benar spoofing" dari "tidak bisa diverifikasi".
+    // Perbedaan ini penting karena kegagalan verifikasi (offline, revocation check
+    // gagal, chain tidak lengkap) sebelumnya membuat pemain sah di-kick sebagai cheater.
+    DigitalSignatureValidator::SignatureVerdict DigitalSignatureValidator::GetSignatureVerdict(
+        const std::wstring& filePath,
+        std::wstring& publisherName) {
+        publisherName.clear();
+
+        if (filePath.empty()) {
+            return SignatureVerdict::VerificationError;
+        }
+
+        // GetFilePublisher berhasil selama file memiliki signature Authenticode yang
+        // bisa dibaca, terlepas dari apakah trust chain-nya dapat divalidasi. Hasil ini
+        // dipakai untuk membedakan file unsigned dari file yang gagal diverifikasi.
+        std::wstring actualPublisher;
+        const bool hasEmbeddedSignature = GetFilePublisher(filePath, actualPublisher);
+
+        if (VerifyFileSignature(filePath)) {
+            publisherName = actualPublisher;
+
+            if (!actualPublisher.empty()) {
+                std::wstring lowerActual = actualPublisher;
+                std::transform(lowerActual.begin(), lowerActual.end(), lowerActual.begin(), ::towlower);
+
+                for (const auto& trustedPublisher : m_trustedPublishers) {
+                    std::wstring lowerTrusted = trustedPublisher;
+                    std::transform(lowerTrusted.begin(), lowerTrusted.end(), lowerTrusted.begin(), ::towlower);
+                    if (!lowerTrusted.empty() && lowerActual.find(lowerTrusted) != std::wstring::npos) {
+                        return SignatureVerdict::TrustedPublisher;
+                    }
+                }
+            }
+
+            return SignatureVerdict::UntrustedPublisher;
+        }
+
+        // WinVerifyTrust gagal. Tidak adanya signature sama sekali = Unsigned,
+        // sedangkan signature yang ada tetapi tidak dapat divalidasi = VerificationError
+        // (jangan dianggap spoofing).
+        return hasEmbeddedSignature ? SignatureVerdict::VerificationError : SignatureVerdict::Unsigned;
+    }
 }

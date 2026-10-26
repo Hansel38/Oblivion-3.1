@@ -35,7 +35,18 @@ namespace Oblivion {
             L"openkore.exe",
             L"wexdist.exe",
             L"macro.exe",
-            L"autohotkey.exe"
+            L"autohotkey.exe",
+            // Varian binary AutoHotkey (v1/v2, ANSI/Unicode, 32/64-bit). Nama exe yang
+            // diganti tetap tertangkap oleh deteksi window class & keyword path.
+            L"autohotkey32.exe",
+            L"autohotkey64.exe",
+            L"autohotkeya32.exe",
+            L"autohotkeya64.exe",
+            L"autohotkeyu32.exe",
+            L"autohotkeyu64.exe",
+            // AutoIt (dipakai untuk bot/auto-click)
+            L"autoit3.exe",
+            L"autoit3_x64.exe"
         };
 
         for (const auto& blacklistedName : blacklistedProcesses) {

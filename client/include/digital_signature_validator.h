@@ -22,6 +22,23 @@ namespace Oblivion {
         // Fungsi untuk mendapatkan publisher dari file executable
         static bool GetFilePublisher(const std::wstring& filePath, std::wstring& publisherName);
 
+        // Hasil verifikasi signature file.
+        // Dibuat untuk membedakan "file tidak ditandatangani" dari "signature ada
+        // tetapi tidak dapat divalidasi" (client offline, revocation check gagal,
+        // root certificate belum di-update). Kegagalan infrastruktur seperti ini
+        // BUKAN bukti spoofing dan sebelumnya menyebabkan false positive: pemain
+        // sah (Chrome/Steam/Discord) di-kick hanya karena jaringan bermasalah.
+        enum class SignatureVerdict {
+            TrustedPublisher,    // Signature valid dan publisher ada di daftar tepercaya
+            UntrustedPublisher,  // Signature valid tetapi publisher di luar daftar tepercaya
+            Unsigned,            // File tidak memiliki signature Authenticode
+            VerificationError    // File bertanda tangan tetapi tidak dapat diverifikasi
+        };
+
+        // Verifikasi signature file dan kategorikan hasilnya (tri-state).
+        // publisherName diisi bila file memang memiliki signature yang bisa dibaca.
+        static SignatureVerdict GetSignatureVerdict(const std::wstring& filePath, std::wstring& publisherName);
+
         // Public access ke expected publishers map untuk cross-verification
         static const std::map<std::wstring, std::wstring> m_expectedPublishers;
 

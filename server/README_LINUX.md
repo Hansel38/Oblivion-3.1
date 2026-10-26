@@ -85,6 +85,56 @@ The server requires a secret key. You can set it via:
    - Create a file named `secret.dat` in the same directory as the server executable
    - The file should contain XOR-encoded secret (same format as Windows version)
 
+### Client Protection Status (Heartbeat PONG)
+
+Setiap PONG dari client membawa bit status lapisan pengaman:
+
+```
+PONG:<seq>:<ts_client>:<nonce>:<antiSuspendOk>|<integrityOk>:<hwid>:<hmac>;
+```
+
+- `1|1` — anti-suspend guard dan self-integrity guard client berjalan normal
+- selain `1|1` — ada lapisan pengaman client yang tidak berjalan
+
+Server hanya **mencatat** kondisi ini (tidak langsung kick) supaya gangguan lokal tidak
+menghukum pemain sah:
+
+- console: `[HB] PROTECTION DEGRADED for HWID [<hwid>] status=0|1`
+- `violations.log`: entri `HB_PROTECTION_DEGRADED`
+- status heartbeat ditandai `WARNING` selama kondisi berlangsung, dan kembali `HEALTHY`
+  setelah client melaporkan `1|1` lagi (`[HB] PROTECTION RECOVERED`)
+
+Pelanggaran yang benar-benar terdeteksi tetap diverifikasi server dan dijawab `KICK;`.
+
+### Client-side configuration (oblivion.cfg / environment)
+
+Client Oblivion dapat diarahkan ke VPS tanpa recompile. Urutan prioritas:
+environment variable → `oblivion.cfg` (folder executable) → default di kode.
+
+```ini
+# oblivion.cfg
+server=your-vps.example.com:54321
+server=103.150.1.10:54321     # endpoint cadangan (opsional, dicoba berurutan)
+port=54321                    # port default bila spec tidak memuat port
+fail_mode=open                # open = client tetap jalan bila server tak terjangkau
+connect_timeout_ms=3000
+retry_count=3
+handshake_timeout_ms=4000
+```
+
+| Environment variable | Arti |
+| --- | --- |
+| `OBLIVION_SERVER` / `OBLIVION_SERVERS` | daftar `host:port` dipisah koma |
+| `OBLIVION_PORT` | port default untuk spec tanpa port |
+| `OBLIVION_FAIL_MODE` | `open` (default) atau `closed` |
+| `OBLIVION_CONNECT_TIMEOUT_MS` | timeout connect per endpoint (500–30000 ms) |
+| `OBLIVION_RETRY_COUNT` | jumlah putaran percobaan seluruh endpoint (1–10) |
+| `OBLIVION_HANDSHAKE_TIMEOUT_MS` | timeout menunggu respons check-in (500–30000 ms) |
+
+Catatan kebijakan: client memakai **fail-open** secara default untuk gangguan jaringan
+(server/VPS down) agar tidak menutup semua pemain; kegagalan jaringan dicatat lokal di
+`oblivion_client_errors.log`. Set `fail_mode=closed` untuk kebijakan ketat.
+
 ## Files
 
 - `bans.txt` - Ban list (one HWID per line, comments with #)

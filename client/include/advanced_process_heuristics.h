@@ -56,5 +56,11 @@ namespace Oblivion {
     bool ShouldPerformMemoryScan(const std::wstring& processName);
     bool IsSuspiciousBehavior(DWORD processId);
     void LogSuspiciousProcess(const std::wstring& processName, DWORD processId, const std::string& reason);
+
+    // Cek apakah nama modul (DLL) merupakan komponen tool cheat yang dikenal.
+    // Hanya nama yang sangat spesifik (dbk64.dll, ceclient.dll, dst) yang masuk
+    // daftar ini supaya file DLL sah seperti lua53-64.dll atau d3dhook.dll tidak
+    // ikut tertandai.
+    bool IsKnownCheatModuleName(const std::wstring& moduleName);
 }
 

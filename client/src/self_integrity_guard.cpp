@@ -57,14 +57,18 @@ namespace Oblivion {
     }
 
     void SelfIntegrityGuard::Stop() {
-        if (!m_running.load()) {
-            return;
-        }
-
+        // KRITIS: jangan early-return berdasar m_running. Loop pemantauan mematok
+        // flag itu `false` sendiri saat melaporkan pelanggaran, sehingga early-return
+        // akan melewati join() dan std::thread yang masih joinable dihancurkan ->
+        // std::terminate. Idempotent: join() hanya jalan bila thread masih joinable.
         m_running = false;
         if (m_worker.joinable()) {
             m_worker.join();
         }
+    }
+
+    bool SelfIntegrityGuard::IsRunning() const {
+        return m_running.load();
     }
 
     bool SelfIntegrityGuard::LoadDiskImage() {

@@ -93,21 +93,31 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::Stop() {
-        if (!m_isRunning) {
-            return;
-        }
-        
+        // KRITIS: tidak boleh early-return berdasar m_isRunning. Flag itu juga
+        // dipatok `false` oleh thread pemantau saat mendeteksi pelanggaran, sehingga
+        // early-return akan melewati join() dan std::thread yang masih joinable
+        // dihancurkan -> std::terminate (crash saat game ditutup).
         std::cout << "[ProcessWatcher] Stopping monitoring system..." << std::endl;
+
+        // 1) Hentikan guardian anti-suspend LEBIH DULU. Jika tidak, selagi kita
+        //    menunggu join() thread pemantau (bisa lama karena satu scan sedang
+        //    berjalan dan heartbeat berhenti diperbarui) guardian akan salah
+        //    melaporkan THREAD_SUSPENDED dan menutup client pemain sah.
+        if (m_pAntiSuspend) {
+            m_pAntiSuspend->Stop();
+        }
+
+        // 2) Hentikan loop pemantauan lalu join tanpa syarat.
         m_isRunning = false;
-        
-        // Wait for watcher thread to finish
         if (m_watcherThread.joinable()) {
             m_watcherThread.join();
         }
-        
-        // Hentikan thread pengawas setelah thread utama berhenti
-        m_pAntiSuspend->Stop();
+
         std::cout << "[ProcessWatcher] Stopped successfully" << std::endl;
+    }
+
+    bool ProcessWatcher::IsAntiSuspendRunning() const {
+        return m_pAntiSuspend != nullptr && m_pAntiSuspend->IsRunning();
     }
 
     void ProcessWatcher::WatcherLoop() {

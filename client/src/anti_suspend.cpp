@@ -25,9 +25,11 @@ namespace Oblivion {
     }
 
     void AntiSuspend::Stop() {
-        if (!m_isRunning) {
-            return;
-        }
+        // KRITIS: jangan early-return berdasar m_isRunning. GuardianLoop mematok
+        // flag ini `false` sendiri saat mendeteksi suspend, sehingga early-return
+        // akan melewati join() dan std::thread yang masih joinable dihancurkan ->
+        // std::terminate. Operasi ini idempotent: join() hanya dijalankan bila
+        // thread memang masih joinable.
         m_isRunning = false;
         if (m_guardianThread.joinable()) {
             m_guardianThread.join();
@@ -37,6 +39,10 @@ namespace Oblivion {
     void AntiSuspend::UpdateHeartbeat() {
         // Perbarui timestamp ke waktu saat ini
         m_lastHeartbeat.store(std::chrono::steady_clock::now());
+    }
+
+    bool AntiSuspend::IsRunning() const {
+        return m_isRunning.load();
     }
 
     void AntiSuspend::GuardianLoop() {

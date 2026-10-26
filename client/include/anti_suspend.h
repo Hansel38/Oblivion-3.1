@@ -19,6 +19,11 @@ namespace Oblivion {
         // Fungsi ini akan dipanggil oleh ProcessWatcher untuk memberi sinyal bahwa ia masih hidup
         void UpdateHeartbeat();
 
+        // True bila guardian thread anti-suspend sedang aktif. Guardian yang mendeteksi
+        // suspend langsung melaporkan pelanggaran dan menutup proses, sehingga nilai
+        // false di sini menandakan guardian tidak berjalan (bukan pemain curang).
+        bool IsRunning() const;
+
     private:
         // Fungsi utama yang dijalankan oleh Guardian Thread
         void GuardianLoop();

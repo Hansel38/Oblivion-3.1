@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cerrno>
+#include <csignal>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -24,6 +25,7 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
 
@@ -48,6 +50,18 @@
     #define INVALID_SOCKET_VAL -1
     #define SOCKET_ERROR_VAL -1
     #define closesocket_impl close
+#endif
+
+// Flag pengiriman data. Di Linux, SIGPIPE diblokir dua lapis: signal(SIGPIPE, SIG_IGN)
+// di main() dan MSG_NOSIGNAL di sini, supaya pengiriman ke socket yang sudah ditutup
+// pemain tidak pernah mematikan proses server.
+#ifndef _WIN32
+    #ifndef MSG_NOSIGNAL
+        #define MSG_NOSIGNAL 0
+    #endif
+    #define SEND_FLAGS MSG_NOSIGNAL
+#else
+    #define SEND_FLAGS 0
 #endif
 
 #define DEFAULT_PORT "54321"
@@ -631,17 +645,61 @@ ParsedReport ParseProtocol(const std::string& report) {
     return result;
 }
 
+// Batas koneksi client yang diproses bersamaan. Satu thread per koneksi TANPA batas
+// bisa dihabiskan oleh flood koneksi (thread + handle menumpuk) sehingga anti-cheat
+// tidak bisa lagi melayani pemain sah (DoS).
+static const int kMaxConcurrentClients = 256;
+static std::atomic<int> g_activeClients{ 0 };
+
+// Nonce 64-bit yang TIDAK bisa diprediksi.
+//
+// Kode lama memakai rand() TANPA srand(): setiap kali server dijalankan, urutan
+// nilainya identik sehingga sessionNonce/ping_nonce bisa diprediksi pemain dan
+// (karena session key heartbeat diturunkan dari nonce) HMAC menjadi jauh lebih lemah.
+uint64_t GenerateSecureNonce() {
+    uint64_t value = 0;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&value), (int)sizeof(value)) == 1) {
+        return value;
+    }
+
+    // Fallback (CSPRNG gagal): campur beberapa sumber yang tidak deterministik.
+    std::cout << "[WARN] RAND_bytes gagal, memakai fallback nonce" << std::endl;
+    value = GetTickCount64_impl()
+          ^ ((uint64_t)(uintptr_t)&value << 21)
+          ^ ((uint64_t)rand() << 32)
+          ^ (uint64_t)std::time(nullptr);
+    return value | 1ULL; // Pastikan tidak nol
+}
+
 void HandleClient(SocketType clientSocket) {
     char buffer[BUFFER_LEN] = {0};
-    ssize_t bytesReceived;
+    ssize_t bytesReceived = 0;
     std::string extractedHwid = "UNKNOWN";
 
     try {
-        bytesReceived = recv(clientSocket, buffer, BUFFER_LEN - 1, 0);
+        // Timeout baca: koneksi yang hanya "diam" tidak boleh menahan thread dan
+        // handle selamanya (flood koneksi idle = kehabisan thread di server).
+        struct timeval recvTimeout;
+        recvTimeout.tv_sec = 10;
+        recvTimeout.tv_usec = 0;
+        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+
+        // FRAMING: pesan protokol berakhir dengan ';'. Satu recv() TIDAK dijamin
+        // memuat pesan lengkap (TCP boleh memecahnya), dan pesan terpotong ditolak
+        // sebagai MALFORMED_REQUEST sehingga check-in pemain sah gagal.
+        std::string report;
+        while (report.find(';') == std::string::npos && report.size() < (size_t)(BUFFER_LEN - 1)) {
+            const ssize_t received = recv(clientSocket, buffer, BUFFER_LEN - 1, 0);
+            if (received <= 0) {
+                break;
+            }
+            report.append(buffer, (size_t)received);
+        }
+        bytesReceived = (ssize_t)report.size();
         if (bytesReceived > 0) {
             buffer[bytesReceived] = '\0';
             
-            std::string report(buffer, bytesReceived);
+            // (Pesan sudah dirakit utuh pada loop framing di atas.)
             extractedHwid = ExtractHWIDFromRawData(report);
             
             std::cout << "[DEBUG] Received raw data (" << bytesReceived << " bytes) from HWID: " << extractedHwid << std::endl;
@@ -656,7 +714,7 @@ void HandleClient(SocketType clientSocket) {
                 LogViolation("MALFORMED_REQUEST", parsed.errorMessage + " | Data: " + truncatedReport, extractedHwid);
                 
                 const char* errorResponse = "ERROR:INVALID_FORMAT;";
-                send(clientSocket, errorResponse, strlen(errorResponse), 0);
+                send(clientSocket, errorResponse, strlen(errorResponse), SEND_FLAGS);
                 closesocket_impl(clientSocket);
                 return;
             }
@@ -669,14 +727,21 @@ void HandleClient(SocketType clientSocket) {
             std::cout << "[PARSE] TYPE: " << type << " | HWID: " << hwid << " | DETAILS_LEN: " << details.length() << std::endl;
 
             if (secret != SERVER_SECRET) {
+                // PENTING: ini kegagalan KONFIGURASI, bukan bukti pemain di-ban.
+                // Versi sebelumnya mengirim "KICK;" sehingga client menampilkan
+                // "HWID Anda telah di-ban" kepada SEMUA pemain hanya karena secret
+                // server/client tidak sinkron. Sekarang dikirim kode khusus
+                // "ERROR:AUTH;" yang dipahami client sebagai masalah autentikasi.
                 std::cout << "[AUTH] Secret key tidak valid dari HWID [" << hwid << "]" << std::endl;
-                std::cout << "[AUTH] Expected: " << SERVER_SECRET << " | Received: " << secret << std::endl;
+                // Jangan pernah mencetak nilai secret (bocor ke stdout / file log).
+                std::cout << "[AUTH] Panjang secret diterima: " << secret.length()
+                          << " | diharapkan: " << SERVER_SECRET.length() << std::endl;
 
-                LogViolation("AUTH_FAILED", "Invalid secret key", hwid);
+                LogViolation("AUTH_FAILED", "Invalid secret key (config mismatch, bukan ban)", hwid);
 
-                const char* kickCommand = "KICK;";
-                send(clientSocket, kickCommand, strlen(kickCommand), 0);
-                std::cout << "[INFO] KICK dikirim (secret invalid). Review manual untuk ban jika diperlukan." << std::endl;
+                const char* authError = "ERROR:AUTH;";
+                send(clientSocket, authError, strlen(authError), SEND_FLAGS);
+                std::cout << "[INFO] ERROR:AUTH dikirim. Periksa secret.dat / OBLIVION_SECRET di kedua sisi." << std::endl;
             }
             else if (type == "CHECKIN") {
                 std::cout << "[CHECKIN] Client check-in dari HWID [" << hwid << "]" << std::endl;
@@ -685,13 +750,13 @@ void HandleClient(SocketType clientSocket) {
                 
                 if (isBanned) {
                     const char* kickCommand = "KICK;";
-                    send(clientSocket, kickCommand, strlen(kickCommand), 0);
+                    send(clientSocket, kickCommand, strlen(kickCommand), SEND_FLAGS);
                     std::cout << "[BAN] HWID [" << hwid << "] terdeteksi di ban list. Perintah KICK dikirim." << std::endl;
                     std::cout << "[INFO] Untuk unban, hapus HWID dari bans.txt dan restart client." << std::endl;
                 } else {
-                    uint64_t sessionNonce = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+                    uint64_t sessionNonce = GenerateSecureNonce();
                     std::string response = "OK;SESSION_NONCE:" + std::to_string(sessionNonce) + ";";
-                    send(clientSocket, response.c_str(), response.length(), 0);
+                    send(clientSocket, response.c_str(), response.length(), SEND_FLAGS);
                     std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
 
                     Oblivion::HeartbeatConfig cfg; 
@@ -700,6 +765,9 @@ void HandleClient(SocketType clientSocket) {
                     uint64_t rttSum = 0; uint32_t rttCount = 0; 
                     uint64_t rttSumCumulative = 0; uint64_t rttCountCumulative = 0; 
                     uint32_t totalMisses = 0;
+                    // Bit status proteksi client dari PONG terakhir ("antiSuspend|integrity").
+                    // false = lapisan pengaman client dilaporkan tidak berjalan penuh.
+                    bool protectionDegraded = false;
                     enum class HbState { Healthy, Warning, Flagged } state = HbState::Healthy;
 
                     std::string sessionKey = hmacSha256(SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
@@ -708,9 +776,9 @@ void HandleClient(SocketType clientSocket) {
 
                     while (true) {
                         uint64_t ping_ts = GetTickCount64_impl();
-                        uint64_t ping_nonce = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+                        uint64_t ping_nonce = GenerateSecureNonce();
                         std::string ping = "PING:" + std::to_string(seq) + ":" + std::to_string(ping_ts) + ":" + std::to_string(ping_nonce) + ";";
-                        ssize_t sres = send(clientSocket, ping.c_str(), ping.length(), 0);
+                        ssize_t sres = send(clientSocket, ping.c_str(), ping.length(), SEND_FLAGS);
                         if (sres <= 0) { 
                             std::cout << "[HEARTBEAT] Connection closed for HWID [" << hwid << "] - send failed" << std::endl; 
                             break; 
@@ -764,6 +832,23 @@ void HandleClient(SocketType clientSocket) {
                                                     rttSum += rtt; rttCount++;
                                                     rttSumCumulative += rtt; rttCountCumulative++;
                                                     consecutiveMiss = 0;
+
+                                                    // Status lapisan pengaman client dari PONG: "antiSuspendOk|integrityOk".
+                                                    // Nilai selain "1|1" berarti proteksi client tidak berjalan penuh.
+                                                    // Ini indikasi proteksi turun (bukan bukti cheat), jadi cukup dicatat
+                                                    // dan ditandai WARNING tanpa langsung memutus sesi pemain.
+                                                    const bool protectionOk = (status == "1|1");
+                                                    if (!protectionOk && !protectionDegraded) {
+                                                        protectionDegraded = true;
+                                                        state = HbState::Warning;
+                                                        std::cout << "[HB] PROTECTION DEGRADED for HWID [" << hwid << "] status=" << status << std::endl;
+                                                        LogViolation("HB_PROTECTION_DEGRADED", std::string("Client protection degraded | status=") + status +
+                                                            " (antiSuspend|integrity) | missesTotal=" + std::to_string(totalMisses), hwid);
+                                                    } else if (protectionOk && protectionDegraded) {
+                                                        protectionDegraded = false;
+                                                        std::cout << "[HB] PROTECTION RECOVERED for HWID [" << hwid << "]" << std::endl;
+                                                    }
+
                                                     if (rttCount >= 5) {
                                                         uint64_t avg = rttSum / rttCount;
                                                         if (avg > cfg.rtt_warn_ms) {
@@ -774,7 +859,7 @@ void HandleClient(SocketType clientSocket) {
                                                                 LogViolation("HB_WARNING", std::string("High average RTT ") + std::to_string(avg) +
                                                                     "ms | avgCum=" + std::to_string((int)avgCumSnap) + "ms | missesTotal=" + std::to_string(totalMisses), hwid);
                                                             }
-                                                        } else if (state != HbState::Healthy) {
+                                                        } else if (state != HbState::Healthy && !protectionDegraded) {
                                                             state = HbState::Healthy;
                                                             std::cout << "[HB] state->HEALTHY (avg RTT=" << avg << ")" << std::endl;
                                                         }
@@ -834,7 +919,7 @@ void HandleClient(SocketType clientSocket) {
                 
                 if (isBanned) {
                     const char* kickCommand = "KICK;";
-                    send(clientSocket, kickCommand, strlen(kickCommand), 0);
+                    send(clientSocket, kickCommand, strlen(kickCommand), SEND_FLAGS);
                     std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ") - sudah ada di ban list." << std::endl;
                 } else {
                     std::cout << "[WARNING] Pelanggaran terdeteksi dari HWID [" << hwid << "], dicatat ke log (menunggu review manual)." << std::endl;
@@ -863,6 +948,13 @@ void HandleClient(SocketType clientSocket) {
 }
 
 int main() {
+#ifndef _WIN32
+    // KRITIS: tanpa ini, send() ke socket yang sudah di-RST (pemain menutup client
+    // secara kasar) membuat kernel mengirim SIGPIPE -> aksi default adalah MEMATIKAN
+    // proses server. Satu pemain cukup untuk mematikan anti-cheat bagi semua orang.
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
 #ifdef _WIN32
     WSADATA wsaData;
     int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -970,8 +1062,21 @@ int main() {
         }
 
         std::cout << "\n[CONNECTION] New client connected" << std::endl;
-        
-        std::thread clientThread(HandleClient, ClientSocket);
+
+        // Tolak koneksi baru bila batas tercapai supaya thread/handle tidak habis.
+        if (g_activeClients.load() >= kMaxConcurrentClients) {
+            std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << kMaxConcurrentClients << "), koneksi baru ditolak" << std::endl;
+            const char* busyResponse = "ERROR:BUSY;";
+            send(ClientSocket, busyResponse, strlen(busyResponse), SEND_FLAGS);
+            closesocket_impl(ClientSocket);
+            continue;
+        }
+
+        g_activeClients.fetch_add(1);
+        std::thread clientThread([ClientSocket]() {
+            HandleClient(ClientSocket);
+            g_activeClients.fetch_sub(1);
+        });
         clientThread.detach();
     }
 

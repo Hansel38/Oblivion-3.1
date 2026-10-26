@@ -36,6 +36,27 @@ typedef struct _SYSTEM_HANDLE_INFORMATION {
 #define SYSTEM_HANDLE_INFORMATION_CLASS 16
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 
+// NtQueryObject dipakai untuk menentukan TIPE objek sebuah handle secara dinamis.
+// Nomor ObjectTypeNumber pada SYSTEM_HANDLE tidak stabil antar versi Windows
+// (7 di Win10 22H2, berbeda di sebagian build Win11), sehingga pengecekan tipe
+// harus memakai nama tipe dari object manager, bukan angka hardcoded.
+typedef NTSTATUS(NTAPI* NtQueryObjectFn)(
+    HANDLE Handle,
+    ULONG ObjectInformationClass,
+    PVOID ObjectInformation,
+    ULONG ObjectInformationLength,
+    PULONG ReturnLength);
+
+#define OBLIVION_OBJECT_TYPE_INFORMATION_CLASS 2
+
+// Field pertama OBJECT_TYPE_INFORMATION adalah TypeName (UNICODE_STRING).
+// Struct lengkap tidak didefinisikan di winternl.h, dan kita hanya membaca field
+// pertama tersebut sehingga struct minimal ini aman dipakai.
+typedef struct _OBLIVION_OBJECT_TYPE_INFORMATION {
+    UNICODE_STRING TypeName;
+    ULONG TotalNumberOfObjects;
+} OBLIVION_OBJECT_TYPE_INFORMATION, *POBLIVION_OBJECT_TYPE_INFORMATION;
+
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
@@ -56,6 +77,159 @@ namespace {
         return lowered;
     }
 
+    // Cache hasil verifikasi publisher per path (lowercase) -> trusted.
+    // WinVerifyTrust relatif mahal, sedangkan PerformScan berjalan pada satu thread
+    // (loop ProcessWatcher), sehingga map biasa sudah cukup dan aman.
+    std::map<std::wstring, bool> g_trustedFileCache;
+
+    // True hanya jika file ditandatangani oleh publisher yang ada di daftar tepercaya.
+    // Dipakai sebagai penyaring false positive: tool/launcher resmi (yang ditandatangani)
+    // tidak lagi ditandai oleh heuristik nama window, nama DLL, atau isi memory.
+    bool IsFileTrustedPublisher(const std::wstring& filePath) {
+        if (filePath.empty()) {
+            return false;
+        }
+
+        const std::wstring key = ToLowerCopy(filePath);
+        auto cached = g_trustedFileCache.find(key);
+        if (cached != g_trustedFileCache.end()) {
+            return cached->second;
+        }
+
+        std::wstring publisher;
+        const bool trusted =
+            Oblivion::DigitalSignatureValidator::GetSignatureVerdict(filePath, publisher) ==
+            Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher;
+
+        g_trustedFileCache[key] = trusted;
+        return trusted;
+    }
+
+    // Cek apakah satu komponen path (nama folder atau nama file) menandakan tool cheat.
+    // Pencocokan dilakukan per komponen, bukan substring bebas, karena keyword pendek
+    // seperti "hack" atau "patch" menghasilkan false positive nyata:
+    //   "C:\Program Files\HackShield\..."    (anti-cheat resmi game)
+    //   "C:\Program Files (x86)\RO\Patcher\..."  (patcher resmi)
+    // Keyword harus sama persis dengan komponen, atau menjadi awalan komponen yang
+    // diikuti pemisah ("cheat engine 7.5", "cheatengine-x86_64.exe", "newce_1.2").
+    bool PathComponentMatchesKeyword(const std::wstring& component, const std::wstring& keyword) {
+        if (component.empty() || keyword.empty() || component.size() < keyword.size()) {
+            return false;
+        }
+
+        if (component.compare(0, keyword.size(), keyword) != 0) {
+            return false;
+        }
+
+        if (component.size() == keyword.size()) {
+            return true;
+        }
+
+        const wchar_t next = component[keyword.size()];
+        return next == L' ' || next == L'-' || next == L'_' || next == L'.' ||
+               next == L'(' || next == L'[' || next == L'+';
+    }
+
+    // Cek apakah full path (sudah di-lowercase) mengandung komponen yang menandakan cheat.
+    // outKeyword diisi keyword yang cocok untuk keperluan logging/report.
+    bool PathContainsSuspiciousComponent(const std::wstring& lowerPath,
+                                        const std::vector<std::wstring>& keywords,
+                                        std::wstring& outKeyword) {
+        outKeyword.clear();
+
+        std::wstring component;
+        for (size_t i = 0; i <= lowerPath.size(); ++i) {
+            const bool isSeparator = (i == lowerPath.size() ||
+                                      lowerPath[i] == L'\\' ||
+                                      lowerPath[i] == L'/');
+            if (!isSeparator) {
+                component.push_back(lowerPath[i]);
+                continue;
+            }
+
+            for (const auto& keyword : keywords) {
+                if (PathComponentMatchesKeyword(component, keyword)) {
+                    outKeyword = keyword;
+                    return true;
+                }
+            }
+            component.clear();
+        }
+
+        return false;
+    }
+
+    // Ambil nama tipe objek dari sebuah handle (mis. "Process", "File", "Key").
+    // hOwnerProcess harus dibuka dengan PROCESS_DUP_HANDLE.
+    std::wstring GetHandleTypeName(HANDLE hOwnerProcess, HANDLE handleValue) {
+        static NtQueryObjectFn pNtQueryObject = []() -> NtQueryObjectFn {
+            HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+            if (hNtdll == NULL) {
+                return nullptr;
+            }
+            return reinterpret_cast<NtQueryObjectFn>(GetProcAddress(hNtdll, "NtQueryObject"));
+        }();
+
+        if (pNtQueryObject == nullptr) {
+            return L"";
+        }
+
+        HANDLE hDuplicate = NULL;
+        if (!DuplicateHandle(hOwnerProcess, handleValue, GetCurrentProcess(), &hDuplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            return L"";
+        }
+
+        std::vector<BYTE> buffer(4096);
+        ULONG returnLength = 0;
+        const NTSTATUS status = pNtQueryObject(
+            hDuplicate,
+            OBLIVION_OBJECT_TYPE_INFORMATION_CLASS,
+            buffer.data(),
+            static_cast<ULONG>(buffer.size()),
+            &returnLength);
+        CloseHandle(hDuplicate);
+
+        if (status < 0) {
+            return L"";
+        }
+
+        const auto* typeInfo = reinterpret_cast<const OBLIVION_OBJECT_TYPE_INFORMATION*>(buffer.data());
+        if (typeInfo->TypeName.Buffer == nullptr || typeInfo->TypeName.Length == 0) {
+            return L"";
+        }
+
+        return std::wstring(typeInfo->TypeName.Buffer, typeInfo->TypeName.Length / sizeof(wchar_t));
+    }
+
+    // True jika handle tersebut menunjuk ke objek Process.
+    // Nama tipe dibaca lewat NtQueryObject dan hasilnya di-cache per nomor tipe,
+    // sehingga biaya query hanya sekali per tipe objek (bukan per handle).
+    bool IsProcessHandleType(DWORD ownerProcessId, HANDLE handleValue, BYTE objectTypeNumber) {
+        static std::map<BYTE, bool> typeCache;
+
+        auto cached = typeCache.find(objectTypeNumber);
+        if (cached != typeCache.end()) {
+            return cached->second;
+        }
+
+        HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerProcessId);
+        if (hOwnerProcess == NULL) {
+            // Belum bisa dipastikan: jangan cache supaya dicoba lagi pada scan berikutnya.
+            return false;
+        }
+
+        const std::wstring typeName = GetHandleTypeName(hOwnerProcess, handleValue);
+        CloseHandle(hOwnerProcess);
+
+        if (typeName.empty()) {
+            return false;
+        }
+
+        const bool isProcess = (_wcsicmp(typeName.c_str(), L"Process") == 0);
+        typeCache[objectTypeNumber] = isProcess;
+        return isProcess;
+    }
+
     struct WindowSearchContext {
         DWORD targetProcessId = 0;
         std::wstring matchedClass;
@@ -65,39 +239,44 @@ namespace {
         int suspiciousControlCount = 0; // Count of suspicious child controls (for UI element detection)
     };
 
-    // Cheat Engine DLL signatures - komprehensif untuk berbagai versi CE
-    const std::vector<std::wstring> kSuspiciousModules = {
+    // Nama DLL yang SANGAT spesifik milik Cheat Engine / tool cheat. Nama-nama ini
+    // tidak dipakai perangkat lunak sah, sehingga satu kecocokan nama saja sudah cukup.
+    const std::vector<std::wstring> kHighConfidenceModules = {
         // Core CE DLLs
         L"dbk32.dll",
         L"dbk64.dll",
         L"dbvm.dll",
         L"dbvm32.dll",
         L"dbvm64.dll",
-        
+
         // CE Client & Components
         L"ceclient.dll",
         L"ceserver.dll",
         L"celua.dll",
-        L"lua53-64.dll",
-        L"lua53-32.dll",
-        
+
         // Speedhack modules
         L"speedhack-i386.dll",
         L"speedhack-x86_64.dll",
-        L"speedhack.dll",
-        
+
         // Kernel modules & drivers
         L"kernelmoduleunloader.dll",
         L"vehdebug-x86_64.dll",
         L"vehdebug-i386.dll",
-        
-        // Plugin & Extension DLLs
+
+        // Plugin CE dengan penamaan khusus
+        L"xinput1_3ce.dll",
+        L"xinput9_1_0ce.dll"
+    };
+
+    // Nama modul yang MIRIP komponen cheat tetapi juga dipakai library/aplikasi sah
+    // (Lua 5.3 dipakai banyak game, d3dhook dipakai overlay, dst). Modul di daftar ini
+    // hanya dianggap mencurigakan jika file-nya TIDAK ditandatangani publisher tepercaya.
+    const std::vector<std::wstring> kLowConfidenceModules = {
+        L"lua53-64.dll",
+        L"lua53-32.dll",
+        L"speedhack.dll",
         L"d3dhook.dll",
         L"d3dhook64.dll",
-        L"xinput1_3ce.dll",
-        L"xinput9_1_0ce.dll",
-        
-        // CE Utilities
         L"autoassembler.dll",
         L"symbolhandler.dll",
         L"disassembler.dll"
@@ -109,8 +288,6 @@ namespace {
         L"tceform",
         L"tcemainform",
         L"tcheatengine",
-        L"tform1",           // Generic Lazarus form - CE sometimes uses this
-        L"tmainform",        // Another generic CE main form name
         
         // CE dialogs & windows
         L"tmemoryview",
@@ -126,7 +303,6 @@ namespace {
         // CE utilities & tools
         L"tautoassembler",
         L"tautoassemblerform",
-        L"tlazarusform",
         L"tstructurefrm",
         L"tpointerscanner",
         L"tpointerfinder",
@@ -138,8 +314,10 @@ namespace {
         L"tluaform",
         
         // x64dbg
-        L"qt5qwindowicon",
-        L"qt5qwindowowndc",
+        // NOTE: class "Qt5QWindowIcon" / "Qt5QWindowOwnDC" sengaja TIDAK dipakai.
+        // Semua aplikasi berbasis Qt (OBS, qBittorrent, Wireshark, Telegram, video
+        // player lokal) memakai class itu sehingga menjadi sumber false positive besar.
+        // Deteksi x64dbg mengandalkan nama process (blacklist) dan window title.
         L"x64dbgmain",
         
         // OllyDbg variants
@@ -147,9 +325,19 @@ namespace {
         L"odbg",
         
         // IDA Pro
+        // NOTE: "qt5156qwindowicon" (Qt 5.15) juga dihapus dengan alasan yang sama
+        // seperti class Qt lain di atas.
         L"idawindow",
-        L"qt5156qwindowicon",
         
+        // Automation/macro tool yang dipakai untuk cheat auto-potion / auto-buff.
+        // Meski aplikasinya "sah", memakainya untuk memainkan game secara otomatis
+        // adalah cheating, jadi tetap diblokir - termasuk saat nama exe diganti
+        // (nama window class AutoHotkey/AutoIt tetap sama).
+        L"autohotkey",
+        L"autohotkeygui",
+        L"autoit v3 gui",
+        L"autoit v3",
+
         // Other debuggers
         L"windbgframeclass",
         L"procmon_window_class"
@@ -277,6 +465,45 @@ namespace {
         // karena sering unsigned (open-source/freeware)
     };
 
+    // Proses sah yang secara normal membuka handle ke proses game lain (game capture,
+    // overlay, tool monitoring, antivirus). Tanpa daftar ini deteksi handle menjadi
+    // sumber false positive besar: OBS / RTSS / capture driver / antivirus membuka
+    // process game dengan hak akses memory untuk mengambil frame atau memindai malware.
+    //
+    // CATATAN TRADE-OFF: daftar ini berbasis nama process, sehingga tool tidak sah
+    // secara teori bisa menyaru memakai nama ini. Deteksi tetap memerlukan bukti
+    // tambahan (handle dengan hak tulis + konfirmasi DuplicateHandle + owner tidak
+    // ada di whitelist bersignature), dan keuntungan menekan false positive dinilai
+    // lebih besar daripada risiko penyaruan nama.
+    const std::vector<std::wstring> kKnownLegitimateHandleOwners = {
+        L"obs.exe", L"obs32.exe", L"obs64.exe",                      // OBS Studio (game capture)
+        L"streamlabsdesktop.exe", L"streamlabs obs.exe",             // Streamlabs Desktop
+        L"msiafterburner.exe", L"rtss.exe", L"rtsshooksloader.exe",  // MSI AB / RivaTuner
+        L"fraps.exe", L"bandicam.exe", L"bdcam.exe", L"dxtory.exe", L"action.exe",
+        L"nvidia share.exe", L"nvidia web helper.exe", L"nvcontainer.exe", L"nvsphelper64.exe",
+        L"nvidia geforce experience.exe", L"nvidia app.exe", L"nvspcaps64.exe",
+        L"radeonsoftware.exe", L"amdrsserv.exe", L"amdow.exe", L"amfencoder.exe",
+        L"gamebar.exe", L"gamebarftserver.exe", L"gamebarpresencewriter.exe",
+        L"msmpeng.exe", L"mpcmdrun.exe", L"nissrv.exe", L"mssense.exe",  // Windows Defender
+        L"avp.exe", L"avastsvc.exe", L"avastui.exe", L"avguard.exe",     // Antivirus umum
+        L"werfault.exe", L"wermgr.exe",                                  // Crash dump / WER
+        L"taskmgr.exe", L"procexp.exe", L"procexp64.exe"                 // Task Manager / Process Explorer
+    };
+
+    bool IsKnownLegitimateHandleOwner(const std::wstring& processName) {
+        if (processName.empty()) {
+            return false;
+        }
+
+        const std::wstring lowerName = ToLowerCopy(processName);
+        for (const auto& allowedName : kKnownLegitimateHandleOwners) {
+            if (lowerName == allowedName) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Fungsi helper untuk mendapatkan full path dari process
     std::wstring GetProcessPath(DWORD processId) {
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
@@ -328,16 +555,21 @@ namespace {
         
         // Proses memerlukan verifikasi signature - cegah spoofing!
         if (processId == 0) {
-            // Jika PID tidak diberikan, tidak bisa verifikasi - anggap tidak aman
-            return false;
+            // PID tidak tersedia sehingga verifikasi tidak mungkin dilakukan.
+            // Ini bukan bukti spoofing (PID 0 = System Idle Process), jadi proses
+            // tidak ditandai agar tidak memicu false positive.
+            return true;
         }
         
         // Dapatkan full path dari process
         std::wstring processPath = GetProcessPath(processId);
         if (processPath.empty()) {
-            // Tidak bisa mendapatkan path - suspicious
-            std::wcout << L"[AdvHeuristics] WARNING: Cannot get path for whitelisted process: " << processName << L" (PID: " << processId << L")" << std::endl;
-            return false;
+            // Path proses tidak bisa dibaca (proses protected/elevated, akses ditolak,
+            // race saat proses baru dibuat). Ini BUKAN bukti spoofing - cukup lewati
+            // proses ini supaya tidak ditandai heuristik lain (false positive).
+            std::wcout << L"[AdvHeuristics] WARNING: Cannot get path for whitelisted process, skipping: "
+                       << processName << L" (PID: " << processId << L")" << std::endl;
+            return true;
         }
         
         // Normalize path untuk cache (lowercase)
@@ -365,16 +597,53 @@ namespace {
         auto it = publisherMap.find(lowerName);
         
         if (it == publisherMap.end()) {
-            // Tidak ada expected publisher - ini seharusnya tidak terjadi karena kita sudah filter di atas
-            std::wcout << L"[AdvHeuristics] WARNING: No expected publisher for: " << processName << std::endl;
-            return false;
+            // Nama proses ada di whitelist tetapi belum terdaftar di m_expectedPublishers.
+            // Karena tidak ada publisher yang bisa dibandingkan, proses diperlakukan
+            // sebagai aman (jangan dorong ke lapisan heuristik lain = sumber false positive).
+            std::wcout << L"[AdvHeuristics] WARNING: No expected publisher for: " << processName
+                       << L" - treated as whitelisted" << std::endl;
+            return true;
         }
         
         const std::wstring& expectedPublisher = it->second;
         
-        // Verifikasi digital signature dengan expected publisher
-        std::wcout << L"[AdvHeuristics] Verifying signature: " << processName << L" (PID: " << processId << L")..." << std::endl;
-        bool isVerified = Oblivion::DigitalSignatureValidator::VerifyProcessSignature(processPath, expectedPublisher);
+        // Verifikasi digital signature dengan expected publisher, lalu kategorikan hasilnya.
+        // Penting: hasil tri-state supaya pemain sah tidak di-kick hanya karena
+        // verifikasi tidak bisa dilakukan (offline / revocation check gagal).
+        std::wstring verifiedPublisher;
+        const auto verdict = Oblivion::DigitalSignatureValidator::GetSignatureVerdict(processPath, verifiedPublisher);
+
+        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher) {
+            // Signature valid dan publisher tepercaya -> proses memang sah.
+            g_signatureCache[cacheKey] = true;
+            return true;
+        }
+
+        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
+            // File punya signature tetapi tidak dapat divalidasi (client offline,
+            // revocation/chain error, root cert belum di-update). Ini BUKAN spoofing.
+            // Tidak di-cache supaya bisa diverifikasi ulang saat kondisi membaik.
+            std::wcout << L"[AdvHeuristics] WARNING: Signature verification unavailable for: "
+                       << processName << L" (PID: " << processId
+                       << L") - skipping (bukan spoofing)" << std::endl;
+            return true;
+        }
+
+        // Defensive: publisher ASLI tetap mengandung publisher yang diharapkan
+        // (mis. perbedaan penulisan/legal name) -> anggap sah.
+        if (!verifiedPublisher.empty()) {
+            const std::wstring lowerActual = ToLowerCopy(verifiedPublisher);
+            const std::wstring lowerExpected = ToLowerCopy(expectedPublisher);
+            if (lowerActual.find(lowerExpected) != std::wstring::npos) {
+                g_signatureCache[cacheKey] = true;
+                return true;
+            }
+        }
+
+        // Sisa kemungkinan: file TIDAK ditandatangani (Unsigned) atau signature valid
+        // tetapi publisher berbeda (UntrustedPublisher) => indikasi spoofing nyata.
+        const bool isVerified = false;
+
         
         // Simpan hasil ke cache
         g_signatureCache[cacheKey] = isVerified;
@@ -421,6 +690,10 @@ namespace {
             return false; // Tidak akan tercapai karena ReportViolationAndExit memanggil ExitProcess
         }
         
+        // Catatan: semua cabang sah (TrustedPublisher, VerificationError, atau publisher
+        // yang mengandung expected publisher) sudah return lebih awal. Karena
+        // isVerified selalu false di titik ini, blok di bawah ini hanya jaring pengaman
+        // (unreachable) supaya fungsi selalu punya jalur keluar.
         // Signature verified successfully
         std::wcout << L"[AdvHeuristics] Signature verified: " << processName 
                << L" (PID: " << processId << L") - Publisher: " << expectedPublisher << std::endl;
@@ -500,18 +773,15 @@ namespace {
     };
     const BYTE luaEngineMask[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00 };
     
-    // Speedhack signature - characteristic timer manipulation code
-    const BYTE speedhackPattern[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8], rbx
-        0x57,                           // push rdi
-        0x48, 0x83, 0xEC, 0x20         // sub rsp, 20h
-    };
-    const BYTE speedhackMask[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-    
+    // CATATAN PENTING: signature "SPEEDHACK_CODE" yang lama memakai byte
+    // 48 89 5C 24 08 57 48 83 EC 20 (mov [rsp+8],rbx; push rdi; sub rsp,20h).
+    // Itu adalah PROLOG FUNGSI MSVC x64 yang generik sehingga cocok dengan hampir
+    // semua binary x64 - sumber false positive terbesar di pemeriksaan memory.
+    // Signature tersebut dihapus; DLL speedhack CE tetap terdeteksi melalui
+    // pemeriksaan nama modul (speedhack-i386.dll / speedhack-x86_64.dll).
     const std::vector<MemorySignature> kMemorySignatures = {
         { L"DBK_DRIVER", dbkInitPattern, sizeof(dbkInitPattern), dbkInitMask, false },
-        { L"CE_LUA_ENGINE", luaEnginePattern, sizeof(luaEnginePattern), luaEngineMask, false },
-        { L"SPEEDHACK_CODE", speedhackPattern, sizeof(speedhackPattern), speedhackMask, true }
+        { L"CE_LUA_ENGINE", luaEnginePattern, sizeof(luaEnginePattern), luaEngineMask, false }
     };
 
     BOOL CALLBACK EnumWindowsForProcess(HWND hwnd, LPARAM lParam) {
@@ -542,28 +812,32 @@ namespace {
                 std::wstring title(windowTitle, titleLen);
                 std::wstring lowerTitle = ToLowerCopy(title);
                 
-                // Pattern 1: CE window title format "[PID]-[ProcessName]" or "[PID]-[GameName]"
-                // Example: "00001C0C-Republic-RO" atau "00001234-game.exe"
-                if (title.length() > 5 && title[0] >= L'0' && title[0] <= L'9') {
-                    size_t dashPos = title.find(L'-');
-                    if (dashPos != std::wstring::npos && dashPos <= 8) {
-                        // Check if before dash is hex PID
-                        bool isHexPID = true;
-                        for (size_t i = 0; i < dashPos; ++i) {
-                            wchar_t ch = title[i];
-                            if (!((ch >= L'0' && ch <= L'9') || (ch >= L'A' && ch <= L'F') || (ch >= L'a' && ch <= L'f'))) {
-                                isHexPID = false;
-                                break;
-                            }
+                // Pattern 1: format title CE = "<PID 8 digit hex>-<NamaProcess>"
+                // Contoh: "00001C0C-Republic-RO" atau "00001234-game.exe"
+                // STRICT: CE memakai IntToHex(processid, 8), jadi prefix WAJIB tepat 8
+                // digit hex. Versi lama hanya memeriksa 1-8 karakter pertama berupa hex,
+                // sehingga title sah seperti "7-Zip 19.00" (prefix "7" lalu "-") ikut
+                // ditandai sebagai Cheat Engine (false positive).
+                constexpr size_t kCePidLength = 8;
+                if (title.length() > kCePidLength + 1 &&
+                    title[0] >= L'0' && title[0] <= L'9' &&
+                    title[kCePidLength] == L'-') {
+                    bool isHexPID = true;
+                    for (size_t i = 0; i < kCePidLength; ++i) {
+                        wchar_t ch = title[i];
+                        if (!((ch >= L'0' && ch <= L'9') || (ch >= L'A' && ch <= L'F') || (ch >= L'a' && ch <= L'f'))) {
+                            isHexPID = false;
+                            break;
                         }
-                        if (isHexPID) {
-                            ctx->matchedTitle = L"CE_PID_PATTERN: " + title;
-                            ctx->matched = true;
+                    }
+                    // Setelah '-' langsung nama proses (CE tidak memakai spasi di sini)
+                    if (isHexPID && title[kCePidLength + 1] != L' ') {
+                        ctx->matchedTitle = L"CE_PID_PATTERN: " + title;
+                        ctx->matched = true;
 #ifdef _DEBUG
-                            OutputDebugStringW(L"[AdvHeuristics] DETECTED CE PID PATTERN!\n");
+                        OutputDebugStringW(L"[AdvHeuristics] DETECTED CE PID PATTERN!\n");
 #endif
-                            return FALSE;
-                        }
+                        return FALSE;
                     }
                 }
                 
@@ -578,26 +852,13 @@ namespace {
                     return FALSE;
                 }
                 
-                // Pattern 3: CE version pattern "Cheat Engine 7.x" atau "CE 7.x"
-                if (lowerTitle.find(L"ce ") != std::wstring::npos && 
-                    (lowerTitle.find(L"7.") != std::wstring::npos || lowerTitle.find(L"6.") != std::wstring::npos)) {
-                    ctx->matchedTitle = L"CE_VERSION: " + title;
-                    ctx->matched = true;
-#ifdef _DEBUG
-                    OutputDebugStringW(L"[AdvHeuristics] DETECTED CE VERSION!\n");
-#endif
-                    return FALSE;
-                }
-                
-                // Pattern 4: "No Process Selected" - CE default title saat belum attach
-                if (lowerTitle.find(L"no process selected") != std::wstring::npos) {
-                    ctx->matchedTitle = L"CE_NO_PROCESS: " + title;
-                    ctx->matched = true;
-#ifdef _DEBUG
-                    OutputDebugStringW(L"[AdvHeuristics] DETECTED CE NO PROCESS TITLE!\n");
-#endif
-                    return FALSE;
-                }
+                // Pattern 3 & 4 DIHAPUS karena terbukti menghasilkan false positive:
+                //  - "ce " + "7."/"6."  -> cocok dengan title sah apa pun yang memuat
+                //    potongan tersebut (mis. "Service CE 7.1", "Source CE 7.0").
+                //  - "no process selected" -> string ini juga muncul di aplikasi sah
+                //    (task manager, tool capture) yang belum memilih target.
+                // Deteksi CE tetap kuat melalui Pattern 1 (format title khas CE),
+                // Pattern 2 ("cheat engine"), dan Pattern 5 (build modifikasi).
                 
                 // Pattern 5: Modified CE versions (bossb, etc)
                 if (lowerTitle.find(L"bossb") != std::wstring::npos ||
@@ -644,7 +905,11 @@ namespace {
         if (textLen > 0) {
             std::wstring text = ToLowerCopy(controlText);
             
-            // CE-specific UI elements yang sangat khas
+            // CE-specific UI elements yang sangat khas.
+            // PERHATIAN: label generik ("hex", "float", "double", "address",
+            // "4 bytes", "8 bytes") sudah DIHAPUS karena muncul juga di tool sah
+            // (hex editor, viewer data, aplikasi lokal) dan dengan ambang 3 kecocokan
+            // langsung men-kick pemain. Label yang tersisa bersifat khas Cheat Engine.
             const std::vector<std::wstring> ceUIElements = {
                 L"first scan",
                 L"next scan",
@@ -653,14 +918,8 @@ namespace {
                 L"value type",
                 L"scan type",
                 L"exact value",
-                L"4 bytes",
-                L"8 bytes",
-                L"float",
-                L"double",
                 L"array of byte",
                 L"lua formula",
-                L"hex",
-                L"address",
                 L"memory view",
                 L"pointer scan",
                 L"dissect data",
@@ -740,6 +999,19 @@ namespace Oblivion {
         return true;
     }
 
+    // Cek nama modul (DLL) terhadap daftar modul cheat yang sangat spesifik.
+    // Pemeriksaan substring "hook"/"inject"/"cheat" pada versi sebelumnya dihapus
+    // karena menandai modul sah apa pun yang namanya memuat kata tersebut
+    // (mis. DiscordHook64.dll, komponen overlay, atau hook milik antivirus).
+    bool IsKnownCheatModuleName(const std::wstring& moduleName) {
+        if (moduleName.empty()) {
+            return false;
+        }
+
+        const std::wstring lowerName = ::ToLowerCopy(moduleName);
+        return std::find(kHighConfidenceModules.begin(), kHighConfidenceModules.end(), lowerName) != kHighConfidenceModules.end();
+    }
+
     // Heuristik perilaku: deteksi proses dengan aktivitas mencurigakan
     bool IsSuspiciousBehavior(DWORD processId) {
         // Deteksi sederhana: cek apakah proses menggunakan CreateRemoteThread atau WriteProcessMemory
@@ -755,9 +1027,7 @@ namespace Oblivion {
                 wchar_t szModName[MAX_PATH];
                 if (GetModuleBaseNameW(hProcess, hMods[i], szModName, sizeof(szModName) / sizeof(wchar_t))) {
                     std::wstring modName = szModName;
-                    if (modName.find(L"inject") != std::wstring::npos ||
-                        modName.find(L"hook") != std::wstring::npos ||
-                        modName.find(L"cheat") != std::wstring::npos) {
+                    if (IsKnownCheatModuleName(modName)) {
                         suspicious = true;
                         break;
                     }
@@ -845,6 +1115,14 @@ namespace Oblivion {
                 // Skip whitelisted system processes untuk menghindari false positive
                 // IMPORTANT: Sekarang dengan signature verification untuk mencegah spoofing
                 if (IsProcessWhitelisted(processName, pe32.th32ProcessID)) {
+                    continue;
+                }
+
+                // Skip proses yang executable-nya ditandatangani publisher tepercaya.
+                // Tool/cheat tidak pernah memiliki signature resmi, sedangkan aplikasi
+                // sah (launcher resmi, overlay, software komersial) adalah sumber utama
+                // false positive pada heuristik nama window, nama DLL, dan isi memory.
+                if (IsFileTrustedPublisher(GetProcessPath(pe32.th32ProcessID))) {
                     continue;
                 }
 
@@ -939,10 +1217,29 @@ namespace Oblivion {
         if (Module32FirstW(hModuleSnapshot, &me32)) {
             do {
                 std::wstring moduleLower = ToLowerCopy(me32.szModule);
-                if (std::find(kSuspiciousModules.begin(), kSuspiciousModules.end(), moduleLower) != kSuspiciousModules.end()) {
+
+                // Tier 1: nama modul yang sangat spesifik milik tool cheat.
+                if (std::find(kHighConfidenceModules.begin(), kHighConfidenceModules.end(), moduleLower) != kHighConfidenceModules.end()) {
                     matchedModule = me32.szModule;
                     detected = true;
                     break;
+                }
+
+                // Tier 2: nama modul yang juga dipakai library/aplikasi sah
+                // (lua53-*.dll, d3dhook.dll, dst). Modul seperti ini hanya dianggap
+                // mencurigakan bila file-nya TIDAK ditandatangani publisher tepercaya,
+                // sehingga aplikasi komersial/game resmi tidak ikut tertandai.
+                if (std::find(kLowConfidenceModules.begin(), kLowConfidenceModules.end(), moduleLower) != kLowConfidenceModules.end()) {
+                    bool unsignedModule = true;
+                    if (me32.szExePath[0] != L'\0') {
+                        unsignedModule = !IsFileTrustedPublisher(me32.szExePath);
+                    }
+
+                    if (unsignedModule) {
+                        matchedModule = me32.szModule;
+                        detected = true;
+                        break;
+                    }
                 }
             } while (Module32NextW(hModuleSnapshot, &me32));
         }
@@ -1052,10 +1349,11 @@ namespace Oblivion {
         PSYSTEM_HANDLE_INFORMATION handleInfo = reinterpret_cast<PSYSTEM_HANDLE_INFORMATION>(buffer.data());
         const DWORD selfPid = GetCurrentProcessId();
 
-        // Dangerous access masks untuk memory manipulation
-        // Minimal: PROCESS_VM_READ sudah cukup untuk memory scanner
+        // Access mask yang benar-benar berbahaya: kemampuan MENULIS / memanipulasi
+        // memory game. PROCESS_VM_READ saja sengaja TIDAK dihitung karena terlalu
+        // umum: OBS/game capture, antivirus, Windows Error Reporting, dan Task Manager
+        // membuka process game dengan VM_READ sehingga sebelumnya pemain sah di-kick.
         const ACCESS_MASK dangerousMasks = 
-            PROCESS_VM_READ |           // Read memory (required for scanning)
             PROCESS_VM_WRITE |          // Write memory (required for modification)
             PROCESS_VM_OPERATION;       // VirtualProtect, VirtualAlloc (required for advanced manipulation)
 
@@ -1071,13 +1369,31 @@ namespace Oblivion {
                 continue;
             }
 
-            // Check if this handle points to a process object (ObjectTypeNumber 7)
-            // AND has dangerous access rights
-            if (handle.ObjectTypeNumber == 7 && (handle.GrantedAccess & dangerousMasks) != 0) {
+            // Handle harus menunjuk ke objek Process (tipe ditentukan dinamis via
+            // NtQueryObject, bukan angka hardcoded) DAN memiliki hak tulis/manipulasi
+            // memory. PROCESS_VM_READ saja tidak dihitung (lihat dangerousMasks).
+            if ((handle.GrantedAccess & dangerousMasks) != 0 &&
+                IsProcessHandleType(handle.ProcessId, (HANDLE)(ULONG_PTR)handle.Handle, handle.ObjectTypeNumber)) {
                 // Get process name that owns this suspicious handle
                 std::wstring processName = GetProcessName(handle.ProcessId);
                 
-                if (!processName.empty() && !IsProcessWhitelisted(processName, handle.ProcessId)) {
+                // Lewati pemilik handle yang memang sah membuka proses lain
+                // (OBS/RTSS/capture/AV) maupun yang sudah ada di whitelist.
+                //
+                // KEAMANAN: nama tool sah HANYA dipercaya bila exe-nya benar-benar
+                // bertanda tangan publisher tepercaya. Tanpa syarat ini, tool cheat
+                // cukup mengganti namanya menjadi "obs64.exe" untuk lolos.
+                bool trustedToolName = false;
+                if (!processName.empty() && IsKnownLegitimateHandleOwner(processName)) {
+                    trustedToolName = IsFileTrustedPublisher(GetProcessPath(handle.ProcessId));
+                    if (!trustedToolName) {
+                        std::wcout << L"[AdvHeuristics] WARNING: Process memakai nama tool sah TANPA signature valid: "
+                                   << processName << L" (PID: " << handle.ProcessId << L") - tetap diperiksa" << std::endl;
+                    }
+                }
+
+                if (!processName.empty() && !trustedToolName &&
+                    !IsProcessWhitelisted(processName, handle.ProcessId)) {
                     // Verify: Try to duplicate the handle and check if it points to our game
                     HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.ProcessId);
                     if (hOwnerProcess != NULL) {
@@ -1141,37 +1457,60 @@ namespace Oblivion {
             OutputDebugStringW(debugMsg.c_str());
 #endif
 
-            // Suspicious path keywords
+            // Suspicious path keywords (dicocokkan PER-KOMPONEN path, bukan substring).
+            //
+            // FALSE POSITIVE YANG DIPERBAIKI:
+            //  - "hack"   menandai "C:\Program Files\HackShield\..." (anti-cheat resmi game)
+            //  - "patch"  menandai folder patcher resmi game ("...\Patcher\RagPatch.exe")
+            //  - "mod\"   menandai folder mods/data sah milik game
+            //  - "inject" menandai komponen overlay/AV yang sah
+            // Keyword tersebut kini hanya cocok bila SELURUH komponen path sama dengan
+            // keyword (mis. "C:\Tools\ce\...") atau komponen diawali keyword + pemisah
+            // (mis. "Cheat Engine 7.5", "cheatengine-x86_64.exe").
             const std::vector<std::wstring> suspiciousPathKeywords = {
                 L"cheat",
                 L"hack",
-                L"\\ce\\",
-                L"\\ce2",
-                L"\\cheatengine",
-                L"\\newce",
+                L"ce",
+                L"ce2",
+                L"ce6",
+                L"ce7",
+                L"cheatengine",
                 L"cheatprogram",
+                L"newce",
+                L"bossb",
                 L"trainer",
                 L"crack",
                 L"keygen",
-                L"patch",
-                L"mod\\",
-                L"inject",
-                L"\\bossb",
-                L"\\ce7",
-                L"\\ce6",
                 L"memory scanner",
-                L"memoryscanner"
+                L"memoryscanner",
+                // Automation/macro & bot tool (aplikasi sah yang dipakai untuk cheat).
+                // Pencocokan per-komponen tetap berlaku sehingga "autohotkey" hanya
+                // cocok dengan folder/file bernama itu atau berawalan itu.
+                L"autohotkey",
+                L"ahk",
+                L"autoit",
+                L"openkore",
+                L"wexdist",
+                L"wpepro"
             };
 
-            for (const auto& keyword : suspiciousPathKeywords) {
-                if (lowerPath.find(keyword) != std::wstring::npos) {
-                    matchedPath = L"SUSPICIOUS_PATH: " + fullPath;
+            std::wstring matchedKeyword;
+            if (PathContainsSuspiciousComponent(lowerPath, suspiciousPathKeywords, matchedKeyword)) {
+                // Penyaring tambahan: keyword pada path saja belum cukup. Bila executable
+                // ditandatangani publisher tepercaya, itu bukan tool cheat (tool cheat
+                // tidak pernah ditandatangani secara resmi).
+                if (!IsFileTrustedPublisher(fullPath)) {
+                    matchedPath = L"SUSPICIOUS_PATH: " + fullPath + L" (keyword: " + matchedKeyword + L")";
                     detected = true;
 #ifdef _DEBUG
-                    std::wstring debugMsg2 = L"[AdvHeuristics] DETECTED SUSPICIOUS PATH with keyword: " + keyword + L"\n";
+                    std::wstring debugMsg2 = L"[AdvHeuristics] DETECTED SUSPICIOUS PATH with keyword: " + matchedKeyword + L"\n";
                     OutputDebugStringW(debugMsg2.c_str());
 #endif
-                    break;
+                } else {
+#ifdef _DEBUG
+                    std::wstring debugMsg3 = L"[AdvHeuristics] Path keyword ignored (trusted publisher): " + fullPath + L"\n";
+                    OutputDebugStringW(debugMsg3.c_str());
+#endif
                 }
             }
         }

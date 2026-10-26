@@ -24,6 +24,10 @@ namespace Oblivion {
         void Start();
         void Stop();
 
+        // True bila guardian anti-suspend milik watcher ini sedang berjalan.
+        // Dipakai dllmain untuk mengisi bit status pada heartbeat (PONG).
+        bool IsAntiSuspendRunning() const;
+
     private:
         void WatcherLoop();
         void PerformScan();

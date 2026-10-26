@@ -21,5 +21,9 @@ namespace Oblivion {
         // Handle dan rectangle dari jendela game
         HWND m_gameWindow;
         RECT m_gameRect;
+        // Process ID pemilik jendela game. Semua jendela milik process game
+        // (splash, tooltip, window bantu) harus diabaikan agar tidak salah
+        // dianggap sebagai overlay ilegal.
+        DWORD m_gameProcessId;
     };
 }

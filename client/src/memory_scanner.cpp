@@ -35,6 +35,17 @@ namespace Oblivion {
 
     MemoryScanner::~MemoryScanner() {}
 
+    namespace {
+        // Log masalah internal scanner (BUKAN bukti cheat).
+        // Sebelumnya kegagalan ini dikirim ke server sebagai pelanggaran sehingga
+        // pemain sah (file terkunci antivirus, permission, disk lambat, path tidak
+        // terbaca) ikut di-kick sebagai cheater = false positive.
+        void LogScannerIssue(const char* type, const std::string& details) {
+            std::cerr << "[MemoryScanner] " << type << ": " << details << std::endl;
+        }
+    }
+
+
     // === Cryptographic Hash Functions ===
     
     uint32_t MemoryScanner::CalculateCRC32(const uint8_t* data, size_t size) {
@@ -293,7 +304,7 @@ namespace Oblivion {
         
         if (!ParsePEHeaders(fileData, sections)) {
             std::string details = "PE structure validation failed: Invalid headers or corrupted file";
-            ReportViolationAndExit(L"", "PE_VALIDATION_FAILED", details);
+            LogScannerIssue("PE_VALIDATION_FAILED", details);
             return false;
         }
 
@@ -313,7 +324,7 @@ namespace Oblivion {
 
         if (!hasTextSection) {
             std::string details = "PE validation failed: Missing .text section";
-            ReportViolationAndExit(L"", "MISSING_TEXT_SECTION", details);
+            LogScannerIssue("MISSING_TEXT_SECTION", details);
             return false;
         }
 
@@ -447,7 +458,7 @@ namespace Oblivion {
         std::vector<uint8_t> fileData;
         if (!ReadExecutableFile(filePath, fileData)) {
             std::string details = "Failed to read executable from disk";
-            ReportViolationAndExit(L"", "BASELINE_READ_FAILED", details);
+            LogScannerIssue("BASELINE_READ_FAILED", details);
             return;
         }
 
@@ -463,7 +474,7 @@ namespace Oblivion {
         std::vector<PESectionInfo> sections;
         if (!ParsePEHeaders(fileData, sections)) {
             std::string details = "Failed to parse PE sections";
-            ReportViolationAndExit(L"", "PE_PARSE_FAILED", details);
+            LogScannerIssue("PE_PARSE_FAILED", details);
             return;
         }
 
@@ -471,7 +482,7 @@ namespace Oblivion {
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
         if (hSnapshot == INVALID_HANDLE_VALUE) {
             std::string details = "Failed to enumerate modules";
-            ReportViolationAndExit(L"", "MODULE_ENUM_FAILED", details);
+            LogScannerIssue("MODULE_ENUM_FAILED", details);
             return;
         }
 
@@ -491,7 +502,7 @@ namespace Oblivion {
 
         if (m_moduleBaseAddress == 0) {
             std::string details = "Failed to find module base address";
-            ReportViolationAndExit(L"", "MODULE_BASE_NOT_FOUND", details);
+            LogScannerIssue("MODULE_BASE_NOT_FOUND", details);
             return;
         }
 
@@ -1012,7 +1023,7 @@ namespace Oblivion {
             wchar_t exePath[MAX_PATH];
             if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
                 std::string details = "Failed to get executable path";
-                ReportViolationAndExit(L"", "PATH_RETRIEVAL_FAILED", details);
+                LogScannerIssue("PATH_RETRIEVAL_FAILED", details);
                 return;
             }
 
@@ -1021,8 +1032,14 @@ namespace Oblivion {
             CreateBaselineFromDisk(exePath);
 
             if (!m_baselineCreated || !m_baselineVerified) {
-                std::string details = "Baseline creation or verification failed";
-                ReportViolationAndExit(L"", "BASELINE_FAILED", details);
+                // Kegagalan infrastruktur (bukan bukti cheat). Log hanya sekali agar
+                // console tidak spam setiap iterasi scan, lalu coba lagi di scan
+                // berikutnya.
+                static bool baselineFailureLogged = false;
+                if (!baselineFailureLogged) {
+                    baselineFailureLogged = true;
+                    LogScannerIssue("BASELINE_FAILED", "Baseline creation or verification failed");
+                }
                 return;
             }
         }
@@ -1046,7 +1063,7 @@ namespace Oblivion {
         if (diskVerificationDue) {
             if (!ReadExecutableFile(m_executablePath, currentDiskData)) {
                 std::string details = "Failed to re-read executable from disk during scan";
-                ReportViolationAndExit(L"", "DISK_READ_FAILED", details);
+                LogScannerIssue("DISK_READ_FAILED", details);
                 return;
             }
 
