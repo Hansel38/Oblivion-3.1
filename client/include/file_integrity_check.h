@@ -9,6 +9,10 @@ namespace Oblivion {
         // Fungsi utama untuk menjalankan semua pemeriksaan file
         void PerformCheck();
 
+        // True when startup verification is configured to terminate the client
+        // on an integrity mismatch or on an inability to perform the check.
+        static bool IsEnforcementEnabled();
+
     private:
         // Struktur untuk menyimpan pasangan nama file dan hash yang diharapkan
         struct FileHashPair {
