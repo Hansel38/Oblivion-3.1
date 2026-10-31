@@ -56,7 +56,8 @@ namespace Oblivion {
         int m_serverPort;         // fallback port
         std::string m_hwid;       // Hardware ID yang di-generate saat konstruktor
         bool m_hwidValid = false; // true bila m_hwid berformat sah (hex + dash) dan layak dikirim
-        std::string m_secretKey;  // Secret sederhana untuk autentikasi dasar
+        std::string m_secretKey;  // Shared key loaded from environment/config
+        bool m_secretValid = false; // Production requires at least 32 bytes
 
         void LoadConfiguration();
         SOCKET ConnectToAnyEndpoint(std::string& outHost, int& outPort);

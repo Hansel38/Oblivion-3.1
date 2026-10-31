@@ -114,7 +114,27 @@ def verify_trailing_data_is_rejected() -> None:
         sock.close()
 
 
+def verify_weak_secret_is_rejected(server_binary: Path) -> None:
+    env = os.environ.copy()
+    env["OBLIVION_SECRET"] = "weak"
+    result = subprocess.run(
+        [str(server_binary)],
+        cwd=str(server_binary.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0 or "minimal 32 byte" not in output:
+        raise RuntimeError(
+            "server did not reject a short production secret before listening"
+        )
+
+
 def run_integration(server_binary: Path) -> None:
+    verify_weak_secret_is_rejected(server_binary)
+
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = TEST_SECRET
     env["OBLV_HB_INTERVAL_MS"] = "250"

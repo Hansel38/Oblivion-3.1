@@ -981,9 +981,12 @@ void HandleClient(SOCKET clientSocket) {
 }
 
 int main() {
-    if (SERVER_SECRET.empty() || SERVER_SECRET == "DEV_SECRET_NOT_SET") {
-        std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat tidak dikonfigurasi. "
-                  << "Server menolak berjalan dengan development secret." << std::endl;
+    if (SERVER_SECRET.empty() ||
+        SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
+        SERVER_SECRET.size() < 32) {
+        std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat wajib dikonfigurasi "
+                  << "dengan secret minimal 32 byte. Server menolak secret kosong, "
+                  << "development, atau terlalu pendek." << std::endl;
         return 1;
     }
 
