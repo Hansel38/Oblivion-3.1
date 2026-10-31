@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "network_reporter.h"
 #include "heartbeat_protocol.h"
+#include "../../common/heartbeat_auth.h"
 #include "hwid_generator.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -396,8 +397,8 @@ namespace {
 namespace Oblivion {
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
         : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
-        // Lock untuk antrian laporan yang gagal terkirim (dipakai lintas thread pelaporan).
         // Resolve configuration before acquiring OS resources.
+        m_secretValid = (m_secretKey.size() >= 32);
         LoadConfiguration();
 
         InitializeCriticalSection(&m_pendingLock);
@@ -666,6 +667,21 @@ namespace Oblivion {
     }
 
     bool NetworkReporter::CheckBanStatus() {
+        if (!m_secretValid) {
+            const std::string reason =
+                "Shared secret kosong atau terlalu pendek; gunakan secret acak minimal 32 byte";
+            LogClientIssue("SECRET_INVALID", reason);
+            if (m_failClosed) {
+                MessageBoxW(nullptr,
+                    L"Konfigurasi secret Oblivion tidak valid.\n\nGunakan secret acak minimal 32 byte yang sama pada client dan server.",
+                    L"Oblivion Hack Shield - Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(1);
+            }
+            std::cerr << "[WARN] " << reason << " (development fail-open)" << std::endl;
+            return true;
+        }
+
         // HWID harus sah lebih dulu: HWID "UNKNOWN" (WMI gagal) pasti ditolak server
         // dengan ERROR:INVALID_FORMAT, sehingga check-in tidak ada gunanya dan
         // kegagalannya BUKAN bukti kecurangan.
@@ -886,10 +902,8 @@ namespace Oblivion {
 
                 // Authenticate every PONG field (including status) so an observer
                 // cannot alter client protection flags without invalidating HMAC.
-                const std::string signedData =
-                    std::to_string(sequence) + ":" + std::to_string(clientTimestamp) + ":" +
-                    std::to_string(timestamp) + ":" + std::to_string(nonce) + ":" +
-                    statusText + ":" + m_hwid;
+                const std::string signedData = Oblivion::Protocol::BuildPongAuthPayload(
+                    sequence, clientTimestamp, timestamp, nonce, statusText, m_hwid);
                 const std::string hmac = HmacSha256(sessionKey, signedData);
                 if (hmac.empty()) {
                     failHeartbeat("gagal menghitung HMAC PONG");

@@ -12,9 +12,11 @@
 #include <algorithm>
 #include <cctype>
 #include <atomic>
+#include <mutex>
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
+#include "../common/heartbeat_auth.h"
 #include <bcrypt.h>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -308,7 +310,12 @@ std::string ExtractDetectedFile(const std::string& type, const std::string& deta
 }
 
 // Fungsi untuk mencatat pelanggaran ke log file
+static std::mutex g_violationLogMutex;
+
 void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
+    // Multiple client workers may report at the same time; serialize complete
+    // log records so concurrent file streams cannot interleave their fields.
+    std::lock_guard<std::mutex> logGuard(g_violationLogMutex);
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
@@ -437,8 +444,12 @@ ParsedReport ParseProtocol(const std::string& report) {
     }
     
     // Validasi format: harus diakhiri dengan semicolon
-    if (report.back() != ';') {
-        result.errorMessage = "Report must end with semicolon";
+    // Accept exactly one complete frame. Extra bytes after ';' could otherwise
+    // be silently ignored when TCP coalesces multiple frames into one recv().
+    const size_t terminator = report.find(';');
+    if (terminator != report.size() - 1 ||
+        std::count(report.begin(), report.end(), ';') != 1) {
+        result.errorMessage = "Report contains trailing data or multiple frames";
         return result;
     }
     
@@ -669,36 +680,19 @@ uint64_t GenerateSecureNonce() {
 
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
-    char buffer[BUFFER_LEN] = {0};
     int bytesReceived = 0;
     std::string extractedHwid = "UNKNOWN"; // Untuk logging jika parsing gagal
 
     try {
-        // Timeout baca: koneksi yang hanya "diam" tidak boleh menahan thread dan
-        // handle selamanya (flood koneksi idle = kehabisan thread di server).
-        DWORD recvTimeoutMs = 10000;
-        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeoutMs, sizeof(recvTimeoutMs));
-
-        // FRAMING: pesan protokol berakhir dengan ';'. Satu recv() TIDAK dijamin
-        // memuat pesan lengkap (TCP boleh memecahnya), dan pesan terpotong ditolak
-        // sebagai MALFORMED_REQUEST sehingga check-in pemain sah gagal.
+        // Use a single wall-clock deadline for the initial frame. A per-recv
+        // timeout alone permits slow clients to hold a worker indefinitely by
+        // sending one byte just before each timeout expires.
         std::string report;
-        while (report.find(';') == std::string::npos &&
-               report.size() < static_cast<size_t>(BUFFER_LEN - 1)) {
-            // Respect the remaining capacity: multiple fragmented recv() calls
-            // must never make report.size() exceed buffer[] before termination.
-            const size_t remaining = static_cast<size_t>(BUFFER_LEN - 1) - report.size();
-            const int received =
-                recv(clientSocket, buffer, static_cast<int>(remaining), 0);
-            if (received <= 0) {
-                break;
-            }
-            report.append(buffer, static_cast<size_t>(received));
-        }
-        bytesReceived = (int)report.size();
+        (void)ReceiveSemicolonFrame(
+            clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
+        bytesReceived = static_cast<int>(report.size());
         if (bytesReceived > 0) {
             // Null-terminate untuk keamanan
-            buffer[bytesReceived] = '\0';
             
             // (Pesan sudah dirakit utuh pada loop framing di atas.)
             
@@ -888,8 +882,8 @@ void HandleClient(SOCKET clientSocket) {
                                 continue;
                             }
 
-                            const std::string signedData = std::to_string(pongSeq) + ":" +
-                                std::to_string(pingTimestamp) + ":" + std::to_string(pongNonce) + ":" + pongHwid;
+                            const std::string signedData = Oblivion::Protocol::BuildPongAuthPayload(
+                                pongSeq, clientTimestamp, pingTimestamp, pongNonce, status, pongHwid);
                             const std::string expectedHmac = hmacSha256(sessionKey, signedData);
                             if (expectedHmac.empty() || !ConstantTimeEquals(expectedHmac, hmac)) {
                                 if (!registerMiss("PONG HMAC verification failed")) break;
@@ -984,9 +978,12 @@ void HandleClient(SOCKET clientSocket) {
 }
 
 int main() {
-    if (SERVER_SECRET.empty() || SERVER_SECRET == "DEV_SECRET_NOT_SET") {
-        std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat tidak dikonfigurasi. "
-                  << "Server menolak berjalan dengan development secret." << std::endl;
+    if (SERVER_SECRET.empty() ||
+        SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
+        SERVER_SECRET.size() < 32) {
+        std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat wajib dikonfigurasi "
+                  << "dengan secret minimal 32 byte. Server menolak secret kosong, "
+                  << "development, atau terlalu pendek." << std::endl;
         return 1;
     }
 
