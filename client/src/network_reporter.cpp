@@ -49,6 +49,9 @@ namespace {
         int port = 0;
     };
 
+    constexpr size_t kMinSharedSecretLength = 32;
+    constexpr size_t kMaxSharedSecretLength = 128;
+
     struct NetworkConfiguration {
         std::vector<EndpointSpec> endpoints;
         int defaultPort = 54321;
@@ -410,7 +413,8 @@ namespace Oblivion {
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
         : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
         // Resolve configuration before acquiring OS resources.
-        m_secretValid = (m_secretKey.size() >= 32);
+        m_secretValid = (m_secretKey.size() >= kMinSharedSecretLength &&
+                         m_secretKey.size() <= kMaxSharedSecretLength);
         LoadConfiguration();
 
         InitializeCriticalSection(&m_pendingLock);
@@ -681,11 +685,11 @@ namespace Oblivion {
     bool NetworkReporter::CheckBanStatus() {
         if (!m_secretValid) {
             const std::string reason =
-                "Shared secret kosong atau terlalu pendek; gunakan secret acak minimal 32 byte";
+                "Shared secret harus memiliki panjang 32 sampai 128 byte; gunakan secret acak yang sama pada client dan server.";
             LogClientIssue("SECRET_INVALID", reason);
             if (m_failClosed) {
                 MessageBoxW(nullptr,
-                    L"Konfigurasi secret Oblivion tidak valid.\n\nGunakan secret acak minimal 32 byte yang sama pada client dan server.",
+                    L"Konfigurasi secret Oblivion tidak valid.\n\nGunakan secret acak dengan panjang 32 sampai 128 byte yang sama pada client dan server.",
                     L"Oblivion Hack Shield - Configuration Error",
                     MB_OK | MB_ICONERROR | MB_TOPMOST);
                 ExitProcess(1);
