@@ -1112,7 +1112,7 @@ int main() {
             continue;
         }
 
-        const SocketType acceptedSocket = ClientSocket;
+        const SOCKET acceptedSocket = ClientSocket;
         std::thread clientThread;
         try {
             clientThread = std::thread([acceptedSocket]() {
