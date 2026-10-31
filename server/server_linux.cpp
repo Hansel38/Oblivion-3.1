@@ -211,42 +211,54 @@ std::string hmacSha256(const std::string& key, const std::string& data) {
 #endif
 }
 
-bool IsHWIDBanned(const std::string& hwid) {
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+// Synchronize the read-check-append sequence; connection workers share this file.
+static std::mutex g_banListMutex;
+
+static bool IsHWIDBannedUnlocked(const std::string& hwid) {
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ifstream banFile(banFilePath);
     if (!banFile.is_open()) {
-        return false;
+        return false; // A missing list is treated as an empty list.
     }
-    
+
     std::string line;
     while (std::getline(banFile, line)) {
-        line.erase(0, line.find_first_not_of(" \t\n\r"));
-        line.erase(line.find_last_not_of(" \t\n\r") + 1);
-        
-        if (line.empty() || line[0] == '#') {
+        const size_t first = line.find_first_not_of(" \\t\\r\\n");
+        if (first == std::string::npos) {
             continue;
         }
-        
+        const size_t last = line.find_last_not_of(" \\t\\r\\n");
+        line = line.substr(first, last - first + 1);
+        if (line[0] == '#') {
+            continue;
+        }
         if (strcasecmp_impl(line.c_str(), hwid.c_str()) == 0) {
-            banFile.close();
             return true;
         }
     }
-    
-    banFile.close();
     return false;
 }
 
+bool IsHWIDBanned(const std::string& hwid) {
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    return IsHWIDBannedUnlocked(hwid);
+}
+
 void AddToBanList(const std::string& hwid) {
-    if (IsHWIDBanned(hwid)) {
+    // Keep check + append under one lock to prevent duplicate/interleaved records.
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    if (IsHWIDBannedUnlocked(hwid)) {
         return;
     }
-    
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ofstream banFile(banFilePath, std::ios::app);
     if (banFile.is_open()) {
         banFile << hwid << std::endl;
-        banFile.close();
+        if (!banFile.good()) {
+            std::cerr << "[ERROR] Gagal menulis HWID ke ban list." << std::endl;
+            return;
+        }
         std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file ban list untuk menulis." << std::endl;
@@ -644,18 +656,19 @@ ParsedReport ParseProtocol(const std::string& report) {
         }
     }
     
-    if (result.hwid.empty()) {
-        result.errorMessage = "HWID field cannot be empty";
+    // The client derives HWID as a SHA-256 digest: accept exactly 64 hex characters.
+    if (result.hwid.size() != 64) {
+        result.errorMessage = "HWID must be a 64-character SHA-256 hex digest";
         return result;
     }
-    
-    for (char c : result.hwid) {
-        if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '-') {
-            result.errorMessage = "HWID field contains invalid characters (expected hex + dash)";
+
+    for (unsigned char c : result.hwid) {
+        if (!std::isxdigit(c)) {
+            result.errorMessage = "HWID field contains invalid characters (expected 64 hex characters)";
             return result;
         }
     }
-    
+
     if (result.secret.empty()) {
         result.errorMessage = "SECRET field cannot be empty";
         return result;
