@@ -873,19 +873,22 @@ namespace Oblivion {
                     status = { false, false };
                 }
 
+                const uint64_t clientTimestamp = static_cast<uint64_t>(GetTickCount64());
+                const std::string statusText =
+                    std::string(status.antiSuspendOk ? "1" : "0") + "|" +
+                    (status.integrityOk ? "1" : "0");
+
+                // Authenticate every PONG field (including status) so an observer
+                // cannot alter client protection flags without invalidating HMAC.
                 const std::string signedData =
-                    std::to_string(sequence) + ":" + std::to_string(timestamp) + ":" +
-                    std::to_string(nonce) + ":" + m_hwid;
+                    std::to_string(sequence) + ":" + std::to_string(clientTimestamp) + ":" +
+                    std::to_string(timestamp) + ":" + std::to_string(nonce) + ":" +
+                    statusText + ":" + m_hwid;
                 const std::string hmac = HmacSha256(sessionKey, signedData);
                 if (hmac.empty()) {
                     failHeartbeat("gagal menghitung HMAC PONG");
                     break;
                 }
-
-                const uint64_t clientTimestamp = static_cast<uint64_t>(GetTickCount64());
-                const std::string statusText =
-                    std::string(status.antiSuspendOk ? "1" : "0") + "|" +
-                    (status.integrityOk ? "1" : "0");
                 const std::string pong =
                     "PONG:" + std::to_string(sequence) + ":" + std::to_string(clientTimestamp) +
                     ":" + std::to_string(nonce) + ":" + statusText + ":" + m_hwid + ":" + hmac + ";";
