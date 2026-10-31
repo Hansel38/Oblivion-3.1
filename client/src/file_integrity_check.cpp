@@ -88,7 +88,8 @@ static void LogFileIntegrityIssue(const std::string& type, const std::string& de
     std::cerr << "[FileIntegrity] " << type << " - " << details << std::endl;
 
     wchar_t exePath[MAX_PATH] = { 0 };
-    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
+    const DWORD pathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH) {
         return;
     }
     wchar_t* lastSlash = wcsrchr(exePath, L'\\');
@@ -127,10 +128,26 @@ const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIn
 
 namespace Oblivion {
     void FileIntegrityChecker::PerformCheck() {
-        // Dapatkan direktori tempat client berada
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(NULL, exePath, MAX_PATH);
-        std::wstring exeDir = exePath;
+        // Resolve the executable directory without reading an uninitialized or
+        // potentially unterminated MAX_PATH buffer.
+        wchar_t exePath[MAX_PATH] = { 0 };
+        const DWORD exePathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        if (exePathLength == 0 || exePathLength >= MAX_PATH) {
+            LogFileIntegrityIssue(
+                "FILE_INTEGRITY_CONFIG",
+                "Unable to resolve a complete executable path (GetModuleFileNameW failed or path exceeded MAX_PATH)");
+            if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                MessageBoxW(
+                    nullptr,
+                    L"File-integrity enforcement could not resolve the game executable path. Use a supported path length and restart the client.",
+                    L"Oblivion Hack Shield - Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(ERROR_INSUFFICIENT_BUFFER);
+                return;
+            }
+            return;
+        }
+        std::wstring exeDir(exePath, exePathLength);
         size_t lastSlash = exeDir.find_last_of(L"\\/");
         if (lastSlash != std::wstring::npos) {
             exeDir = exeDir.substr(0, lastSlash + 1);
@@ -181,7 +198,19 @@ namespace Oblivion {
                 const unsigned long long fileSize =
                     (static_cast<unsigned long long>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
                 if (fileSize > kMaxHashFileSizeBytes) {
-                    LogFileIntegrityIssue("FILE_TOO_LARGE", ToUtf8(filePair.relativePath) + " (dilewati)");
+                    const std::string details = ToUtf8(filePair.relativePath) +
+                        " exceeds the configured file-hash size limit (verification skipped)";
+                    if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                        LogFileIntegrityIssue("FILE_TOO_LARGE_CONFIG", details);
+                        MessageBoxW(
+                            nullptr,
+                            L"File-integrity enforcement cannot verify a monitored file because it exceeds the configured hash-size limit. Raise the limit or remove the file from the manifest only after reviewing the security impact.",
+                            L"Oblivion Hack Shield - Configuration Error",
+                            MB_OK | MB_ICONERROR | MB_TOPMOST);
+                        ExitProcess(ERROR_FILE_TOO_LARGE);
+                        return;
+                    }
+                    LogFileIntegrityIssue("FILE_TOO_LARGE", details);
                     continue;
                 }
             }
@@ -194,10 +223,44 @@ namespace Oblivion {
                 //  - File ada tapi terkunci -> antivirus atau patcher sedang memakai file
                 //    (mis. antivirus memindai DATA.ini / en.grf). Kasus ini sangat umum
                 //    pada pemain sah dan sebelumnya membuat mereka di-kick sebagai cheater.
-                if (GetFileAttributesW(fullFilePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                    std::cerr << "[FileIntegrity] File ada tetapi tidak dapat dibaca (dilewati): ";
+                const DWORD attributes = GetFileAttributesW(fullFilePath.c_str());
+                if (attributes != INVALID_FILE_ATTRIBUTES) {
+                    const std::string details = ToUtf8(filePair.relativePath) +
+                        " exists but could not be hashed (access denied, sharing conflict, or unsupported file type)";
+                    std::cerr << "[FileIntegrity] File ada tetapi tidak dapat diverifikasi: ";
                     std::wcerr << filePair.relativePath << std::endl;
-                    LogFileIntegrityIssue("FILE_UNREADABLE", ToUtf8(filePair.relativePath) + " (dilewati)");
+                    if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                        LogFileIntegrityIssue("FILE_UNREADABLE_CONFIG", details);
+                        MessageBoxW(
+                            nullptr,
+                            L"File-integrity enforcement could not read a monitored file. Close the patcher or application that is locking the file, verify file permissions, and restart the client.",
+                            L"Oblivion Hack Shield - Integrity Check Error",
+                            MB_OK | MB_ICONERROR | MB_TOPMOST);
+                        ExitProcess(ERROR_ACCESS_DENIED);
+                        return;
+                    }
+                    LogFileIntegrityIssue("FILE_UNREADABLE", details);
+                    continue;
+                }
+
+                // GetFileAttributesW can fail for reasons other than a missing file.
+                // Do not turn access/IO failures into a cheating report in report-only mode.
+                const DWORD attributesError = GetLastError();
+                if (attributesError != ERROR_FILE_NOT_FOUND &&
+                    attributesError != ERROR_PATH_NOT_FOUND) {
+                    const std::string details = ToUtf8(filePair.relativePath) +
+                        " could not be inspected (Win32 error " +
+                        std::to_string(attributesError) + ")";
+                    LogFileIntegrityIssue("FILE_ACCESS_ERROR", details);
+                    if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                        MessageBoxW(
+                            nullptr,
+                            L"File-integrity enforcement could not determine whether a monitored file exists. Verify the installation and file permissions, then restart the client.",
+                            L"Oblivion Hack Shield - Integrity Check Error",
+                            MB_OK | MB_ICONERROR | MB_TOPMOST);
+                        ExitProcess(attributesError ? attributesError : ERROR_ACCESS_DENIED);
+                        return;
+                    }
                     continue;
                 }
 
