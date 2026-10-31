@@ -104,6 +104,22 @@ static void LogClientIssue(const std::string& type, const std::string& details) 
             << " [" << type << "] " << details << std::endl;
 }
 
+// Critical protection layers must not silently fail open. This is a local
+// initialization/configuration failure, not evidence of cheating; do not send
+// a ban/violation report. Preserve an actionable local log and stop the client.
+[[noreturn]] static void AbortSecurityInitialization(
+    const std::string& type,
+    const std::string& details,
+    const wchar_t* userMessage) {
+    LogClientIssue(type, details);
+    MessageBoxW(
+        nullptr,
+        userMessage,
+        L"Oblivion Hack Shield - Security Initialization Failed",
+        MB_OK | MB_ICONERROR | MB_TOPMOST);
+    ExitProcess(1);
+}
+
 // Laporkan pelanggaran TANPA menutup client (report-only).
 //
 // Dipakai untuk temuan yang belum cukup kuat untuk men-kick pemain (mis. hash
@@ -320,11 +336,11 @@ void InitializeSecuritySystem() {
     try {
         Oblivion::NetworkReporter* reporter = g_pNetworkReporter.load();
         if (!reporter || !reporter->CheckBanStatus()) {
-            // Jalur ban normal sudah memanggil ExitProcess di dalam CheckBanStatus.
-            // Jika tidak (mis. reporter gagal dibuat), JANGAN lanjut dengan proteksi
-            // setengah jadi sambil melaporkan status "OK" ke server.
-            LogClientIssue("BAN_CHECK_ABORTED", "check-in gagal tanpa penutupan proses");
-            return;
+            // Never return into the game with no confirmed server check-in.
+            AbortSecurityInitialization(
+                "BAN_CHECK_ABORTED",
+                "Check-in failed without terminating the process",
+                L"Oblivion tidak dapat menyelesaikan pemeriksaan keamanan server.\n\nClient akan ditutup agar tidak berjalan tanpa verifikasi.");
         }
         std::cout << "[INIT] Ban check passed" << std::endl;
     } catch (const std::exception& e) {
@@ -360,18 +376,25 @@ void InitializeSecuritySystem() {
             Oblivion::SelfIntegrityGuard* guard = new Oblivion::SelfIntegrityGuard(g_hSelfModule);
             g_pSelfIntegrityGuard.store(guard);
             if (!guard->Start()) {
-                // Kegagalan infrastruktur (mis. DLL sendiri tidak bisa dibaca karena
-                // dikunci antivirus) -> catat lokal, jangan ban pemain.
-                std::cerr << "[ERROR] Self-integrity guard failed to start (dilanjutkan)" << std::endl;
-                LogClientIssue("SELF_GUARD_INIT_FAILED", "Unable to initialize self integrity guard");
-            } else {
-                std::cout << "[INIT] Self-integrity guard active" << std::endl;
+                // Do not classify this as cheating, but do not continue with a
+                // required integrity layer missing either.
+                AbortSecurityInitialization(
+                    "SELF_GUARD_INIT_FAILED",
+                    "Self-integrity guard could not load or validate its own image",
+                    L"Lapisan integritas diri Oblivion gagal diaktifkan.\n\nPeriksa file DLL, izin akses, dan antivirus, lalu coba lagi. Client akan ditutup.");
             }
+            std::cout << "[INIT] Self-integrity guard active" << std::endl;
         }
     } catch (const std::exception& e) {
-        // Kegagalan infrastruktur (bukan bukti cheat) -> catat lokal, jangan ban.
-        std::cerr << "[ERROR] Exception starting self-integrity guard (dilanjutkan): " << e.what() << std::endl;
-        LogClientIssue("SELF_GUARD_EXCEPTION", e.what());
+        AbortSecurityInitialization(
+            "SELF_GUARD_EXCEPTION",
+            e.what(),
+            L"Terjadi kesalahan saat mengaktifkan lapisan integritas diri.\n\nPeriksa log lokal dan coba lagi. Client akan ditutup.");
+    } catch (...) {
+        AbortSecurityInitialization(
+            "SELF_GUARD_UNKNOWN_EXCEPTION",
+            "Unknown exception while starting self-integrity guard",
+            L"Terjadi kesalahan saat mengaktifkan lapisan integritas diri.\n\nPeriksa log lokal dan coba lagi. Client akan ditutup.");
     }
 
     // --- LANGKAH KEENAM: MULAI SISTEM PEMANTAUAN ---
@@ -384,9 +407,15 @@ void InitializeSecuritySystem() {
         std::cout << "[INFO] Protection active - monitoring for threats..." << std::endl;
         std::cout << "==================================================" << std::endl;
     } catch (const std::exception& e) {
-        // Kegagalan infrastruktur (bukan bukti cheat) -> catat lokal, jangan ban.
-        std::cerr << "[ERROR] Exception starting process watcher (dilanjutkan): " << e.what() << std::endl;
-        LogClientIssue("PROCESS_WATCHER_EXCEPTION", e.what());
+        AbortSecurityInitialization(
+            "PROCESS_WATCHER_EXCEPTION",
+            e.what(),
+            L"Sistem pemantauan proses Oblivion gagal diaktifkan.\n\nPeriksa log lokal dan coba lagi. Client akan ditutup.");
+    } catch (...) {
+        AbortSecurityInitialization(
+            "PROCESS_WATCHER_UNKNOWN_EXCEPTION",
+            "Unknown exception while starting process watcher",
+            L"Sistem pemantauan proses Oblivion gagal diaktifkan.\n\nPeriksa log lokal dan coba lagi. Client akan ditutup.");
     }
 
     // --- LANGKAH KETUJUH: TANDAI INISIALISASI SELESAI ---
