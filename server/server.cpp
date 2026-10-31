@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <ctime>
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <windows.h>
 #include "secret_obf.h"
@@ -387,20 +388,23 @@ std::string ExtractHWIDFromRawData(const std::string& rawData) {
 // Fungsi untuk sanitasi string input (menghapus karakter berbahaya)
 std::string SanitizeInput(const std::string& input, size_t maxLen) {
     std::string sanitized;
-    size_t reserveSize = input.length() < maxLen ? input.length() : maxLen;
+    const size_t reserveSize = input.length() < maxLen ? input.length() : maxLen;
     sanitized.reserve(reserveSize);
-    
-    for (size_t i = 0; i < input.length() && sanitized.length() < maxLen; i++) {
-        char c = input[i];
-        // Hanya izinkan karakter printable ASCII dan beberapa karakter khusus yang aman
-        if ((c >= 0x20 && c <= 0x7E) || c == '\n' || c == '\r' || c == '\t') {
-            // Filter karakter yang bisa digunakan untuk injection
-            if (c != '<' && c != '>' && c != '&' && c != '"' && c != '\'') {
-                sanitized += c;
-            }
+
+    for (unsigned char uc : input) {
+        if (sanitized.length() >= maxLen) {
+            break;
+        }
+        // Newlines and tabs from clients must not create forged log records.
+        if (uc == '\n' || uc == '\r' || uc == '\t') {
+            sanitized.push_back(' ');
+            continue;
+        }
+        if (uc >= 0x20 && uc <= 0x7E &&
+            uc != '<' && uc != '>' && uc != '&' && uc != '"' && uc != '\'') {
+            sanitized.push_back(static_cast<char>(uc));
         }
     }
-    
     return sanitized;
 }
 

@@ -1,32 +1,44 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
+# Visual Studio / MSBuild
+.vs/
+[Bb]uild/
+*.user
+*.suo
+*.cache
+*.pdb
+*.iobj
+*.ipdb
+*.ilk
+*.exp
 *.obj
+*.o
+*.d
+*.recipe
+*.tlog/
+*.lastbuildstate
+*.Build.CppClean.log
+*.vcxproj.FileListAbsolute.txt
 
-# Precompiled Headers
-*.gch
-*.pch
+# Generated build output
+**/Debug/**
+**/Release/**
+**/x64/**
+!/Debug/
+!/Debug/violations.log
+!/Release/
+!/Release/bans.txt
+!/Release/logo/
+!/Release/logo/OblivionHS.png
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Linux server build/runtime files
+/server/build/
+/server/oblivion-server
+/server/*.pid
+/server/*.lock
+/server/server.log
+/server/violations.log
+/server/secret.dat
 
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+# Local client configuration and runtime log
+oblivion.cfg
+oblivion_client_errors.log
+secret.dat
