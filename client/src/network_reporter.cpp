@@ -397,22 +397,20 @@ namespace Oblivion {
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
         : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
         // Lock untuk antrian laporan yang gagal terkirim (dipakai lintas thread pelaporan).
-        InitializeCriticalSection(&m_pendingLock);
-
-        // Resolusi konfigurasi jaringan (oblivion.cfg -> environment -> default kode)
-        // dilakukan lebih dulu supaya daftar endpoint & fail_mode siap sebelum koneksi pertama.
+        // Resolve configuration before acquiring OS resources.
         LoadConfiguration();
 
-        // Inisialisasi Winsock sekali saja untuk seluruh aplikasi
-        // Catatan: WSAStartup bisa dipanggil beberapa kali, setiap panggilan harus diikuti WSACleanup
-        WSADATA wsaData;
-        int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-        // Jika WSAStartup gagal, gunakan fallback (jangan tutup aplikasi di constructor)
+        InitializeCriticalSection(&m_pendingLock);
+        m_pendingLockInitialized = true;
+
+        WSADATA wsaData{};
+        const int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
         if (iResult != 0) {
             m_hwid = "UNKNOWN";
             return;
         }
-        
+        m_winsockInitialized = true;
+
         // --- GENERATE HWID SAAT PEMBUATAN OBJEK ---
         // Gunakan try-catch untuk menangani error dari WMI atau hashing
         try {
@@ -442,9 +440,15 @@ namespace Oblivion {
             closesocket(m_hbSocket);
             m_hbSocket = INVALID_SOCKET;
         }
-        // Cleanup antrian laporan & Winsock saat DLL dibongkar
-        DeleteCriticalSection(&m_pendingLock);
-        WSACleanup();
+        // Release only resources that were successfully initialized.
+        if (m_pendingLockInitialized) {
+            DeleteCriticalSection(&m_pendingLock);
+            m_pendingLockInitialized = false;
+        }
+        if (m_winsockInitialized) {
+            WSACleanup();
+            m_winsockInitialized = false;
+        }
     }
 
     void NetworkReporter::SetStatusProvider(std::function<ClientStatus()> provider) {
@@ -561,18 +565,19 @@ namespace Oblivion {
         }
 
         const size_t endpointCount = m_endpoints.size();
+        const size_t startingEndpoint = m_activeEndpoint.load(std::memory_order_relaxed) % endpointCount;
         const int attempts = (m_retryCount < 1) ? 1 : m_retryCount;
 
         for (int attempt = 0; attempt < attempts; ++attempt) {
             for (size_t i = 0; i < endpointCount; ++i) {
                 // Mulai dari endpoint yang terakhir berhasil supaya server utama tetap dipakai.
-                const size_t index = (m_activeEndpoint + i) % endpointCount;
+                const size_t index = (startingEndpoint + i) % endpointCount;
                 const Endpoint& ep = m_endpoints[index];
                 SOCKET s = ConnectWithTimeout(ep.host, ep.port);
                 if (s == INVALID_SOCKET) {
                     continue;
                 }
-                m_activeEndpoint = index;
+                m_activeEndpoint.store(index, std::memory_order_relaxed);
                 outHost = ep.host;
                 outPort = ep.port;
                 return s;
@@ -767,6 +772,7 @@ namespace Oblivion {
         m_hbRunning = true;
         std::string initialData = std::move(m_pendingHeartbeatData);
 
+        try {
         m_hbThread = std::thread([this, receiveBuffer = std::move(initialData)]() mutable {
             const SOCKET socket = m_hbSocket;
             const std::string sessionKey =
@@ -903,6 +909,10 @@ namespace Oblivion {
 
             m_hbRunning = false;
         });
+        } catch (...) {
+            m_hbRunning = false;
+            throw;
+        }
     }
 
     void NetworkReporter::StopHeartbeat() {

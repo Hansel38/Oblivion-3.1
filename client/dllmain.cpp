@@ -33,10 +33,6 @@ static HMODULE g_hSelfModule = nullptr;
 // dilaporkan sebagai "komponen mati" (lihat BuildClientStatus).
 static std::atomic<bool> g_initCompleted{ false };
 
-// Diset saat shutdown (FreeLibrary) dimulai. Dipakai supaya thread lain tidak
-// memblokir join() di dalam loader lock (mis. berhenti di MessageBox) ketika DLL
-// sedang dibongkar.
-static std::atomic<bool> g_shuttingDown{ false };
 
 // Fungsi export dari Stud_PE
 // Ini adalah fungsi yang akan dipanggil oleh client setelah DLL di-inject.
@@ -47,13 +43,6 @@ extern "C" __declspec(dllexport) void Oblivion_Entry() {
 
 // Fungsi helper untuk melaporkan pelanggaran
 void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details) {
-    if (g_shuttingDown.load()) {
-        // Shutdown (FreeLibrary) sedang berjalan: jangan lakukan pelaporan/MessageBox
-        // yang bisa memblokir join() thread di dalam loader lock. Proses/objek sudah
-        // dibongkar, jadi jejak audit di sini tidak lagi bermakna.
-        return;
-    }
-
     // Tunggu maksimal 5 detik untuk NetworkReporter siap (jika belum siap)
     int waitCount = 0;
     while (g_pNetworkReporter.load() == nullptr && waitCount < 50) {
@@ -396,70 +385,47 @@ void InitializeSecuritySystem() {
     g_initCompleted = true;
 }
 
-// Shutdown tertib dipakai pada jalur FreeLibrary (lpReserved == NULL).
-// CATATAN: DllMain selalu berjalan sambil memegang loader lock, sehingga fungsi ini
-// sengaja TIDAK melakukan I/O (tanpa std::cout) dan berhenti pada join() yang sudah
-// dijamin tidak menggantung (ReportViolationAndExit dinonaktifkan via g_shuttingDown).
-static void ShutdownSecuritySystem() {
-    g_shuttingDown = true;
-
-    // exchange(nullptr) memastikan objek hanya dihapus sekali walaupun fungsi ini
-    // dipanggil dari jalur lain yang berjalan bersamaan.
-    Oblivion::ProcessWatcher* watcher = g_pProcessWatcher.exchange(nullptr);
-    if (watcher) {
-        try {
-            watcher->Stop();
-        } catch (...) {
-        }
-        delete watcher;
+// Dedicated initialization entry point. The module is pinned at load time,
+// so this detached worker and the security workers cannot execute unmapped code.
+static DWORD WINAPI InitializeSecurityThread(LPVOID) {
+    try {
+        InitializeSecuritySystem();
+    } catch (...) {
+        OutputDebugStringW(L"[Oblivion] Fatal exception during security initialization.");
+        ExitProcess(1);
     }
-
-    Oblivion::SelfIntegrityGuard* guard = g_pSelfIntegrityGuard.exchange(nullptr);
-    if (guard) {
-        try {
-            guard->Stop();
-        } catch (...) {
-        }
-        delete guard;
-    }
-
-    Oblivion::NetworkReporter* reporter = g_pNetworkReporter.exchange(nullptr);
-    if (reporter) {
-        try {
-            delete reporter;
-        } catch (...) {
-        }
-    }
+    return 0;
 }
 
 // DLL Entry Point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
-        // Mencegah thread detach notification untuk performa yang lebih baik
         DisableThreadLibraryCalls(hModule);
-        g_hSelfModule = hModule;
 
-        // PENTING: Jangan melakukan operasi blocking di DllMain!
-        // Pindahkan semua inisialisasi berat ke thread terpisah agar aplikasi bisa menampilkan window
-        // Buat thread untuk inisialisasi sistem keamanan
-        std::thread initThread(InitializeSecuritySystem);
-        initThread.detach(); // Detach thread agar bisa berjalan mandiri
+        // Worker threads execute code in this DLL for the whole game session.
+        // Pin the module so an external FreeLibrary cannot unmap active code.
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCWSTR>(&Oblivion_Entry),
+                &g_hSelfModule)) {
+            OutputDebugStringW(L"[Oblivion] Failed to pin security DLL; load aborted.");
+            return FALSE;
+        }
+
+        HANDLE initThread = CreateThread(nullptr, 0, InitializeSecurityThread, nullptr, 0, nullptr);
+        if (initThread == nullptr) {
+            OutputDebugStringW(L"[Oblivion] Failed to create initialization thread.");
+            return FALSE;
+        }
+        CloseHandle(initThread);
         break;
     }
 
     case DLL_PROCESS_DETACH:
-        // PENTING (loader lock): DllMain selalu dipanggil sambil memegang loader lock.
-        //  - lpReserved != NULL  -> proses sedang berakhir (ExitProcess/TerminateProcess):
-        //    OS akan membebaskan seluruh resource. JANGAN join/delete/WSACleanup/I/O di
-        //    sini; kombinasi itu adalah penyebab umum hang & crash saat keluar game.
-        //  - lpReserved == NULL  -> FreeLibrary: lakukan shutdown tertib (hentikan dan
-        //    join thread, lalu release objek) tanpa I/O.
-        if (lpReserved != nullptr) {
-            break;
-        }
-
-        ShutdownSecuritySystem();
+        // The DLL is pinned and remains loaded until process termination.
+        // Do not join workers or perform I/O while the loader lock is held.
+        (void)lpReserved;
         break;
 
     case DLL_THREAD_ATTACH:

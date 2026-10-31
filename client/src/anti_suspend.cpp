@@ -21,7 +21,12 @@ namespace Oblivion {
             return;
         }
         m_isRunning = true;
-        m_guardianThread = std::thread(&AntiSuspend::GuardianLoop, this);
+        try {
+            m_guardianThread = std::thread(&AntiSuspend::GuardianLoop, this);
+        } catch (...) {
+            m_isRunning = false;
+            throw;
+        }
     }
 
     void AntiSuspend::Stop() {

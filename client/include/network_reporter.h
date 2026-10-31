@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <utility>
@@ -20,9 +21,8 @@ namespace Oblivion {
         // Fungsi untuk check-in ke server (cek apakah di-ban).
         // Mengembalikan true jika client diizinkan bermain.
         //
-        // CATATAN PRODUKSI: bila server TIDAK dapat dihubungi, perilakunya ditentukan
-        // konfigurasi "fail_mode" (default: open) supaya gangguan jaringan / VPS down
-        // tidak menutup client semua pemain. Set fail_mode=closed untuk kebijakan ketat.
+        // Kebijakan produksi selalu fail-closed. Fail-open hanya tersedia pada
+        // build development yang secara eksplisit mengaktifkan macro kompilasi.
         bool CheckBanStatus();
 
         // Fungsi utama untuk melaporkan pelanggaran
@@ -44,7 +44,7 @@ namespace Oblivion {
 
         // Konfigurasi jaringan hasil resolusi (file oblivion.cfg -> env -> default)
         std::vector<Endpoint> m_endpoints;
-        size_t m_activeEndpoint = 0;      // endpoint yang terakhir berhasil
+        std::atomic<size_t> m_activeEndpoint{ 0 };      // endpoint yang terakhir berhasil
         bool m_failClosed = false;        // true = fail-closed (tutup client bila server tak terjangkau)
         int m_connectTimeoutMs = 3000;    // timeout connect per endpoint
         int m_retryCount = 3;             // jumlah percobaan untuk seluruh endpoint
@@ -84,5 +84,7 @@ namespace Oblivion {
         // mutable karena QueuePendingViolation() sengaja const (tidak mengubah state publik).
         mutable std::vector<std::pair<std::string, std::string>> m_pendingViolations;
         mutable CRITICAL_SECTION m_pendingLock;
+        bool m_pendingLockInitialized = false;
+        bool m_winsockInitialized = false;
     };
 }

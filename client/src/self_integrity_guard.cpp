@@ -52,7 +52,12 @@ namespace Oblivion {
         }
 
         m_running = true;
-        m_worker = std::thread(&SelfIntegrityGuard::MonitoringLoop, this);
+        try {
+            m_worker = std::thread(&SelfIntegrityGuard::MonitoringLoop, this);
+        } catch (...) {
+            m_running = false;
+            throw;
+        }
         return true;
     }
 
