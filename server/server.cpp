@@ -15,6 +15,7 @@
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
+#include "../common/heartbeat_auth.h"
 #include <bcrypt.h>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -888,8 +889,8 @@ void HandleClient(SOCKET clientSocket) {
                                 continue;
                             }
 
-                            const std::string signedData = std::to_string(pongSeq) + ":" +
-                                std::to_string(pingTimestamp) + ":" + std::to_string(pongNonce) + ":" + pongHwid;
+                            const std::string signedData = Oblivion::Protocol::BuildPongAuthPayload(
+                                pongSeq, clientTimestamp, pingTimestamp, pongNonce, status, pongHwid);
                             const std::string expectedHmac = hmacSha256(sessionKey, signedData);
                             if (expectedHmac.empty() || !ConstantTimeEquals(expectedHmac, hmac)) {
                                 if (!registerMiss("PONG HMAC verification failed")) break;

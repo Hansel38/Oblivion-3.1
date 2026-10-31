@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "network_reporter.h"
 #include "heartbeat_protocol.h"
+#include "../../common/heartbeat_auth.h"
 #include "hwid_generator.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -886,10 +887,8 @@ namespace Oblivion {
 
                 // Authenticate every PONG field (including status) so an observer
                 // cannot alter client protection flags without invalidating HMAC.
-                const std::string signedData =
-                    std::to_string(sequence) + ":" + std::to_string(clientTimestamp) + ":" +
-                    std::to_string(timestamp) + ":" + std::to_string(nonce) + ":" +
-                    statusText + ":" + m_hwid;
+                const std::string signedData = Oblivion::Protocol::BuildPongAuthPayload(
+                    sequence, clientTimestamp, timestamp, nonce, statusText, m_hwid);
                 const std::string hmac = HmacSha256(sessionKey, signedData);
                 if (hmac.empty()) {
                     failHeartbeat("gagal menghitung HMAC PONG");

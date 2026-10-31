@@ -124,7 +124,7 @@ environment variable → `oblivion.cfg` (folder executable) → default di kode.
 server=your-vps.example.com:54321
 server=103.150.1.10:54321     # endpoint cadangan (opsional, dicoba berurutan)
 port=54321                    # port default bila spec tidak memuat port
-fail_mode=open                # open = client tetap jalan bila server tak terjangkau
+fail_mode=closed              # build produksi selalu fail-closed
 connect_timeout_ms=3000
 retry_count=3
 handshake_timeout_ms=4000
@@ -134,17 +134,17 @@ handshake_timeout_ms=4000
 | --- | --- |
 | `OBLIVION_SERVER` / `OBLIVION_SERVERS` | daftar `host:port` dipisah koma |
 | `OBLIVION_PORT` | port default untuk spec tanpa port |
-| `OBLIVION_FAIL_MODE` | `open` (default) atau `closed` |
+| `OBLIVION_FAIL_MODE` | konfigurasi fail-mode; build produksi memaksa `closed` |
 | `OBLIVION_CONNECT_TIMEOUT_MS` | timeout connect per endpoint (500–30000 ms) |
 | `OBLIVION_RETRY_COUNT` | jumlah putaran percobaan seluruh endpoint (1–10) |
 | `OBLIVION_HANDSHAKE_TIMEOUT_MS` | timeout menunggu respons check-in (500–30000 ms) |
 
-Catatan kebijakan: kegagalan jaringan dicatat lokal di `oblivion_client_errors.log`.
-Endpoint fallback bawaan dapat memakai fail-open sesuai konfigurasi. Namun, secara default
-endpoint yang diubah melalui `oblivion.cfg` atau environment variable memaksa fail-closed
-agar pemeriksaan ban tidak bisa dilewati dengan mengarahkan client ke server mati.
-Opsi fail-open untuk endpoint lokal hanya boleh diaktifkan pada build development melalui
-`OBLIVION_ALLOW_LOCAL_ENDPOINT_FAIL_OPEN=1`; jangan aktifkan pada build produksi.
+Catatan kebijakan produksi:
+- Build Release memaksa `fail_mode=closed`; konfigurasi `open` tidak dapat menonaktifkan pemeriksaan ban.
+- Fail-open hanya tersedia bila developer secara eksplisit mengompilasi build development dengan
+  `OBLIVION_ALLOW_NETWORK_FAIL_OPEN=1`. Jangan aktifkan macro ini pada build produksi.
+- Kegagalan jaringan dicatat lokal di `oblivion_client_errors.log`; client produksi berhenti
+  bila check-in atau heartbeat tidak dapat diverifikasi.
 
 ## Files
 

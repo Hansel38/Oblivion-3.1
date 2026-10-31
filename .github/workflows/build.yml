@@ -32,6 +32,9 @@ jobs:
       - name: Build Linux server
         run: make -C server clean all
 
+      - name: Run heartbeat authentication contract tests
+        run: make -C server test
+
   windows-solution:
     name: Windows client and server build
     runs-on: windows-latest
