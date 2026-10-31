@@ -88,7 +88,8 @@ static void LogFileIntegrityIssue(const std::string& type, const std::string& de
     std::cerr << "[FileIntegrity] " << type << " - " << details << std::endl;
 
     wchar_t exePath[MAX_PATH] = { 0 };
-    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
+    const DWORD pathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH) {
         return;
     }
     wchar_t* lastSlash = wcsrchr(exePath, L'\\');
@@ -127,10 +128,26 @@ const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIn
 
 namespace Oblivion {
     void FileIntegrityChecker::PerformCheck() {
-        // Dapatkan direktori tempat client berada
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(NULL, exePath, MAX_PATH);
-        std::wstring exeDir = exePath;
+        // Resolve the executable directory without reading an uninitialized or
+        // potentially unterminated MAX_PATH buffer.
+        wchar_t exePath[MAX_PATH] = { 0 };
+        const DWORD exePathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        if (exePathLength == 0 || exePathLength >= MAX_PATH) {
+            LogFileIntegrityIssue(
+                "FILE_INTEGRITY_CONFIG",
+                "Unable to resolve a complete executable path (GetModuleFileNameW failed or path exceeded MAX_PATH)");
+            if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                MessageBoxW(
+                    nullptr,
+                    L"File-integrity enforcement could not resolve the game executable path. Use a supported path length and restart the client.",
+                    L"Oblivion Hack Shield - Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(ERROR_INSUFFICIENT_BUFFER);
+                return;
+            }
+            return;
+        }
+        std::wstring exeDir(exePath, exePathLength);
         size_t lastSlash = exeDir.find_last_of(L"\\/");
         if (lastSlash != std::wstring::npos) {
             exeDir = exeDir.substr(0, lastSlash + 1);
