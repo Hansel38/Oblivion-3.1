@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "hwid_generator.h"
+#include "hwid_identifier_validation.h"
 #include <intrin.h> // Untuk __cpuid
 #include <vector>
 #include <sstream>
@@ -7,6 +8,8 @@
 #include <bcrypt.h> // Untuk hashing
 #include <comdef.h> // Untuk _bstr_t
 #include <Wbemidl.h>
+#include <algorithm>
+#include <cctype>
 
 // Definisi NTSTATUS jika ntstatus.h tidak tersedia
 #ifndef STATUS_UNSUCCESSFUL
@@ -20,16 +23,26 @@
 
 namespace Oblivion {
     std::string HWIDGenerator::Generate() {
-        std::string cpuBrand = GetCpuBrand();
-        std::string motherboardUuid = GetWmiProperty("Win32_BaseBoard", "UUID");
+        const std::string cpuBrand = GetCpuBrand();
+        const std::string motherboardUuid = GetWmiProperty("Win32_BaseBoard", "UUID");
         std::string hddSerial = GetWmiProperty("Win32_DiskDrive", "SerialNumber");
 
-        // Ambil hanya drive pertama untuk kesederhanaan
+        // WMI may return OEM placeholders (or "UNKNOWN" after an error). Hashing
+        // only those values together with a non-unique CPU model creates the same
+        // HWID on many unrelated PCs, causing cross-player ban collisions.
+        // Require at least one usable per-device identifier before generating HWID.
         if (hddSerial.find(",") != std::string::npos) {
             hddSerial = hddSerial.substr(0, hddSerial.find(","));
         }
 
-        std::string combined = cpuBrand + motherboardUuid + hddSerial;
+        if (!HWIDIdentity::IsUsableHardwareIdentifier(motherboardUuid) &&
+            !HWIDIdentity::IsUsableHardwareIdentifier(hddSerial)) {
+            return "";
+        }
+
+        // Keep the existing hash input format for devices with usable identifiers
+        // so their existing bans remain compatible across this bug fix.
+        const std::string combined = cpuBrand + motherboardUuid + hddSerial;
         return HashString(combined);
     }
 
@@ -37,18 +50,22 @@ namespace Oblivion {
         int cpuInfo[4] = { -1 };
         char cpuBrandString[0x40] = { 0 };
 
-        // Dapatkan panjang string brand
+        // CPUID extended brand leaves are 0x80000002..0x80000004. Do not loop
+        // over every value reported by a potentially virtualized CPU; only query
+        // the three leaves required for the brand string.
         __cpuid(cpuInfo, 0x80000000);
-        unsigned int nExIds = cpuInfo[0];
-
-        // Dapatkan string brand
-        memset(cpuBrandString, 0, sizeof(cpuBrandString));
-        for (unsigned int i = 0x80000000; i <= nExIds; ++i) {
-            __cpuid(cpuInfo, i);
-            if (i == 0x80000002) memcpy(cpuBrandString, cpuInfo, sizeof(cpuInfo));
-            else if (i == 0x80000003) memcpy(cpuBrandString + 16, cpuInfo, sizeof(cpuInfo));
-            else if (i == 0x80000004) memcpy(cpuBrandString + 32, cpuInfo, sizeof(cpuInfo));
+        const unsigned int maxExtendedLeaf = static_cast<unsigned int>(cpuInfo[0]);
+        if (maxExtendedLeaf < 0x80000004U) {
+            return "";
         }
+
+        __cpuid(cpuInfo, 0x80000002);
+        memcpy(cpuBrandString, cpuInfo, sizeof(cpuInfo));
+        __cpuid(cpuInfo, 0x80000003);
+        memcpy(cpuBrandString + 16, cpuInfo, sizeof(cpuInfo));
+        __cpuid(cpuInfo, 0x80000004);
+        memcpy(cpuBrandString + 32, cpuInfo, sizeof(cpuInfo));
+
         return std::string(cpuBrandString);
     }
 
@@ -82,30 +99,45 @@ namespace Oblivion {
         IEnumWbemClassObject* pEnumerator = NULL;
         std::wstring query = L"SELECT " + std::wstring(wmiProperty.begin(), wmiProperty.end()) + L" FROM " + std::wstring(wmiClass.begin(), wmiClass.end());
         hres = pSvc->ExecQuery(bstr_t("WQL"), bstr_t(query.c_str()), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &pEnumerator);
-        if (FAILED(hres)) { pSvc->Release(); pLoc->Release(); CoUninitialize(); return result; }
+        if (FAILED(hres) || pEnumerator == NULL) {
+            if (pEnumerator) pEnumerator->Release();
+            pSvc->Release();
+            pLoc->Release();
+            CoUninitialize();
+            return result;
+        }
 
         // 7. Ambil data dari query
         IWbemClassObject* pclsObj = NULL;
         ULONG uReturn = 0;
-        while (pEnumerator) {
-            HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
-            if (0 == uReturn) break;
+        while (true) {
+            const HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+            if (FAILED(hr) || uReturn == 0 || pclsObj == NULL) {
+                if (pclsObj) {
+                    pclsObj->Release();
+                    pclsObj = NULL;
+                }
+                break;
+            }
 
             VARIANT vtProp;
-            VariantInit(&vtProp); // Inisialisasi VARIANT sebelum digunakan
-            hr = pclsObj->Get(_bstr_t(wmiProperty.c_str()), 0, &vtProp, 0, 0);
-            if (SUCCEEDED(hr) && vtProp.vt == VT_BSTR) {
-                result = _bstr_t(vtProp.bstrVal);
+            VariantInit(&vtProp);
+            const HRESULT propertyResult = pclsObj->Get(
+                _bstr_t(wmiProperty.c_str()), 0, &vtProp, 0, 0);
+            if (SUCCEEDED(propertyResult) && vtProp.vt == VT_BSTR &&
+                vtProp.bstrVal != NULL) {
+                result = static_cast<const char*>(_bstr_t(vtProp.bstrVal));
             }
             VariantClear(&vtProp);
             pclsObj->Release();
+            pclsObj = NULL;
             break; // Hanya ambil yang pertama
         }
 
         // 8. Cleanup
+        pEnumerator->Release();
         pSvc->Release();
         pLoc->Release();
-        pEnumerator->Release();
         CoUninitialize();
 
         return result;
