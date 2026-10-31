@@ -66,50 +66,54 @@ std::string GetCurrentTimestamp() {
     return oss.str();
 }
 
-// Fungsi untuk mengecek apakah HWID sudah di-ban
-// PENTING: File bans.txt dibaca fresh setiap kali fungsi ini dipanggil (tidak ada caching)
-// Untuk unban HWID, cukup hapus baris HWID dari bans.txt dan restart client
-bool IsHWIDBanned(const std::string& hwid) {
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+// Synchronize the read-check-append sequence; connection workers share this file.
+static std::mutex g_banListMutex;
+
+static bool IsHWIDBannedUnlocked(const std::string& hwid) {
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ifstream banFile(banFilePath);
     if (!banFile.is_open()) {
-        return false; // File tidak ada, berarti belum ada yang di-ban
+        return false; // A missing list is treated as an empty list.
     }
-    
+
     std::string line;
     while (std::getline(banFile, line)) {
-        // Hapus whitespace dari awal dan akhir
-        line.erase(0, line.find_first_not_of(" \t\n\r"));
-        line.erase(line.find_last_not_of(" \t\n\r") + 1);
-        
-        // Jika line kosong atau komentar (dimulai dengan #), skip
-        if (line.empty() || line[0] == '#') {
+        const size_t first = line.find_first_not_of(" \\t\\r\\n");
+        if (first == std::string::npos) {
             continue;
         }
-        
-        // Bandingkan HWID (case-insensitive)
+        const size_t last = line.find_last_not_of(" \\t\\r\\n");
+        line = line.substr(first, last - first + 1);
+        if (line[0] == '#') {
+            continue;
+        }
         if (_stricmp(line.c_str(), hwid.c_str()) == 0) {
-            banFile.close();
             return true;
         }
     }
-    
-    banFile.close();
     return false;
 }
 
-// Fungsi untuk menambahkan HWID ke ban list
+bool IsHWIDBanned(const std::string& hwid) {
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    return IsHWIDBannedUnlocked(hwid);
+}
+
 void AddToBanList(const std::string& hwid) {
-    // Cek dulu apakah sudah di-ban
-    if (IsHWIDBanned(hwid)) {
-        return; // Sudah di-ban, tidak perlu ditambahkan lagi
+    // Keep check + append under one lock to prevent duplicate/interleaved records.
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    if (IsHWIDBannedUnlocked(hwid)) {
+        return;
     }
-    
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ofstream banFile(banFilePath, std::ios::app);
     if (banFile.is_open()) {
         banFile << hwid << std::endl;
-        banFile.close();
+        if (!banFile.good()) {
+            std::cerr << "[ERROR] Gagal menulis HWID ke ban list." << std::endl;
+            return;
+        }
         std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file ban list untuk menulis." << std::endl;
@@ -530,19 +534,19 @@ ParsedReport ParseProtocol(const std::string& report) {
         }
     }
     
-    // Validasi HWID tidak kosong dan hanya berisi karakter hexadecimal + dash
-    if (result.hwid.empty()) {
-        result.errorMessage = "HWID field cannot be empty";
+    // The client derives HWID as a SHA-256 digest: accept exactly 64 hex characters.
+    if (result.hwid.size() != 64) {
+        result.errorMessage = "HWID must be a 64-character SHA-256 hex digest";
         return result;
     }
-    
-    for (char c : result.hwid) {
-        if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '-') {
-            result.errorMessage = "HWID field contains invalid characters (expected hex + dash)";
+
+    for (unsigned char c : result.hwid) {
+        if (!std::isxdigit(c)) {
+            result.errorMessage = "HWID field contains invalid characters (expected 64 hex characters)";
             return result;
         }
     }
-    
+
     // Validasi SECRET tidak kosong
     if (result.secret.empty()) {
         result.errorMessage = "SECRET field cannot be empty";
