@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <thread>
+#include <memory>
 #include <atomic>
 #include <unordered_set>
 
@@ -35,14 +36,14 @@ namespace Oblivion {
         std::thread m_watcherThread;
         std::atomic<bool> m_isRunning;
 
-        AntiDebug* m_pAntiDebug;
-        InjectionScanner* m_pInjectionScanner;
-        AntiSuspend* m_pAntiSuspend;
-        OverlayScanner* m_pOverlayScanner;
-        MemoryScanner* m_pMemoryScanner;
-        DigitalSignatureValidator* m_pDigitalSignatureValidator;
-        IATHookScanner* m_pIATHookScanner;
-        AdvancedProcessHeuristics* m_pAdvancedHeuristics;
+        std::unique_ptr<AntiDebug> m_pAntiDebug;
+        std::unique_ptr<InjectionScanner> m_pInjectionScanner;
+        std::unique_ptr<AntiSuspend> m_pAntiSuspend;
+        std::unique_ptr<OverlayScanner> m_pOverlayScanner;
+        std::unique_ptr<MemoryScanner> m_pMemoryScanner;
+        std::unique_ptr<DigitalSignatureValidator> m_pDigitalSignatureValidator;
+        std::unique_ptr<IATHookScanner> m_pIATHookScanner;
+        std::unique_ptr<AdvancedProcessHeuristics> m_pAdvancedHeuristics;
         
         // PID aktif yang sudah diperiksa. Cache ini dibersihkan setiap siklus agar
         // PID yang dipakai ulang tetap diperlakukan sebagai proses baru.

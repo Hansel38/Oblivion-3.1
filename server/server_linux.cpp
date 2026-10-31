@@ -211,42 +211,54 @@ std::string hmacSha256(const std::string& key, const std::string& data) {
 #endif
 }
 
-bool IsHWIDBanned(const std::string& hwid) {
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+// Synchronize the read-check-append sequence; connection workers share this file.
+static std::mutex g_banListMutex;
+
+static bool IsHWIDBannedUnlocked(const std::string& hwid) {
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ifstream banFile(banFilePath);
     if (!banFile.is_open()) {
-        return false;
+        return false; // A missing list is treated as an empty list.
     }
-    
+
     std::string line;
     while (std::getline(banFile, line)) {
-        line.erase(0, line.find_first_not_of(" \t\n\r"));
-        line.erase(line.find_last_not_of(" \t\n\r") + 1);
-        
-        if (line.empty() || line[0] == '#') {
+        const size_t first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
             continue;
         }
-        
+        const size_t last = line.find_last_not_of(" \t\r\n");
+        line = line.substr(first, last - first + 1);
+        if (line[0] == '#') {
+            continue;
+        }
         if (strcasecmp_impl(line.c_str(), hwid.c_str()) == 0) {
-            banFile.close();
             return true;
         }
     }
-    
-    banFile.close();
     return false;
 }
 
+bool IsHWIDBanned(const std::string& hwid) {
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    return IsHWIDBannedUnlocked(hwid);
+}
+
 void AddToBanList(const std::string& hwid) {
-    if (IsHWIDBanned(hwid)) {
+    // Keep check + append under one lock to prevent duplicate/interleaved records.
+    std::lock_guard<std::mutex> lock(g_banListMutex);
+    if (IsHWIDBannedUnlocked(hwid)) {
         return;
     }
-    
-    std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+
+    const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ofstream banFile(banFilePath, std::ios::app);
     if (banFile.is_open()) {
         banFile << hwid << std::endl;
-        banFile.close();
+        if (!banFile.good()) {
+            std::cerr << "[ERROR] Gagal menulis HWID ke ban list." << std::endl;
+            return;
+        }
         std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file ban list untuk menulis." << std::endl;
@@ -448,27 +460,32 @@ std::string ExtractDetectedFile(const std::string& type, const std::string& deta
 
 static std::mutex g_violationLogMutex;
 
+// Defense in depth: also sanitize at the logging boundary. Malformed frames can
+// reach LogViolation before ParseProtocol has sanitized any user-controlled data.
+std::string SanitizeInput(const std::string& input, size_t maxLen);
+
 void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
     // Multiple client workers may report at the same time; serialize complete
     // log records so concurrent file streams cannot interleave their fields.
     std::lock_guard<std::mutex> logGuard(g_violationLogMutex);
+    const std::string safeType = SanitizeInput(type, MAX_TYPE_LEN);
+    const std::string safeDetails = SanitizeInput(details, MAX_DETAILS_LEN);
+    const std::string safeHwid = SanitizeInput(hwid, MAX_HWID_LEN);
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
-        // Extract file/software yang terdeteksi
-        std::string detectedFile = ExtractDetectedFile(type, details);
+        // Extract only from sanitized details so log records cannot be forged.
+        std::string detectedFile = ExtractDetectedFile(safeType, safeDetails);
         
-        // Log dengan format yang lebih jelas
-        logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << type 
-                << " | HWID: " << hwid 
-                << " | DETECTED_FILE/SOFTWARE: " << detectedFile
-                << " | DETAILS: " << details << std::endl;
+        logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << safeType
+                << " | HWID: " << safeHwid
+                << " | DETECTED_FILE/SOFTWARE: " << SanitizeInput(detectedFile, 256)
+                << " | DETAILS: " << safeDetails << std::endl;
         logFile.close();
         
-        // Also log to console dengan format yang jelas
-        std::cout << "[VIOLATION] TYPE: " << type 
-                  << " | HWID: " << hwid 
-                  << " | FILE/SOFTWARE: " << detectedFile << std::endl;
+        std::cout << "[VIOLATION] TYPE: " << safeType
+                  << " | HWID: " << safeHwid
+                  << " | FILE/SOFTWARE: " << SanitizeInput(detectedFile, 256) << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file log untuk menulis." << std::endl;
     }
@@ -644,18 +661,19 @@ ParsedReport ParseProtocol(const std::string& report) {
         }
     }
     
-    if (result.hwid.empty()) {
-        result.errorMessage = "HWID field cannot be empty";
+    // The client derives HWID as a SHA-256 digest: accept exactly 64 hex characters.
+    if (result.hwid.size() != 64) {
+        result.errorMessage = "HWID must be a 64-character SHA-256 hex digest";
         return result;
     }
-    
-    for (char c : result.hwid) {
-        if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '-') {
-            result.errorMessage = "HWID field contains invalid characters (expected hex + dash)";
+
+    for (unsigned char c : result.hwid) {
+        if (!std::isxdigit(c)) {
+            result.errorMessage = "HWID field contains invalid characters (expected 64 hex characters)";
             return result;
         }
     }
-    
+
     if (result.secret.empty()) {
         result.errorMessage = "SECRET field cannot be empty";
         return result;

@@ -85,14 +85,13 @@ namespace {
         return out;
     }
 
-    // Aturan format HWID harus SAMA dengan validasi di server (ParseProtocol):
-    // tidak kosong, maksimal 128 karakter, hanya karakter hex + tanda '-'.
+    // The HWIDGenerator derives SHA-256, so the wire format is exactly 64 hex characters.
     bool IsValidHwidFormat(const std::string& hwid) {
-        if (hwid.empty() || hwid.size() > 128) {
+        if (hwid.size() != 64) {
             return false;
         }
-        for (char c : hwid) {
-            if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '-') {
+        for (unsigned char c : hwid) {
+            if (!std::isxdigit(c)) {
                 return false;
             }
         }
