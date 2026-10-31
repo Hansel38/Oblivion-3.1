@@ -38,12 +38,16 @@ static std::string SERVER_SECRET = OblivionServer::GetServerSecret();
 #define BAN_LIST_FILE "bans.txt"
 #define VIOLATION_LOG_FILE "violations.log"
 
-// Fungsi untuk mendapatkan path folder tempat executable berada
+// Resolve the executable directory without relying on a potentially unterminated buffer.
 std::string GetExecutableDirectory() {
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    std::string path(exePath);
-    size_t lastSlash = path.find_last_of("\\/");
+    char exePath[MAX_PATH] = { 0 };
+    const DWORD pathLength = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH) {
+        return "";
+    }
+
+    const std::string path(exePath, pathLength);
+    const size_t lastSlash = path.find_last_of("\\/");
     if (lastSlash != std::string::npos) {
         return path.substr(0, lastSlash + 1);
     }
