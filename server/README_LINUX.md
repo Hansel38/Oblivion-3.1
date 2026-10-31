@@ -74,16 +74,22 @@ export OBLV_HB_RTT_WARN_MS=1500
 
 ### Server Secret
 Server harus memakai secret yang sama dengan client. Atur secret produksi melalui salah satu cara berikut:
+Buat nilai acak yang kuat (minimal 32 byte) dan gunakan nilai yang sama pada server dan client:
+
+```bash
+openssl rand -hex 32
+```
 
 1. **Environment variable** (recommended):
    ```bash
-   export OBLIVION_SECRET="your-secret-key-here"
+   export OBLIVION_SECRET="PASTE_THE_SAME_RANDOM_SECRET_HERE"
    ./oblivion-server
    ```
 
 2. **File-based** (secret.dat):
    **PENTING:** Jika environment variable dan `secret.dat` tidak tersedia, kode memakai
-   secret development `DEV_SECRET_NOT_SET`. Jangan gunakan fallback ini di server produksi.
+   secret development `DEV_SECRET_NOT_SET`; server sekarang menolak startup dengan nilai ini.
+   Jangan pernah memakai nilai development tersebut di produksi.
    - Create a file named `secret.dat` in the same directory as the server executable
    - The file should contain XOR-encoded secret (same format as Windows version)
 
