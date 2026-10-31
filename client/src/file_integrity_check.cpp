@@ -136,6 +136,33 @@ namespace Oblivion {
             exeDir = exeDir.substr(0, lastSlash + 1);
         }
 
+        // Report missing/invalid hashes once per check, and fail closed only when
+        // enforcement is explicitly enabled. Never misclassify this as player cheating.
+        std::string missingHashFiles;
+        for (const auto& filePair : m_filesToCheck) {
+            if (!IsPlaceholderHash(filePair.expectedHash)) {
+                continue;
+            }
+            if (!missingHashFiles.empty()) {
+                missingHashFiles += ", ";
+            }
+            missingHashFiles += ToUtf8(filePair.relativePath);
+        }
+        if (!missingHashFiles.empty()) {
+            const std::string configDetails =
+                "Missing/invalid SHA-256 manifest entries: " + missingHashFiles;
+            LogFileIntegrityIssue("FILE_INTEGRITY_CONFIG", configDetails);
+            if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                MessageBoxW(
+                    nullptr,
+                    L"File-integrity enforcement is enabled, but one or more expected hashes are missing or invalid. Configure every monitored file hash before starting the client.",
+                    L"Oblivion Hack Shield - Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(ERROR_INVALID_DATA);
+                return;
+            }
+        }
+
         for (const auto& filePair : m_filesToCheck) {
             // Hash placeholder (belum digenerate) TIDAK boleh dipakai untuk men-kick
             // pemain: lewati sambil mencatat supaya terlihat di log lokal.
