@@ -164,6 +164,13 @@ Catatan kebijakan produksi:
 - `violations.log` - Log of all violations detected
 - `secret.dat` - Optional: XOR-encoded server secret
 
+**Ban-list availability is required for check-in.** If `bans.txt` is missing or unreadable,
+the server now refuses check-in with `ERROR:BANLIST;` instead of treating every HWID as
+not banned. Keep the file next to the server executable and make it readable by the server
+process. An empty list can contain only comments. `make install` installs the initial list
+to `/usr/local/bin/bans.txt` only when no list already exists; updates preserve the
+administrator's existing ban list.
+
 ## Server Management Script
 
 The `oblivion-start` script provides easy server management with interactive mode:
