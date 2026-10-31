@@ -127,6 +127,10 @@ const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIn
 };
 
 namespace Oblivion {
+    bool FileIntegrityChecker::IsEnforcementEnabled() {
+        return OBLIVION_ENFORCE_FILE_INTEGRITY != 0;
+    }
+
     void FileIntegrityChecker::PerformCheck() {
         // Resolve the executable directory without reading an uninitialized or
         // potentially unterminated MAX_PATH buffer.
