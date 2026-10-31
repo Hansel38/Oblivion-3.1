@@ -166,9 +166,27 @@ def verify_weak_secret_is_rejected(server_binary: Path) -> None:
         timeout=5,
     )
     output = (result.stdout or "") + (result.stderr or "")
-    if result.returncode == 0 or "minimal 32 byte" not in output:
+    if result.returncode == 0 or "32 dan 128 byte" not in output:
         raise RuntimeError(
             "server did not reject a short production secret before listening"
+        )
+
+
+def verify_overlong_secret_is_rejected(server_binary: Path) -> None:
+    env = os.environ.copy()
+    env["OBLIVION_SECRET"] = "x" * 129
+    result = subprocess.run(
+        [str(server_binary)],
+        cwd=str(server_binary.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0 or "32 dan 128 byte" not in output:
+        raise RuntimeError(
+            "server did not reject a secret longer than the protocol's 128-byte limit"
         )
 
 
@@ -214,6 +232,7 @@ def verify_initial_handshake_deadline() -> None:
 
 def run_integration(server_binary: Path) -> None:
     verify_weak_secret_is_rejected(server_binary)
+    verify_overlong_secret_is_rejected(server_binary)
 
     ban_list_path = server_binary.parent / "bans.txt"
     original_ban_list = ban_list_path.read_bytes() if ban_list_path.exists() else None
