@@ -995,6 +995,7 @@ void HandleClient(SocketType clientSocket) {
                             SleepHeartbeat(cfg.interval_ms);
                         }
                     }
+                }
             } else {
                 std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;
                 

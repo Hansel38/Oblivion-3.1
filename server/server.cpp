@@ -915,6 +915,7 @@ void HandleClient(SOCKET clientSocket) {
                             SleepHeartbeat(cfg.interval_ms);
                         }
                     }
+                }
             } else {
                 // Handler untuk violation reports lainnya
                 std::cout << "[INFO] Laporan diterima dari HWID [" << hwid << "]: " << type << " - " << details << std::endl;

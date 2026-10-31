@@ -111,6 +111,27 @@ namespace {
     }
 
     // Pisahkan "host:port" (port opsional). Mendukung IPv6 dalam kurung: [::1]:54321
+    bool ParsePortStrict(const std::string& text, int& port) {
+        if (text.empty()) {
+            return false;
+        }
+        unsigned int parsed = 0;
+        for (unsigned char c : text) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+            parsed = parsed * 10U + static_cast<unsigned int>(c - '0');
+            if (parsed > 65535U) {
+                return false;
+            }
+        }
+        if (parsed == 0U) {
+            return false;
+        }
+        port = static_cast<int>(parsed);
+        return true;
+    }
+
     bool SplitHostPort(const std::string& spec, int defaultPort, std::string& outHost, int& outPort) {
         outHost.clear();
         outPort = defaultPort;
@@ -370,26 +391,6 @@ namespace {
     }
 
 
-    bool ParsePortStrict(const std::string& text, int& port) {
-        if (text.empty()) {
-            return false;
-        }
-        unsigned int parsed = 0;
-        for (unsigned char c : text) {
-            if (c < '0' || c > '9') {
-                return false;
-            }
-            parsed = parsed * 10U + static_cast<unsigned int>(c - '0');
-            if (parsed > 65535U) {
-                return false;
-            }
-        }
-        if (parsed == 0U) {
-            return false;
-        }
-        port = static_cast<int>(parsed);
-        return true;
-    }
 }
 
 namespace Oblivion {
