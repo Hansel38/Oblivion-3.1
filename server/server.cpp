@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <atomic>
+#include <mutex>
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
@@ -309,7 +310,12 @@ std::string ExtractDetectedFile(const std::string& type, const std::string& deta
 }
 
 // Fungsi untuk mencatat pelanggaran ke log file
+static std::mutex g_violationLogMutex;
+
 void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
+    // Multiple client workers may report at the same time; serialize complete
+    // log records so concurrent file streams cannot interleave their fields.
+    std::lock_guard<std::mutex> logGuard(g_violationLogMutex);
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
@@ -679,28 +685,14 @@ void HandleClient(SOCKET clientSocket) {
     std::string extractedHwid = "UNKNOWN"; // Untuk logging jika parsing gagal
 
     try {
-        // Timeout baca: koneksi yang hanya "diam" tidak boleh menahan thread dan
-        // handle selamanya (flood koneksi idle = kehabisan thread di server).
-        DWORD recvTimeoutMs = 10000;
-        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeoutMs, sizeof(recvTimeoutMs));
-
-        // FRAMING: pesan protokol berakhir dengan ';'. Satu recv() TIDAK dijamin
-        // memuat pesan lengkap (TCP boleh memecahnya), dan pesan terpotong ditolak
-        // sebagai MALFORMED_REQUEST sehingga check-in pemain sah gagal.
+        // Use a single wall-clock deadline for the initial frame. A per-recv
+        // timeout alone permits slow clients to hold a worker indefinitely by
+        // sending one byte just before each timeout expires.
         std::string report;
-        while (report.find(';') == std::string::npos &&
-               report.size() < static_cast<size_t>(BUFFER_LEN - 1)) {
-            // Respect the remaining capacity: multiple fragmented recv() calls
-            // must never make report.size() exceed buffer[] before termination.
-            const size_t remaining = static_cast<size_t>(BUFFER_LEN - 1) - report.size();
-            const int received =
-                recv(clientSocket, buffer, static_cast<int>(remaining), 0);
-            if (received <= 0) {
-                break;
-            }
-            report.append(buffer, static_cast<size_t>(received));
-        }
-        bytesReceived = (int)report.size();
+        const bool completeInitialFrame = ReceiveSemicolonFrame(
+            clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
+        bytesReceived = completeInitialFrame ? static_cast<int>(report.size())
+                                             : static_cast<int>(report.size());
         if (bytesReceived > 0) {
             // Null-terminate untuk keamanan
             buffer[bytesReceived] = '\0';
