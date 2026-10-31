@@ -223,11 +223,11 @@ static bool IsHWIDBannedUnlocked(const std::string& hwid) {
 
     std::string line;
     while (std::getline(banFile, line)) {
-        const size_t first = line.find_first_not_of(" \\t\\r\\n");
+        const size_t first = line.find_first_not_of(" \t\r\n");
         if (first == std::string::npos) {
             continue;
         }
-        const size_t last = line.find_last_not_of(" \\t\\r\\n");
+        const size_t last = line.find_last_not_of(" \t\r\n");
         line = line.substr(first, last - first + 1);
         if (line[0] == '#') {
             continue;
