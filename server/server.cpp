@@ -316,27 +316,32 @@ std::string ExtractDetectedFile(const std::string& type, const std::string& deta
 // Fungsi untuk mencatat pelanggaran ke log file
 static std::mutex g_violationLogMutex;
 
+// Defense in depth: also sanitize at the logging boundary. Malformed frames can
+// reach LogViolation before ParseProtocol has sanitized any user-controlled data.
+std::string SanitizeInput(const std::string& input, size_t maxLen);
+
 void LogViolation(const std::string& type, const std::string& details, const std::string& hwid) {
     // Multiple client workers may report at the same time; serialize complete
     // log records so concurrent file streams cannot interleave their fields.
     std::lock_guard<std::mutex> logGuard(g_violationLogMutex);
+    const std::string safeType = SanitizeInput(type, MAX_TYPE_LEN);
+    const std::string safeDetails = SanitizeInput(details, MAX_DETAILS_LEN);
+    const std::string safeHwid = SanitizeInput(hwid, MAX_HWID_LEN);
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
-        // Extract file/software yang terdeteksi
-        std::string detectedFile = ExtractDetectedFile(type, details);
+        // Extract only from sanitized details so log records cannot be forged.
+        std::string detectedFile = ExtractDetectedFile(safeType, safeDetails);
         
-        // Log dengan format yang lebih jelas
-        logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << type 
-                << " | HWID: " << hwid 
-                << " | DETECTED_FILE/SOFTWARE: " << detectedFile
-                << " | DETAILS: " << details << std::endl;
+        logFile << "[" << GetCurrentTimestamp() << "] TYPE: " << safeType
+                << " | HWID: " << safeHwid
+                << " | DETECTED_FILE/SOFTWARE: " << SanitizeInput(detectedFile, 256)
+                << " | DETAILS: " << safeDetails << std::endl;
         logFile.close();
         
-        // Also log to console dengan format yang jelas
-        std::cout << "[VIOLATION] TYPE: " << type 
-                  << " | HWID: " << hwid 
-                  << " | FILE/SOFTWARE: " << detectedFile << std::endl;
+        std::cout << "[VIOLATION] TYPE: " << safeType
+                  << " | HWID: " << safeHwid
+                  << " | FILE/SOFTWARE: " << SanitizeInput(detectedFile, 256) << std::endl;
     } else {
         std::cerr << "[ERROR] Gagal membuka file log untuk menulis." << std::endl;
     }
