@@ -104,18 +104,22 @@ namespace Oblivion {
         int cpuInfo[4] = { -1 };
         char cpuBrandString[0x40] = { 0 };
 
-        // Dapatkan panjang string brand
+        // CPUID extended brand leaves are 0x80000002..0x80000004. Do not loop
+        // over every value reported by a potentially virtualized CPU; only query
+        // the three leaves required for the brand string.
         __cpuid(cpuInfo, 0x80000000);
-        unsigned int nExIds = cpuInfo[0];
-
-        // Dapatkan string brand
-        memset(cpuBrandString, 0, sizeof(cpuBrandString));
-        for (unsigned int i = 0x80000000; i <= nExIds; ++i) {
-            __cpuid(cpuInfo, i);
-            if (i == 0x80000002) memcpy(cpuBrandString, cpuInfo, sizeof(cpuInfo));
-            else if (i == 0x80000003) memcpy(cpuBrandString + 16, cpuInfo, sizeof(cpuInfo));
-            else if (i == 0x80000004) memcpy(cpuBrandString + 32, cpuInfo, sizeof(cpuInfo));
+        const unsigned int maxExtendedLeaf = static_cast<unsigned int>(cpuInfo[0]);
+        if (maxExtendedLeaf < 0x80000004U) {
+            return "";
         }
+
+        __cpuid(cpuInfo, 0x80000002);
+        memcpy(cpuBrandString, cpuInfo, sizeof(cpuInfo));
+        __cpuid(cpuInfo, 0x80000003);
+        memcpy(cpuBrandString + 16, cpuInfo, sizeof(cpuInfo));
+        __cpuid(cpuInfo, 0x80000004);
+        memcpy(cpuBrandString + 32, cpuInfo, sizeof(cpuInfo));
+
         return std::string(cpuBrandString);
     }
 
