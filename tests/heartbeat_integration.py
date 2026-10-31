@@ -128,6 +128,32 @@ def verify_short_hwid_is_rejected() -> None:
 
 
 
+def verify_missing_ban_list_is_rejected(ban_list_path: Path) -> None:
+    # A missing ban list must not silently become an empty list.
+    backup_path = ban_list_path.with_name(ban_list_path.name + ".integration-backup")
+    if backup_path.exists():
+        raise RuntimeError(f"stale ban-list backup exists: {backup_path}")
+    ban_list_path.rename(backup_path)
+    try:
+        sock = socket.create_connection((HOST, PORT), timeout=3)
+        sock.settimeout(3)
+        try:
+            hwid = os.urandom(32).hex()
+            sock.sendall(f"CHECKIN::{hwid}:{TEST_SECRET};".encode("ascii"))
+            frame, _ = recv_frame(sock, b"")
+            if frame != "ERROR:BANLIST":
+                raise RuntimeError(
+                    f"server allowed check-in with an unreadable ban list: {frame!r}"
+                )
+            if sock.recv(1) != b"":
+                raise RuntimeError("server kept the connection open after ban-list error")
+        finally:
+            sock.close()
+    finally:
+        backup_path.rename(ban_list_path)
+
+
+
 def verify_weak_secret_is_rejected(server_binary: Path) -> None:
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = "weak"
@@ -189,6 +215,12 @@ def verify_initial_handshake_deadline() -> None:
 def run_integration(server_binary: Path) -> None:
     verify_weak_secret_is_rejected(server_binary)
 
+    ban_list_path = server_binary.parent / "bans.txt"
+    original_ban_list = ban_list_path.read_bytes() if ban_list_path.exists() else None
+    # Use a deterministic empty list for the integration test; restore any local
+    # file after the server has exited.
+    ban_list_path.write_text("# isolated integration-test ban list\n", encoding="ascii")
+
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = TEST_SECRET
     env["OBLV_HB_INTERVAL_MS"] = "250"
@@ -226,6 +258,7 @@ def run_integration(server_binary: Path) -> None:
             verify_trailing_data_is_rejected()
             verify_short_hwid_is_rejected()
             verify_initial_handshake_deadline()
+            verify_missing_ban_list_is_rejected(ban_list_path)
             verify_violation_ack()
 
             good = socket.create_connection((HOST, PORT), timeout=4)
@@ -283,6 +316,14 @@ def run_integration(server_binary: Path) -> None:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+
+            if original_ban_list is None:
+                try:
+                    ban_list_path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                ban_list_path.write_bytes(original_ban_list)
 
         if process.returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
             server_log.seek(0)
