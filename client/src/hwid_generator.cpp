@@ -7,6 +7,8 @@
 #include <bcrypt.h> // Untuk hashing
 #include <comdef.h> // Untuk _bstr_t
 #include <Wbemidl.h>
+#include <algorithm>
+#include <cctype>
 
 // Definisi NTSTATUS jika ntstatus.h tidak tersedia
 #ifndef STATUS_UNSUCCESSFUL
@@ -18,18 +20,83 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
+namespace {
+    std::string TrimHardwareValue(const std::string& value) {
+        const size_t first = value.find_first_not_of(" \\t\\r\\n\\0");
+        if (first == std::string::npos) {
+            return "";
+        }
+        const size_t last = value.find_last_not_of(" \\t\\r\\n\\0");
+        return value.substr(first, last - first + 1);
+    }
+
+    bool IsUsableHardwareIdentifier(const std::string& value) {
+        const std::string trimmed = TrimHardwareValue(value);
+        std::string compact;
+        compact.reserve(trimmed.size());
+        for (unsigned char c : trimmed) {
+            if (std::isalnum(c)) {
+                compact.push_back(static_cast<char>(std::tolower(c)));
+            }
+        }
+
+        if (compact.size() < 4) {
+            return false;
+        }
+
+        const bool allZeros = std::all_of(compact.begin(), compact.end(),
+            [](char c) { return c == '0'; });
+        const bool allFs = std::all_of(compact.begin(), compact.end(),
+            [](char c) { return c == 'f'; });
+        if (allZeros || allFs) {
+            return false;
+        }
+
+        // Common motherboard/disk firmware placeholders, normalized to
+        // alphanumeric lowercase so punctuation and spacing do not bypass checks.
+        static const std::vector<std::string> kPlaceholderValues = {
+            "unknown",
+            "none",
+            "na",
+            "notavailable",
+            "notspecified",
+            "notpresent",
+            "default",
+            "defaultstring",
+            "tobefilledbyoem",
+            "systemserialnumber",
+            "oemserialnumber",
+            "serialnumber",
+            "123456789",
+            "1234567890"
+        };
+        return std::find(kPlaceholderValues.begin(), kPlaceholderValues.end(), compact)
+            == kPlaceholderValues.end();
+    }
+}
+
 namespace Oblivion {
     std::string HWIDGenerator::Generate() {
-        std::string cpuBrand = GetCpuBrand();
-        std::string motherboardUuid = GetWmiProperty("Win32_BaseBoard", "UUID");
+        const std::string cpuBrand = GetCpuBrand();
+        const std::string motherboardUuid = GetWmiProperty("Win32_BaseBoard", "UUID");
         std::string hddSerial = GetWmiProperty("Win32_DiskDrive", "SerialNumber");
 
-        // Ambil hanya drive pertama untuk kesederhanaan
+        // WMI may return OEM placeholders (or "UNKNOWN" after an error). Hashing
+        // only those values together with a non-unique CPU model creates the same
+        // HWID on many unrelated PCs, causing cross-player ban collisions.
+        // Require at least one usable per-device identifier before generating HWID.
         if (hddSerial.find(",") != std::string::npos) {
             hddSerial = hddSerial.substr(0, hddSerial.find(","));
         }
 
-        std::string combined = cpuBrand + motherboardUuid + hddSerial;
+        if (!IsUsableHardwareIdentifier(motherboardUuid) &&
+            !IsUsableHardwareIdentifier(hddSerial)) {
+            return "";
+        }
+
+        // Keep the existing hash input format for devices with usable identifiers
+        // so their existing bans remain compatible across this bug fix.
+        const std::string combined = cpuBrand + motherboardUuid + hddSerial;
         return HashString(combined);
     }
 
@@ -82,30 +149,45 @@ namespace Oblivion {
         IEnumWbemClassObject* pEnumerator = NULL;
         std::wstring query = L"SELECT " + std::wstring(wmiProperty.begin(), wmiProperty.end()) + L" FROM " + std::wstring(wmiClass.begin(), wmiClass.end());
         hres = pSvc->ExecQuery(bstr_t("WQL"), bstr_t(query.c_str()), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &pEnumerator);
-        if (FAILED(hres)) { pSvc->Release(); pLoc->Release(); CoUninitialize(); return result; }
+        if (FAILED(hres) || pEnumerator == NULL) {
+            if (pEnumerator) pEnumerator->Release();
+            pSvc->Release();
+            pLoc->Release();
+            CoUninitialize();
+            return result;
+        }
 
         // 7. Ambil data dari query
         IWbemClassObject* pclsObj = NULL;
         ULONG uReturn = 0;
-        while (pEnumerator) {
-            HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
-            if (0 == uReturn) break;
+        while (true) {
+            const HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+            if (FAILED(hr) || uReturn == 0 || pclsObj == NULL) {
+                if (pclsObj) {
+                    pclsObj->Release();
+                    pclsObj = NULL;
+                }
+                break;
+            }
 
             VARIANT vtProp;
-            VariantInit(&vtProp); // Inisialisasi VARIANT sebelum digunakan
-            hr = pclsObj->Get(_bstr_t(wmiProperty.c_str()), 0, &vtProp, 0, 0);
-            if (SUCCEEDED(hr) && vtProp.vt == VT_BSTR) {
-                result = _bstr_t(vtProp.bstrVal);
+            VariantInit(&vtProp);
+            const HRESULT propertyResult = pclsObj->Get(
+                _bstr_t(wmiProperty.c_str()), 0, &vtProp, 0, 0);
+            if (SUCCEEDED(propertyResult) && vtProp.vt == VT_BSTR &&
+                vtProp.bstrVal != NULL) {
+                result = static_cast<const char*>(_bstr_t(vtProp.bstrVal));
             }
             VariantClear(&vtProp);
             pclsObj->Release();
+            pclsObj = NULL;
             break; // Hanya ambil yang pertama
         }
 
         // 8. Cleanup
+        pEnumerator->Release();
         pSvc->Release();
         pLoc->Release();
-        pEnumerator->Release();
         CoUninitialize();
 
         return result;
