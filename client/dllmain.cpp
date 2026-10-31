@@ -10,6 +10,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <objidl.h>
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
@@ -80,19 +81,42 @@ void ReportViolationAndExit(const std::wstring& message, const std::string& type
 static void LogClientIssue(const std::string& type, const std::string& details) {
     std::cerr << "[CLIENT_ISSUE] " << type << " - " << details << std::endl;
 
-    wchar_t exePath[MAX_PATH] = { 0 };
-    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
-        return;
+    std::vector<wchar_t> pathBuffer(MAX_PATH, L'\0');
+    constexpr size_t kMaxPathCapacity = 32768;
+    std::wstring logDirectory;
+
+    while (pathBuffer.size() <= kMaxPathCapacity) {
+        const DWORD pathLength = GetModuleFileNameW(
+            NULL, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+        if (pathLength == 0) {
+            return;
+        }
+
+        if (static_cast<size_t>(pathLength) < pathBuffer.size()) {
+            const std::wstring executablePath(pathBuffer.data(), pathLength);
+            const size_t lastSlash = executablePath.find_last_of(L"\\/");
+            if (lastSlash == std::wstring::npos) {
+                return;
+            }
+            logDirectory = executablePath.substr(0, lastSlash + 1);
+            break;
+        }
+
+        if (pathBuffer.size() == kMaxPathCapacity) {
+            return;
+        }
+        const size_t nextSize = pathBuffer.size() > kMaxPathCapacity / 2
+            ? kMaxPathCapacity
+            : pathBuffer.size() * 2;
+        pathBuffer.resize(nextSize, L'\0');
     }
 
-    wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-    if (!lastSlash) {
+    if (logDirectory.empty()) {
         return;
     }
-    *(lastSlash + 1) = L'\0';
 
     // Log ditulis di direktori executable (best-effort, kegagalan diabaikan).
-    std::ofstream logFile(std::wstring(exePath) + L"oblivion_client_errors.log", std::ios::app);
+    std::ofstream logFile(logDirectory + L"oblivion_client_errors.log", std::ios::app);
     if (!logFile.is_open()) {
         return;
     }
@@ -355,17 +379,26 @@ void InitializeSecuritySystem() {
     try {
         Oblivion::FileIntegrityChecker integrityChecker;
         integrityChecker.PerformCheck();
-        std::cout << "[INIT] File integrity check passed" << std::endl;
+        std::cout << "[INIT] File integrity check completed" << std::endl;
     } catch (const std::exception& e) {
-        // CATATAN KEBIJAKAN: kegagalan internal client (exception, file terkunci oleh
-        // antivirus, permission, dsb) DULU dilaporkan ke server sebagai pelanggaran
-        // sehingga pemain sah ikut di-kick sebagai cheater (false positive besar).
-        // Sekarang kegagalan infrastruktur hanya dicatat secara lokal dan client
-        // lanjut dengan lapisan proteksi yang masih bisa berjalan.
-        std::cerr << "[ERROR] File integrity check failed (dilanjutkan tanpa layer ini): " << e.what() << std::endl;
+        if (Oblivion::FileIntegrityChecker::IsEnforcementEnabled()) {
+            AbortSecurityInitialization(
+                "FILE_INTEGRITY_EXCEPTION",
+                e.what(),
+                L"Pemeriksaan integritas file gagal saat mode enforcement aktif.\n\nPeriksa instalasi dan izin file, lalu jalankan ulang client.");
+        }
+        // Report-only mode may continue after logging an infrastructure failure;
+        // do not misclassify it as cheating or send an automatic ban report.
+        std::cerr << "[ERROR] File integrity check failed in report-only mode: " << e.what() << std::endl;
         LogClientIssue("FILE_INTEGRITY_EXCEPTION", e.what());
     } catch (...) {
-        std::cerr << "[ERROR] Unknown error during file integrity check (dilanjutkan tanpa layer ini)" << std::endl;
+        if (Oblivion::FileIntegrityChecker::IsEnforcementEnabled()) {
+            AbortSecurityInitialization(
+                "FILE_INTEGRITY_UNKNOWN_ERROR",
+                "Unknown exception during strict file-integrity check",
+                L"Pemeriksaan integritas file gagal saat mode enforcement aktif.\n\nPeriksa instalasi dan izin file, lalu jalankan ulang client.");
+        }
+        std::cerr << "[ERROR] Unknown file integrity error in report-only mode" << std::endl;
         LogClientIssue("FILE_INTEGRITY_UNKNOWN_ERROR", "Unknown exception");
     }
 
