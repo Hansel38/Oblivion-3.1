@@ -438,8 +438,12 @@ ParsedReport ParseProtocol(const std::string& report) {
     }
     
     // Validasi format: harus diakhiri dengan semicolon
-    if (report.back() != ';') {
-        result.errorMessage = "Report must end with semicolon";
+    // Accept exactly one complete frame. Extra bytes after ';' could otherwise
+    // be silently ignored when TCP coalesces multiple frames into one recv().
+    const size_t terminator = report.find(';');
+    if (terminator != report.size() - 1 ||
+        std::count(report.begin(), report.end(), ';') != 1) {
+        result.errorMessage = "Report contains trailing data or multiple frames";
         return result;
     }
     

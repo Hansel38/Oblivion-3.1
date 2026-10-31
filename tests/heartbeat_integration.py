@@ -97,6 +97,23 @@ def send_pong(
     sock.sendall(frame.encode("ascii"))
 
 
+def verify_trailing_data_is_rejected() -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(3)
+    try:
+        hwid = os.urandom(32).hex()
+        sock.sendall(
+            f"CHECKIN::{hwid}:{TEST_SECRET};EXTRA_FRAME;".encode("ascii")
+        )
+        frame, _ = recv_frame(sock, b"")
+        if frame != "ERROR:INVALID_FORMAT":
+            raise RuntimeError(
+                f"server accepted bytes after the check-in terminator: {frame!r}"
+            )
+    finally:
+        sock.close()
+
+
 def run_integration(server_binary: Path) -> None:
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = TEST_SECRET
@@ -131,6 +148,8 @@ def run_integration(server_binary: Path) -> None:
                         raise RuntimeError("server did not start listening on port 54321")
                     time.sleep(0.1)
             sockets.append(good)
+
+            verify_trailing_data_is_rejected()
 
             good_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
             good_key, buffered = authenticate(good, good_hwid)
