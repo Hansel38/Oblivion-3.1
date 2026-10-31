@@ -35,6 +35,9 @@ jobs:
       - name: Run heartbeat authentication contract tests
         run: make -C server test
 
+      - name: Run local socket heartbeat integration tests
+        run: make -C server integration-test
+
   windows-solution:
     name: Windows client and server build
     runs-on: windows-latest

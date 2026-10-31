@@ -13,7 +13,7 @@ TARGET := oblivion-server
 OBJECTS := $(BUILD_DIR)/server_linux.o $(BUILD_DIR)/secret_obf.o
 DEPS := $(OBJECTS:.o=.d)
 
-.PHONY: all test clean install uninstall
+.PHONY: all test integration-test clean install uninstall
 
 all: $(TARGET)
 
@@ -21,6 +21,9 @@ TEST_TARGET := $(BUILD_DIR)/heartbeat_auth_test
 
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
+
+integration-test: $(TARGET)
+	python3 ../tests/heartbeat_integration.py ./$(TARGET)
 
 $(TEST_TARGET): ../tests/heartbeat_auth_test.cpp ../common/heartbeat_auth.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
