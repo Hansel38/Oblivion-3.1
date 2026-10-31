@@ -1027,6 +1027,33 @@ void HandleClient(SOCKET clientSocket) {
     closesocket(clientSocket);
 }
 
+// Last-resort exception boundary for the thread entry point. If an allocation
+// or logging exception escapes HandleClient's internal handlers, C++ would call
+// std::terminate on this worker and bring down the whole server process.
+void RunClientWorker(SOCKET clientSocket) noexcept {
+    struct ActiveClientSlotGuard {
+        ~ActiveClientSlotGuard() noexcept {
+            g_activeClients.fetch_sub(1, std::memory_order_release);
+        }
+    } slotGuard;
+
+    try {
+        HandleClient(clientSocket);
+    } catch (const std::exception& e) {
+        try {
+            std::cerr << "[EXCEPTION] Unhandled client worker exception: " << e.what() << std::endl;
+        } catch (...) {
+        }
+        closesocket(clientSocket);
+    } catch (...) {
+        try {
+            std::cerr << "[EXCEPTION] Unknown exception escaped client worker" << std::endl;
+        } catch (...) {
+        }
+        closesocket(clientSocket);
+    }
+}
+
 int main() {
     if (SERVER_SECRET.empty() ||
         SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
@@ -1162,9 +1189,8 @@ int main() {
         const SOCKET acceptedSocket = ClientSocket;
         std::thread clientThread;
         try {
-            clientThread = std::thread([acceptedSocket]() {
-                HandleClient(acceptedSocket);
-                g_activeClients.fetch_sub(1, std::memory_order_release);
+            clientThread = std::thread([acceptedSocket]() noexcept {
+                RunClientWorker(acceptedSocket);
             });
         } catch (const std::exception& e) {
             g_activeClients.fetch_sub(1, std::memory_order_release);
