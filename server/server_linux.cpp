@@ -211,14 +211,22 @@ std::string hmacSha256(const std::string& key, const std::string& data) {
 #endif
 }
 
-// Synchronize the read-check-append sequence; connection workers share this file.
+// A ban-list read failure is a configuration/infrastructure error, not evidence
+// that a client is clean. Never convert it to "not banned".
+enum class BanLookupResult {
+    Banned,
+    NotBanned,
+    Error
+};
+
 static std::mutex g_banListMutex;
 
-static bool IsHWIDBannedUnlocked(const std::string& hwid) {
+static BanLookupResult LookupHWIDBanStatusUnlocked(const std::string& hwid) {
     const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ifstream banFile(banFilePath);
     if (!banFile.is_open()) {
-        return false; // A missing list is treated as an empty list.
+        std::cerr << "[ERROR] Ban list is missing or unreadable: " << banFilePath << std::endl;
+        return BanLookupResult::Error;
     }
 
     std::string line;
@@ -233,36 +241,47 @@ static bool IsHWIDBannedUnlocked(const std::string& hwid) {
             continue;
         }
         if (strcasecmp_impl(line.c_str(), hwid.c_str()) == 0) {
-            return true;
+            return BanLookupResult::Banned;
         }
     }
-    return false;
+
+    if (banFile.bad()) {
+        std::cerr << "[ERROR] I/O error while reading ban list: " << banFilePath << std::endl;
+        return BanLookupResult::Error;
+    }
+    return BanLookupResult::NotBanned;
 }
 
-bool IsHWIDBanned(const std::string& hwid) {
+static BanLookupResult LookupHWIDBanStatus(const std::string& hwid) {
     std::lock_guard<std::mutex> lock(g_banListMutex);
-    return IsHWIDBannedUnlocked(hwid);
+    return LookupHWIDBanStatusUnlocked(hwid);
 }
 
 void AddToBanList(const std::string& hwid) {
-    // Keep check + append under one lock to prevent duplicate/interleaved records.
+    // Keep the lookup + append atomic against other connection workers.
     std::lock_guard<std::mutex> lock(g_banListMutex);
-    if (IsHWIDBannedUnlocked(hwid)) {
+    const BanLookupResult status = LookupHWIDBanStatusUnlocked(hwid);
+    if (status == BanLookupResult::Banned) {
+        return;
+    }
+    if (status == BanLookupResult::Error) {
+        std::cerr << "[ERROR] Refusing to update ban list because it cannot be read." << std::endl;
         return;
     }
 
     const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
     std::ofstream banFile(banFilePath, std::ios::app);
-    if (banFile.is_open()) {
-        banFile << hwid << std::endl;
-        if (!banFile.good()) {
-            std::cerr << "[ERROR] Gagal menulis HWID ke ban list." << std::endl;
-            return;
-        }
-        std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
-    } else {
+    if (!banFile.is_open()) {
         std::cerr << "[ERROR] Gagal membuka file ban list untuk menulis." << std::endl;
+        return;
     }
+
+    banFile << hwid << std::endl;
+    if (!banFile.good()) {
+        std::cerr << "[ERROR] Gagal menulis HWID ke ban list." << std::endl;
+        return;
+    }
+    std::cout << "[BAN] HWID [" << hwid << "] ditambahkan ke ban list." << std::endl;
 }
 
 // Helper function untuk extract file/software name dari details
@@ -867,9 +886,12 @@ void HandleClient(SocketType clientSocket) {
             else if (type == "CHECKIN") {
                 std::cout << "[CHECKIN] Client check-in dari HWID [" << hwid << "]" << std::endl;
                 
-                bool isBanned = IsHWIDBanned(hwid);
+                const BanLookupResult banStatus = LookupHWIDBanStatus(hwid);
                 
-                if (isBanned) {
+                if (banStatus == BanLookupResult::Error) {
+                    LogViolation("BAN_LIST_UNAVAILABLE", "Cannot read ban list; refusing check-in", hwid);
+                    SendAllBytes(clientSocket, "ERROR:BANLIST;");
+                } else if (banStatus == BanLookupResult::Banned) {
                     const char* kickCommand = "KICK;";
                     SendAllBytes(clientSocket, kickCommand);
                     std::cout << "[BAN] HWID [" << hwid << "] terdeteksi di ban list. Perintah KICK dikirim." << std::endl;
@@ -1029,9 +1051,12 @@ void HandleClient(SocketType clientSocket) {
                 
                 LogViolation(type, details, hwid);
                 
-                bool isBanned = IsHWIDBanned(hwid);
+                const BanLookupResult reportBanStatus = LookupHWIDBanStatus(hwid);
                 
-                if (isBanned) {
+                if (reportBanStatus == BanLookupResult::Error) {
+                    LogViolation("BAN_LIST_UNAVAILABLE", "Cannot read ban list while processing a violation report", hwid);
+                    SendAllBytes(clientSocket, "ERROR:BANLIST;");
+                } else if (reportBanStatus == BanLookupResult::Banned) {
                     const char* kickCommand = "KICK;";
                     SendAllBytes(clientSocket, kickCommand);
                     std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ") - sudah ada di ban list." << std::endl;
