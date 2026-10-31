@@ -789,7 +789,6 @@ uint64_t GenerateSecureNonce() {
 }
 
 void HandleClient(SocketType clientSocket) {
-    char buffer[BUFFER_LEN] = {0};
     ssize_t bytesReceived = 0;
     std::string extractedHwid = "UNKNOWN";
 
@@ -798,12 +797,10 @@ void HandleClient(SocketType clientSocket) {
         // timeout alone permits slow clients to hold a worker indefinitely by
         // sending one byte just before each timeout expires.
         std::string report;
-        const bool completeInitialFrame = ReceiveSemicolonFrame(
+        (void)ReceiveSemicolonFrame(
             clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
-        bytesReceived = completeInitialFrame ? static_cast<ssize_t>(report.size())
-                                             : static_cast<ssize_t>(report.size());
+        bytesReceived = static_cast<ssize_t>(report.size());
         if (bytesReceived > 0) {
-            buffer[bytesReceived] = '\0';
             
             // (Pesan sudah dirakit utuh pada loop framing di atas.)
             extractedHwid = ExtractHWIDFromRawData(report);

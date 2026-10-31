@@ -174,14 +174,14 @@ def run_integration(server_binary: Path) -> None:
         )
         sockets: list[socket.socket] = []
         try:
-            # First connection also acts as readiness probe; do not leave idle
-            # probe sockets behind to consume a worker slot.
-            good = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            good.settimeout(4)
+            # Readiness probe is closed immediately; otherwise its 5-second
+            # handshake deadline would expire while the other test cases run.
+            ready = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            ready.settimeout(4)
             deadline = time.monotonic() + 12
             while True:
                 try:
-                    good.connect((HOST, PORT))
+                    ready.connect((HOST, PORT))
                     break
                 except OSError:
                     if process.poll() is not None:
@@ -189,11 +189,14 @@ def run_integration(server_binary: Path) -> None:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("server did not start listening on port 54321")
                     time.sleep(0.1)
-            sockets.append(good)
+            ready.close()
 
             verify_trailing_data_is_rejected()
             verify_initial_handshake_deadline()
 
+            good = socket.create_connection((HOST, PORT), timeout=4)
+            good.settimeout(4)
+            sockets.append(good)
             good_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
             good_key, buffered = authenticate(good, good_hwid)
             for _ in range(2):

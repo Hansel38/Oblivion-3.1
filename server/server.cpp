@@ -680,7 +680,6 @@ uint64_t GenerateSecureNonce() {
 
 // Fungsi untuk menangani setiap client yang terhubung
 void HandleClient(SOCKET clientSocket) {
-    char buffer[BUFFER_LEN] = {0};
     int bytesReceived = 0;
     std::string extractedHwid = "UNKNOWN"; // Untuk logging jika parsing gagal
 
@@ -689,13 +688,11 @@ void HandleClient(SOCKET clientSocket) {
         // timeout alone permits slow clients to hold a worker indefinitely by
         // sending one byte just before each timeout expires.
         std::string report;
-        const bool completeInitialFrame = ReceiveSemicolonFrame(
+        (void)ReceiveSemicolonFrame(
             clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
-        bytesReceived = completeInitialFrame ? static_cast<int>(report.size())
-                                             : static_cast<int>(report.size());
+        bytesReceived = static_cast<int>(report.size());
         if (bytesReceived > 0) {
             // Null-terminate untuk keamanan
-            buffer[bytesReceived] = '\0';
             
             // (Pesan sudah dirakit utuh pada loop framing di atas.)
             
