@@ -86,28 +86,46 @@ static std::string SERVER_SECRET = OblivionServer::GetServerSecret();
 // Cross-platform helper functions
 std::string GetExecutableDirectory() {
 #ifdef _WIN32
-    char exePath[MAX_PATH] = { 0 };
-    const DWORD pathLength = GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    if (pathLength == 0 || pathLength >= MAX_PATH) {
-        return "";
-    }
-    const std::string path(exePath, pathLength);
-    const size_t lastSlash = path.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
-        return path.substr(0, lastSlash + 1);
+    std::vector<char> exePath(MAX_PATH, '\0');
+    constexpr size_t kMaxPathCapacity = 32768;
+    while (exePath.size() <= kMaxPathCapacity) {
+        const DWORD pathLength = GetModuleFileNameA(
+            NULL, exePath.data(), static_cast<DWORD>(exePath.size()));
+        if (pathLength == 0) {
+            return "";
+        }
+        if (static_cast<size_t>(pathLength) < exePath.size()) {
+            const std::string path(exePath.data(), pathLength);
+            const size_t lastSlash = path.find_last_of("\\/");
+            return lastSlash == std::string::npos
+                ? std::string()
+                : path.substr(0, lastSlash + 1);
+        }
+        if (exePath.size() == kMaxPathCapacity) {
+            break;
+        }
+        exePath.resize((std::min)(exePath.size() * 2, kMaxPathCapacity), '\0');
     }
     return "";
 #else
-    char exePath[PATH_MAX] = { 0 };
-    const ssize_t count = readlink("/proc/self/exe", exePath, sizeof(exePath));
-    // readlink does not NUL-terminate and returns the buffer size when the path
-    // may have been truncated. Avoid using that partial path for secret/log files.
-    if (count > 0 && static_cast<size_t>(count) < sizeof(exePath)) {
-        const std::string path(exePath, static_cast<size_t>(count));
-        const size_t lastSlash = path.find_last_of("/");
-        if (lastSlash != std::string::npos) {
-            return path.substr(0, lastSlash + 1);
+    std::vector<char> exePath(256, '\0');
+    constexpr size_t kMaxPathCapacity = 1024 * 1024;
+    while (exePath.size() <= kMaxPathCapacity) {
+        const ssize_t count = readlink("/proc/self/exe", exePath.data(), exePath.size());
+        if (count < 0) {
+            return "./";
         }
+        if (static_cast<size_t>(count) < exePath.size()) {
+            const std::string path(exePath.data(), static_cast<size_t>(count));
+            const size_t lastSlash = path.find_last_of("/");
+            return lastSlash == std::string::npos
+                ? std::string("./")
+                : path.substr(0, lastSlash + 1);
+        }
+        if (exePath.size() == kMaxPathCapacity) {
+            break;
+        }
+        exePath.resize((std::min)(exePath.size() * 2, kMaxPathCapacity), '\0');
     }
     return "./";
 #endif
