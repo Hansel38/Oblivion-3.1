@@ -35,14 +35,14 @@ namespace Oblivion {
         , m_pAdvancedHeuristics(nullptr) {
         std::cout << "[ProcessWatcher] Initializing components..." << std::endl;
         try {
-            m_pAntiDebug = new AntiDebug();
-            m_pInjectionScanner = new InjectionScanner();
-            m_pAntiSuspend = new AntiSuspend();
-            m_pOverlayScanner = new OverlayScanner();
-            m_pMemoryScanner = new MemoryScanner();
-            m_pDigitalSignatureValidator = new DigitalSignatureValidator();
-            m_pIATHookScanner = new IATHookScanner();
-            m_pAdvancedHeuristics = new AdvancedProcessHeuristics();
+            m_pAntiDebug = std::make_unique<AntiDebug>();
+            m_pInjectionScanner = std::make_unique<InjectionScanner>();
+            m_pAntiSuspend = std::make_unique<AntiSuspend>();
+            m_pOverlayScanner = std::make_unique<OverlayScanner>();
+            m_pMemoryScanner = std::make_unique<MemoryScanner>();
+            m_pDigitalSignatureValidator = std::make_unique<DigitalSignatureValidator>();
+            m_pIATHookScanner = std::make_unique<IATHookScanner>();
+            m_pAdvancedHeuristics = std::make_unique<AdvancedProcessHeuristics>();
             
             // Set heartbeat callback untuk AdvancedHeuristics
             m_pAdvancedHeuristics->SetHeartbeatCallback([this]() {
@@ -62,15 +62,7 @@ namespace Oblivion {
         std::cout << "[ProcessWatcher] Destructor called, stopping..." << std::endl;
         Stop();
         
-        // Delete all components safely
-        if (m_pAntiDebug) { delete m_pAntiDebug; m_pAntiDebug = nullptr; }
-        if (m_pInjectionScanner) { delete m_pInjectionScanner; m_pInjectionScanner = nullptr; }
-        if (m_pAntiSuspend) { delete m_pAntiSuspend; m_pAntiSuspend = nullptr; }
-        if (m_pOverlayScanner) { delete m_pOverlayScanner; m_pOverlayScanner = nullptr; }
-        if (m_pMemoryScanner) { delete m_pMemoryScanner; m_pMemoryScanner = nullptr; }
-        if (m_pDigitalSignatureValidator) { delete m_pDigitalSignatureValidator; m_pDigitalSignatureValidator = nullptr; }
-        if (m_pIATHookScanner) { delete m_pIATHookScanner; m_pIATHookScanner = nullptr; }
-        if (m_pAdvancedHeuristics) { delete m_pAdvancedHeuristics; m_pAdvancedHeuristics = nullptr; }
+        // unique_ptr members release partially or fully initialized components safely.
         
         std::cout << "[ProcessWatcher] Destructor complete" << std::endl;
     }
