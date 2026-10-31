@@ -76,6 +76,7 @@ namespace Oblivion {
         std::thread m_hbThread;
         SOCKET m_hbSocket = INVALID_SOCKET; // Socket untuk heartbeat
         uint64_t m_sessionNonce = 0; // Session nonce dari server
+        std::string m_pendingHeartbeatData; // TCP bytes received after the check-in response
 
         // Antrian laporan pelanggaran yang gagal terkirim: disimpan di memori
         // (best-effort, dibatasi jumlahnya) sebagai jejak audit lokal di samping

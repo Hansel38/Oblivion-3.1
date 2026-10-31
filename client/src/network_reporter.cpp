@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <limits>
 #include <cctype>
 #include <random>
 #include <fstream>
@@ -59,12 +60,11 @@ namespace {
         int handshakeTimeoutMs = 4000;
     };
 
-    // Bila 0 (default/produksi): endpoint yang berasal dari konfigurasi lokal TIDAK
-    // boleh fail-open, sebab pemain yang sudah di-ban cukup mengarahkan endpoint ke
-    // alamat mati supaya check-in dianggap "gangguan jaringan" dan proteksi dilewati.
-    // Set 1 hanya untuk deployment development yang toleran terhadap downtime server.
-#ifndef OBLIVION_ALLOW_LOCAL_ENDPOINT_FAIL_OPEN
-#define OBLIVION_ALLOW_LOCAL_ENDPOINT_FAIL_OPEN 0
+    // Fail-open dapat melewati pemeriksaan ban ketika server tidak tersedia.
+    // Default produksi selalu fail-closed. Hanya build development yang secara
+    // eksplisit mendefinisikan macro ini ke 1 yang boleh memakai fail_mode=open.
+#ifndef OBLIVION_ALLOW_NETWORK_FAIL_OPEN
+#define OBLIVION_ALLOW_NETWORK_FAIL_OPEN 0
 #endif
 
     std::string TrimCopy(const std::string& input) {
@@ -111,6 +111,27 @@ namespace {
     }
 
     // Pisahkan "host:port" (port opsional). Mendukung IPv6 dalam kurung: [::1]:54321
+    bool ParsePortStrict(const std::string& text, int& port) {
+        if (text.empty()) {
+            return false;
+        }
+        unsigned int parsed = 0;
+        for (unsigned char c : text) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+            parsed = parsed * 10U + static_cast<unsigned int>(c - '0');
+            if (parsed > 65535U) {
+                return false;
+            }
+        }
+        if (parsed == 0U) {
+            return false;
+        }
+        port = static_cast<int>(parsed);
+        return true;
+    }
+
     bool SplitHostPort(const std::string& spec, int defaultPort, std::string& outHost, int& outPort) {
         outHost.clear();
         outPort = defaultPort;
@@ -122,14 +143,13 @@ namespace {
 
         if (value.front() == '[') {
             const size_t close = value.find(']');
-            if (close == std::string::npos) {
+            if (close == std::string::npos || close == 1) {
                 return false;
             }
             outHost = value.substr(1, close - 1);
-            if (close + 1 < value.size() && value[close + 1] == ':') {
-                try {
-                    outPort = std::stoi(value.substr(close + 2));
-                } catch (...) {
+            if (close + 1 < value.size()) {
+                if (value[close + 1] != ':' ||
+                    !ParsePortStrict(value.substr(close + 2), outPort)) {
                     return false;
                 }
             }
@@ -137,22 +157,25 @@ namespace {
             const size_t colon = value.rfind(':');
             if (colon != std::string::npos && value.find(':') == colon) {
                 outHost = value.substr(0, colon);
-                try {
-                    outPort = std::stoi(value.substr(colon + 1));
-                } catch (...) {
+                if (!ParsePortStrict(value.substr(colon + 1), outPort)) {
                     return false;
                 }
             } else {
+                // Unbracketed IPv6 addresses are treated as host-only values.
                 outHost = value;
             }
         }
 
-        if (outPort <= 0 || outPort > 65535) {
+        if (outHost.empty() || outHost.size() > 253) {
             return false;
         }
-        return !outHost.empty();
+        for (unsigned char c : outHost) {
+            if (std::isspace(c) || c < 0x21 || c > 0x7e || c == '/' || c == '\\') {
+                return false;
+            }
+        }
+        return outPort > 0 && outPort <= 65535;
     }
-
     // Daftar endpoint dipisah koma / titik-koma / spasi.
     void AppendEndpointList(NetworkConfiguration& cfg, const std::string& list) {
         std::string token;
@@ -285,6 +308,89 @@ namespace {
 
         return cfg;
     }
+    bool SendAllBytes(SOCKET socket, const std::string& payload) {
+        size_t sent = 0;
+        while (sent < payload.size()) {
+            const size_t remaining = payload.size() - sent;
+            const int chunk = static_cast<int>(std::min<size_t>(remaining, 0x7fffffff));
+            const int result = send(socket, payload.data() + sent, chunk, 0);
+            if (result == SOCKET_ERROR || result == 0) {
+                return false;
+            }
+            sent += static_cast<size_t>(result);
+        }
+        return true;
+    }
+
+    size_t CountSemicolons(const std::string& value) {
+        return static_cast<size_t>(std::count(value.begin(), value.end(), ';'));
+    }
+
+    bool ReceiveSemicolonCount(
+        SOCKET socket,
+        std::string& buffer,
+        size_t requiredCount,
+        size_t maxBytes,
+        int timeoutMs
+    ) {
+        const ULONGLONG started = GetTickCount64();
+        while (CountSemicolons(buffer) < requiredCount) {
+            if (buffer.size() >= maxBytes) {
+                return false;
+            }
+
+            const ULONGLONG elapsed = GetTickCount64() - started;
+            if (elapsed >= static_cast<ULONGLONG>(timeoutMs)) {
+                return false;
+            }
+
+            const int remainingMs = timeoutMs - static_cast<int>(elapsed);
+            fd_set readSet;
+            FD_ZERO(&readSet);
+            FD_SET(socket, &readSet);
+
+            timeval timeout{};
+            timeout.tv_sec = remainingMs / 1000;
+            timeout.tv_usec = (remainingMs % 1000) * 1000;
+
+            if (select(0, &readSet, nullptr, nullptr, &timeout) <= 0) {
+                return false;
+            }
+
+            char chunk[256] = {};
+            const int received = recv(socket, chunk, static_cast<int>(sizeof(chunk)), 0);
+            if (received <= 0) {
+                return false;
+            }
+
+            if (buffer.size() + static_cast<size_t>(received) > maxBytes) {
+                return false;
+            }
+            buffer.append(chunk, static_cast<size_t>(received));
+        }
+        return true;
+    }
+
+    bool ParseUnsigned64(const std::string& text, uint64_t& value) {
+        if (text.empty()) {
+            return false;
+        }
+        uint64_t parsed = 0;
+        for (unsigned char c : text) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+            const uint64_t digit = static_cast<uint64_t>(c - '0');
+            if (parsed > (UINT64_MAX - digit) / 10ULL) {
+                return false;
+            }
+            parsed = parsed * 10ULL + digit;
+        }
+        value = parsed;
+        return true;
+    }
+
+
 }
 
 namespace Oblivion {
@@ -360,16 +466,14 @@ namespace Oblivion {
         }
 
         m_activeEndpoint = 0;
+#if OBLIVION_ALLOW_NETWORK_FAIL_OPEN
         m_failClosed = cfg.failClosed;
-
-#if !OBLIVION_ALLOW_LOCAL_ENDPOINT_FAIL_OPEN
-        // KEBIJAKAN KEAMANAN: endpoint yang berasal dari konfigurasi pemain
-        // (oblivion.cfg / env) tidak boleh fail-open, karena pemain yang sudah
-        // di-ban cukup mengarahkannya ke alamat mati sehingga client berjalan
-        // tanpa sesi, tanpa ban-check, dan tanpa heartbeat.
-        if (cfg.endpointsFromLocalConfig) {
-            m_failClosed = true;
-            std::cout << "[NET] Endpoint berasal dari konfigurasi lokal -> fail_mode dipaksa 'closed'" << std::endl;
+#else
+        // Jangan izinkan oblivion.cfg/OBLIVION_FAIL_MODE menonaktifkan ban-check
+        // hanya dengan mengubah fail_mode menjadi open.
+        m_failClosed = true;
+        if (!cfg.failClosed) {
+            std::cout << "[NET] Production policy: fail_mode dipaksa 'closed'" << std::endl;
         }
 #endif
         m_connectTimeoutMs = cfg.connectTimeoutMs;
@@ -487,91 +591,72 @@ namespace Oblivion {
         isBanned = false;
         errorOut.clear();
 
-        // Format check-in yang dipakai server: "CHECKIN::HWID:SECRET;"
         const std::string checkin = "CHECKIN::" + m_hwid + ":" + m_secretKey + ";";
-        if (send(s, checkin.c_str(), (int)checkin.length(), 0) <= 0) {
-            errorOut = "send() gagal saat check-in";
+        if (!SendAllBytes(s, checkin)) {
+            errorOut = "gagal mengirim check-in";
             return false;
         }
 
-        // Tunggu keputusan server dengan timeout yang bisa dikonfigurasi.
-        char recvbuf[512] = { 0 };
-        fd_set fdset;
-        FD_ZERO(&fdset);
-        FD_SET(s, &fdset);
-        struct timeval tv;
-        tv.tv_sec = m_handshakeTimeoutMs / 1000;
-        tv.tv_usec = (m_handshakeTimeoutMs % 1000) * 1000;
-
-        if (select(0, &fdset, NULL, NULL, &tv) <= 0) {
+        // Server mengirim KICK; atau ERROR; sebagai satu token, sedangkan
+        // check-in yang berhasil mengirim OK;SESSION_NONCE:<n>;.
+        std::string response;
+        if (!ReceiveSemicolonCount(s, response, 1, 1024, m_handshakeTimeoutMs)) {
             errorOut = "timeout menunggu respons check-in";
             return false;
         }
 
-        const int bytesReceived = recv(s, recvbuf, (int)sizeof(recvbuf) - 1, 0);
-        if (bytesReceived <= 0) {
-            errorOut = "koneksi ditutup server saat check-in";
+        const size_t firstSemi = response.find(';');
+        if (firstSemi == std::string::npos) {
+            errorOut = "respons check-in tidak lengkap";
             return false;
         }
 
-        // Parse respons: buang null terminator lalu trim whitespace.
-        std::string response(recvbuf, bytesReceived);
-        response.erase(std::remove(response.begin(), response.end(), '\0'), response.end());
-        const size_t start = response.find_first_not_of(" \t\n\r");
-        if (start != std::string::npos) {
-            response = response.substr(start);
-        }
-        const size_t end = response.find_last_not_of(" \t\n\r");
-        if (end != std::string::npos) {
-            response = response.substr(0, end + 1);
-        }
+        std::string firstToken = response.substr(0, firstSemi);
+        std::transform(firstToken.begin(), firstToken.end(), firstToken.begin(),
+            [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
 
-        std::string responseUpper = response;
-        std::transform(responseUpper.begin(), responseUpper.end(), responseUpper.begin(), ::toupper);
-
-        // Ambil token pertama (sebelum ';') saja. Sebelumnya kode memakai
-        // responseUpper.find("KICK") di SELURUH respons, sehingga teks apa pun yang
-        // mengandung "KICK" dianggap ban dan client langsung menampilkan
-        // "HWID Anda telah di-ban" lalu menutup diri.
-        const size_t firstSemi = responseUpper.find(';');
-        const std::string firstToken =
-            responseUpper.substr(0, firstSemi == std::string::npos ? responseUpper.size() : firstSemi);
-
-        const bool startsWithKick = (firstToken.rfind("KICK", 0) == 0);
-        const bool startsWithOk = (firstToken.rfind("OK", 0) == 0);
-        const bool isAuthError = (firstToken.rfind("ERROR:AUTH", 0) == 0);
-
-        if (startsWithKick) {
-            // Server hanya mengirim KICK untuk HWID yang memang ada di bans.txt.
+        if (firstToken == "KICK") {
             isBanned = true;
             return true;
         }
 
-        if (isAuthError) {
-            // PENTING: ini BUKAN ban. Server mengirim ERROR:AUTH saat secret client
-            // dan server tidak cocok (secret.dat berbeda / OBLIVION_SECRET salah),
-            // sehingga pesan "di-ban" ke seluruh pemain tidak boleh muncul.
-            errorOut = "autentikasi ditolak server (secret/config tidak cocok): " + response;
+        if (firstToken.rfind("ERROR:AUTH", 0) == 0) {
+            errorOut = "autentikasi ditolak server (secret/config tidak cocok)";
             return false;
         }
 
-        if (!startsWithOk) {
-            errorOut = "respons server tidak dikenali: " + response;
+        if (firstToken != "OK") {
+            errorOut = "respons server tidak dikenali: " + firstToken;
             return false;
         }
 
-        // OK: ambil SESSION_NONCE yang dipakai untuk menurunkan session key heartbeat.
-        const std::string nonceField = "SESSION_NONCE:";
-        m_sessionNonce = 0;
-        const size_t posSN = response.find(nonceField);
-        if (posSN != std::string::npos) {
-            const size_t snStart = posSN + nonceField.size();
-            const size_t snEnd = response.find(';', posSN);
-            const std::string sn = response.substr(snStart,
-                snEnd == std::string::npos ? std::string::npos : snEnd - snStart);
-            try { m_sessionNonce = std::stoull(sn); } catch (...) { m_sessionNonce = 0; }
+        if (!ReceiveSemicolonCount(s, response, 2, 1024, m_handshakeTimeoutMs)) {
+            errorOut = "respons OK tidak menyertakan SESSION_NONCE lengkap";
+            return false;
         }
 
+        const size_t secondSemi = response.find(';', firstSemi + 1);
+        if (secondSemi == std::string::npos) {
+            errorOut = "SESSION_NONCE tidak lengkap";
+            return false;
+        }
+
+        const std::string nonceField = response.substr(firstSemi + 1, secondSemi - firstSemi - 1);
+        const std::string noncePrefix = "SESSION_NONCE:";
+        if (nonceField.rfind(noncePrefix, 0) != 0) {
+            errorOut = "field SESSION_NONCE tidak ditemukan";
+            return false;
+        }
+
+        uint64_t nonce = 0;
+        if (!ParseUnsigned64(nonceField.substr(noncePrefix.size()), nonce) || nonce == 0) {
+            errorOut = "SESSION_NONCE tidak valid";
+            return false;
+        }
+
+        m_sessionNonce = nonce;
+        // Server may have already sent the first PING in the same TCP packet.
+        m_pendingHeartbeatData = response.substr(secondSemi + 1);
         return true;
     }
 
@@ -675,89 +760,144 @@ namespace Oblivion {
     }
 
     void NetworkReporter::StartHeartbeat() {
-        // CATATAN KEAMANAN: heartbeat TIDAK bisa dimatikan lewat environment variable
-        // (sebelumnya OBLV_HB_DISABLE = 0 memungkinkan pemain menonaktifkan lapisan
-        // ini sepenuhnya). Override timing (interval/jitter/timeout) tetap diizinkan
-        // karena tidak menghilangkan lapisan proteksinya.
-        if (m_hbSocket == INVALID_SOCKET) return; // No socket available
-        if (m_hbThread.joinable()) return;        // Sudah berjalan
+        if (m_hbSocket == INVALID_SOCKET || m_hbThread.joinable()) {
+            return;
+        }
 
         m_hbRunning = true;
+        std::string initialData = std::move(m_pendingHeartbeatData);
 
-        m_hbThread = std::thread([this]() {
-            const SOCKET s = m_hbSocket; // Socket tetap milik objek ini, bukan thread
-            
-            // Derive session key: key' = HMAC_SHA256(secretKey, hwid|nonce)
-            std::string sessionKey = HmacSha256(m_secretKey, m_hwid + ":" + std::to_string(m_sessionNonce));
+        m_hbThread = std::thread([this, receiveBuffer = std::move(initialData)]() mutable {
+            const SOCKET socket = m_hbSocket;
+            const std::string sessionKey =
+                HmacSha256(m_secretKey, m_hwid + ":" + std::to_string(m_sessionNonce));
 
-            // Heartbeat loop: receive Ping, reply Pong
-            Oblivion::HeartbeatConfig cfg;
-            // Optional client-side overrides
-            auto readEnvUint = [](const char* name, uint32_t defVal){
-                char buf[64]; DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
-                if (n == 0 || n >= sizeof(buf)) return defVal; 
-                try { return (uint32_t)std::stoul(std::string(buf)); } catch (...) { return defVal; }
-            };
-            cfg.interval_ms = readEnvUint("OBLV_HB_INTERVAL_MS", cfg.interval_ms);
-            cfg.jitter_ms = readEnvUint("OBLV_HB_JITTER_MS", cfg.jitter_ms);
-            cfg.timeout_ms = readEnvUint("OBLV_HB_TIMEOUT_MS", cfg.timeout_ms);
-            uint32_t lastSeq = 0;
-            while (m_hbRunning) {
-                // Wait for server ping line: PING:seq:ts:nonce;
-                char buf[256] = {0};
-                int n = recv(s, buf, sizeof(buf)-1, 0);
-                if (n <= 0) break;
-                std::string msg(buf, n);
-                
-                // Handle multiple PING messages in one recv (buffer may contain multiple messages)
-                size_t pos = 0;
-                while (pos < msg.length()) {
-                    size_t pingStart = msg.find("PING:", pos);
-                    if (pingStart == std::string::npos) break;
-                    
-                    size_t pingEnd = msg.find(';', pingStart);
-                    if (pingEnd == std::string::npos) break;
-                    
-                    std::string singlePing = msg.substr(pingStart, pingEnd - pingStart);
-                    
-                    // Parse this single PING
-                    // PING:seq:ts:nonce
-                    size_t p1 = singlePing.find(':');
-                    size_t p2 = singlePing.find(':', p1+1);
-                    size_t p3 = singlePing.find(':', p2+1);
-                    if (p1!=std::string::npos && p2!=std::string::npos && p3!=std::string::npos) {
-                        try {
-                            uint32_t seq = std::stoul(singlePing.substr(p1+1, p2-p1-1));
-                            uint64_t ts = std::stoull(singlePing.substr(p2+1, p3-p2-1));
-                            uint64_t nonce = std::stoull(singlePing.substr(p3+1)); // Ambil sisanya setelah p3
-                            lastSeq = seq;
-
-                            // Build client status dari provider yang dipasang dllmain.
-                            // Tanpa provider, status di-default true (fail-open) karena
-                            // komponen pengawas melaporkan sendiri saat mendeteksi masalah.
-                            Oblivion::ClientStatus st = m_statusProvider
-                                ? m_statusProvider()
-                                : Oblivion::ClientStatus{true, true};
-                            // Compose data string for HMAC
-                            std::string data = std::to_string(seq) + ":" + std::to_string(ts) + ":" + std::to_string(nonce) + ":" + m_hwid;
-                            std::string hmac = HmacSha256(sessionKey, data);
-
-                            // Send PONG line: PONG:seq:ts_client:nonce:statusAS|statusIG:hwid:hmac;
-                            uint64_t t_client = (uint64_t)GetTickCount64();
-                            std::string statusStr = std::string(st.antiSuspendOk?"1":"0") + std::string("|") + (st.integrityOk?"1":"0");
-                            std::string pong = "PONG:" + std::to_string(seq) + ":" + std::to_string(t_client) + ":" + std::to_string(nonce) + ":" + statusStr + ":" + m_hwid + ":" + hmac + ";";
-                            send(s, pong.c_str(), (int)pong.length(), 0);
-                        } catch (const std::exception&) {
-                            // Parse error, skip this PING
-                        }
-                    }
-                    
-                    pos = pingEnd + 1;
+            if (sessionKey.empty()) {
+                LogClientIssue("HEARTBEAT_CRYPTO_FAILED", "gagal membuat session HMAC");
+                m_hbRunning = false;
+                if (m_failClosed) {
+                    MessageBoxW(nullptr, L"Proteksi heartbeat gagal diinisialisasi.\n\nClient akan ditutup.",
+                        L"Oblivion Hack Shield - Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                    ExitProcess(1);
                 }
+                return;
             }
-            // JANGAN menutup socket di sini. Pemilik socket adalah StopHeartbeat()
-            // dan destruktor; menutupnya dari thread ini menyebabkan double-close dan
-            // berpotensi menutup handle socket yang sudah dipakai ulang pihak lain.
+
+            Oblivion::HeartbeatConfig cfg;
+            auto readEnvUint = [](const char* name, uint32_t defaultValue) {
+                char value[64] = {};
+                const DWORD length = GetEnvironmentVariableA(name, value, static_cast<DWORD>(sizeof(value)));
+                if (length == 0 || length >= sizeof(value)) {
+                    return defaultValue;
+                }
+                try {
+                    size_t consumed = 0;
+                    const unsigned long parsed = std::stoul(value, &consumed, 10);
+                    return consumed == length ? static_cast<uint32_t>(parsed) : defaultValue;
+                } catch (...) {
+                    return defaultValue;
+                }
+            };
+
+            cfg.interval_ms = readEnvUint("OBLV_HB_INTERVAL_MS", cfg.interval_ms);
+            cfg.timeout_ms = readEnvUint("OBLV_HB_TIMEOUT_MS", cfg.timeout_ms);
+            cfg.interval_ms = (std::max)(500U, (std::min)(cfg.interval_ms, 30000U));
+            cfg.timeout_ms = (std::max)(500U, (std::min)(cfg.timeout_ms, 30000U));
+            const uint64_t receiveTimeout64 =
+                static_cast<uint64_t>(cfg.interval_ms) + cfg.timeout_ms + 1500ULL;
+            const int receiveTimeoutMs = static_cast<int>((std::min<uint64_t>)(receiveTimeout64, 60000ULL));
+
+            uint32_t lastSequence = 0;
+            auto failHeartbeat = [this](const std::string& reason) {
+                if (!m_hbRunning.load()) {
+                    return;
+                }
+                LogClientIssue("HEARTBEAT_FAILED", reason);
+                m_hbRunning = false;
+                if (m_failClosed) {
+                    MessageBoxW(nullptr, L"Koneksi heartbeat ke server keamanan terputus.\n\nClient akan ditutup.",
+                        L"Oblivion Hack Shield - Connection Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                    ExitProcess(1);
+                }
+            };
+
+            while (m_hbRunning.load()) {
+                if (!ReceiveSemicolonCount(socket, receiveBuffer, 1, 512, receiveTimeoutMs)) {
+                    failHeartbeat("timeout atau koneksi terputus saat menunggu PING");
+                    break;
+                }
+
+                const size_t frameEnd = receiveBuffer.find(';');
+                if (frameEnd == std::string::npos) {
+                    failHeartbeat("frame PING tidak lengkap");
+                    break;
+                }
+
+                const std::string ping = receiveBuffer.substr(0, frameEnd);
+                receiveBuffer.erase(0, frameEnd + 1);
+
+                if (ping.rfind("PING:", 0) != 0) {
+                    failHeartbeat("menerima frame heartbeat yang tidak dikenal");
+                    break;
+                }
+
+                const size_t p1 = ping.find(':');
+                const size_t p2 = ping.find(':', p1 + 1);
+                const size_t p3 = ping.find(':', p2 + 1);
+                if (p1 == std::string::npos || p2 == std::string::npos ||
+                    p3 == std::string::npos || ping.find(':', p3 + 1) != std::string::npos) {
+                    failHeartbeat("format PING tidak valid");
+                    break;
+                }
+
+                uint64_t sequenceValue = 0;
+                uint64_t timestamp = 0;
+                uint64_t nonce = 0;
+                // Sequence IDs must increase, but gaps are allowed after a lost PONG.
+                if (!ParseUnsigned64(ping.substr(p1 + 1, p2 - p1 - 1), sequenceValue) ||
+                    sequenceValue > static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)()) ||
+                    !ParseUnsigned64(ping.substr(p2 + 1, p3 - p2 - 1), timestamp) ||
+                    !ParseUnsigned64(ping.substr(p3 + 1), nonce) ||
+                    nonce == 0 || sequenceValue == 0 || sequenceValue <= static_cast<uint64_t>(lastSequence)) {
+                    failHeartbeat("sequence, timestamp, atau nonce PING tidak valid");
+                    break;
+                }
+
+                const uint32_t sequence = static_cast<uint32_t>(sequenceValue);
+                Oblivion::ClientStatus status{ false, false };
+                try {
+                    if (m_statusProvider) {
+                        status = m_statusProvider();
+                    }
+                } catch (...) {
+                    status = { false, false };
+                }
+
+                const std::string signedData =
+                    std::to_string(sequence) + ":" + std::to_string(timestamp) + ":" +
+                    std::to_string(nonce) + ":" + m_hwid;
+                const std::string hmac = HmacSha256(sessionKey, signedData);
+                if (hmac.empty()) {
+                    failHeartbeat("gagal menghitung HMAC PONG");
+                    break;
+                }
+
+                const uint64_t clientTimestamp = static_cast<uint64_t>(GetTickCount64());
+                const std::string statusText =
+                    std::string(status.antiSuspendOk ? "1" : "0") + "|" +
+                    (status.integrityOk ? "1" : "0");
+                const std::string pong =
+                    "PONG:" + std::to_string(sequence) + ":" + std::to_string(clientTimestamp) +
+                    ":" + std::to_string(nonce) + ":" + statusText + ":" + m_hwid + ":" + hmac + ";";
+
+                if (!SendAllBytes(socket, pong)) {
+                    failHeartbeat("gagal mengirim PONG ke server");
+                    break;
+                }
+
+                lastSequence = sequence;
+            }
+
             m_hbRunning = false;
         });
     }
@@ -807,8 +947,7 @@ namespace Oblivion {
         }
         
         std::string report = type + ":" + sanitizedDetails + ":" + m_hwid + ":" + m_secretKey + ";";
-        int bytesSent = send(connectSocket, report.c_str(), (int)report.length(), 0);
-        if (bytesSent == SOCKET_ERROR || bytesSent == 0) {
+        if (!SendAllBytes(connectSocket, report)) {
             // Gagal kirim = kegagalan jaringan, bukan bukti cheat -> antrikan saja.
             closesocket(connectSocket);
             QueuePendingViolation(type, details);
@@ -817,49 +956,23 @@ namespace Oblivion {
             return;
         }
 
-        // Tunggu keputusan server dengan timeout.
-        char recvbuf[512] = { 0 };
-        fd_set fdset;
-        struct timeval tv;
-        tv.tv_sec = m_handshakeTimeoutMs / 1000;
-        tv.tv_usec = (m_handshakeTimeoutMs % 1000) * 1000;
-        FD_ZERO(&fdset);
-        FD_SET(connectSocket, &fdset);
+        // Baca satu frame ACK utuh; TCP dapat memecah "KICK;" menjadi beberapa recv().
+        std::string response;
+        const bool receivedAck = ReceiveSemicolonCount(
+            connectSocket, response, 1, 512, m_handshakeTimeoutMs);
+        closesocket(connectSocket);
 
-        const int selectResult = select(0, &fdset, NULL, NULL, &tv);
-        if (selectResult <= 0) {
-            // Timeout menunggu keputusan server: laporan sudah terkirim, jadi cukup
-            // dicatat. Sanction lokal tetap ditangani pemanggil (ReportViolationAndExit).
-            closesocket(connectSocket);
+        if (!receivedAck) {
             LogClientIssue("VIOLATION_ACK_TIMEOUT", type);
             std::cerr << "[WARN] Timeout menunggu respons server untuk " << type << std::endl;
             return;
         }
 
-        const int bytesReceived = recv(connectSocket, recvbuf, (int)sizeof(recvbuf) - 1, 0);
-
-        // Socket ditutup tepat sekali, apa pun hasil pembacaan respons.
-        closesocket(connectSocket);
-
-        if (bytesReceived > 0) {
-            std::string response(recvbuf, bytesReceived);
-            // Buang null terminator lalu trim whitespace dari awal dan akhir.
-            response.erase(std::remove(response.begin(), response.end(), '\0'), response.end());
-
-            const size_t start = response.find_first_not_of(" \t\n\r");
-            if (start != std::string::npos) {
-                response = response.substr(start);
-            }
-            const size_t end = response.find_last_not_of(" \t\n\r");
-            if (end != std::string::npos) {
-                response = response.substr(0, end + 1);
-            }
-
-            // "KICK;" = server menyetujui pelanggaran: tampilkan pesan lalu tutup client.
-            if (response == "KICK;") {
-                MessageBoxW(NULL, L"Server mendeteksi pelanggaran.\n\nClient akan ditutup.", L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
-                ExitProcess(0);
-            }
+        const size_t ackEnd = response.find(';');
+        if (ackEnd != std::string::npos && response.substr(0, ackEnd) == "KICK") {
+            MessageBoxW(nullptr, L"Server mendeteksi pelanggaran.\n\nClient akan ditutup.",
+                L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(0);
         }
     }
 

@@ -1,0 +1,46 @@
+name: Build and test
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-server:
+    name: Linux server build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install OpenSSL development headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev
+
+      - name: Validate startup script syntax
+        run: bash -n server/oblivion-start
+
+      - name: Build Linux server
+        run: make -C server clean all
+
+  windows-solution:
+    name: Windows client and server build
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64 solution
+        run: msbuild Oblivion.sln /m /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
