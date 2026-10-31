@@ -956,7 +956,9 @@ void HandleClient(SOCKET clientSocket) {
                 } else {
                     // Pelanggaran hanya dicatat ke log, tidak langsung di-ban atau di-kick
                     std::cout << "[WARNING] Pelanggaran terdeteksi dari HWID [" << hwid << "], dicatat ke log (menunggu review manual)." << std::endl;
-                    // Tidak kirim KICK - client tetap berjalan sampai admin memutuskan ban manual
+                    // Client yang melaporkan pelanggaran sah perlu ACK agar tidak timeout.
+                    const char* acknowledgement = "ACK;";
+                    SendAllBytes(clientSocket, acknowledgement);
                 }
             }
         } else if (bytesReceived == 0) {
