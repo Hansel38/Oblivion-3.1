@@ -1019,6 +1019,9 @@ void HandleClient(SocketType clientSocket) {
                     std::cout << "[INFO] Perintah KICK dikirim ke client (HWID: " << hwid << ") - sudah ada di ban list." << std::endl;
                 } else {
                     std::cout << "[WARNING] Pelanggaran terdeteksi dari HWID [" << hwid << "], dicatat ke log (menunggu review manual)." << std::endl;
+                    // Client yang melaporkan pelanggaran sah perlu ACK agar tidak timeout.
+                    const char* acknowledgement = "ACK;";
+                    SendAllBytes(clientSocket, acknowledgement);
                 }
             }
         } else if (bytesReceived == 0) {

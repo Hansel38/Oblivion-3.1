@@ -132,6 +132,24 @@ def verify_weak_secret_is_rejected(server_binary: Path) -> None:
         )
 
 
+def verify_violation_ack() -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(3)
+    try:
+        hwid = os.urandom(32).hex()
+        report = f"TEST_VIOLATION:integration test:{hwid}:{TEST_SECRET};"
+        sock.sendall(report.encode("ascii"))
+        frame, _ = recv_frame(sock, b"")
+        if frame != "ACK":
+            raise RuntimeError(
+                f"server did not acknowledge an unbanned violation report: {frame!r}"
+            )
+        if sock.recv(1) != b"":
+            raise RuntimeError("server did not close the violation-report connection")
+    finally:
+        sock.close()
+
+
 def verify_initial_handshake_deadline() -> None:
     sock = socket.create_connection((HOST, PORT), timeout=3)
     sock.settimeout(8)
@@ -193,6 +211,7 @@ def run_integration(server_binary: Path) -> None:
 
             verify_trailing_data_is_rejected()
             verify_initial_handshake_deadline()
+            verify_violation_ack()
 
             good = socket.create_connection((HOST, PORT), timeout=4)
             good.settimeout(4)

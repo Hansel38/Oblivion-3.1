@@ -996,10 +996,18 @@ namespace Oblivion {
         }
 
         const size_t ackEnd = response.find(';');
-        if (ackEnd != std::string::npos && response.substr(0, ackEnd) == "KICK") {
+        if (ackEnd == std::string::npos) {
+            LogClientIssue("VIOLATION_ACK_INVALID", "Respons server tidak memiliki terminator");
+            return;
+        }
+
+        const std::string acknowledgement = response.substr(0, ackEnd);
+        if (acknowledgement == "KICK") {
             MessageBoxW(nullptr, L"Server mendeteksi pelanggaran.\n\nClient akan ditutup.",
                 L"Oblivion Hack Shield - Violation", MB_OK | MB_ICONERROR | MB_TOPMOST);
             ExitProcess(0);
+        } else if (acknowledgement != "ACK") {
+            LogClientIssue("VIOLATION_ACK_INVALID", acknowledgement);
         }
     }
 

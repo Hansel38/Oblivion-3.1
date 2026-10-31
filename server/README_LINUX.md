@@ -1,5 +1,15 @@
 # Oblivion Server - Linux Build Guide
 
+> **Production security warning:** this version still uses plain TCP (port 54321).
+> The initial check-in and violation-report frames include the shared secret in plaintext.
+> The XOR/obfuscated `secret.dat` file is not encryption and does not protect a captured
+> network session. Do **not** expose this listener to an untrusted public network or treat
+> this build as production-ready. Before public deployment, add TLS with certificate
+> validation (or an equivalent end-to-end encrypted tunnel) and remove the static secret
+> from all on-wire frames. Also perform load tests and validate false-positive behavior
+> with the actual Ragnarok client/server setup.
+
+
 ## Requirements
 
 ### Debian/Ubuntu
