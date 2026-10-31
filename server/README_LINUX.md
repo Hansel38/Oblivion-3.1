@@ -69,19 +69,21 @@ export OBLV_HB_JITTER_MS=250
 export OBLV_HB_TIMEOUT_MS=4000
 export OBLV_HB_MAX_MISS=3
 export OBLV_HB_RTT_WARN_MS=1500
-./server
+./oblivion-server
 ```
 
 ### Server Secret
-The server requires a secret key. You can set it via:
+Server harus memakai secret yang sama dengan client. Atur secret produksi melalui salah satu cara berikut:
 
 1. **Environment variable** (recommended):
    ```bash
    export OBLIVION_SECRET="your-secret-key-here"
-   ./server
+   ./oblivion-server
    ```
 
 2. **File-based** (secret.dat):
+   **PENTING:** Jika environment variable dan `secret.dat` tidak tersedia, kode memakai
+   secret development `DEV_SECRET_NOT_SET`. Jangan gunakan fallback ini di server produksi.
    - Create a file named `secret.dat` in the same directory as the server executable
    - The file should contain XOR-encoded secret (same format as Windows version)
 
@@ -131,9 +133,12 @@ handshake_timeout_ms=4000
 | `OBLIVION_RETRY_COUNT` | jumlah putaran percobaan seluruh endpoint (1–10) |
 | `OBLIVION_HANDSHAKE_TIMEOUT_MS` | timeout menunggu respons check-in (500–30000 ms) |
 
-Catatan kebijakan: client memakai **fail-open** secara default untuk gangguan jaringan
-(server/VPS down) agar tidak menutup semua pemain; kegagalan jaringan dicatat lokal di
-`oblivion_client_errors.log`. Set `fail_mode=closed` untuk kebijakan ketat.
+Catatan kebijakan: kegagalan jaringan dicatat lokal di `oblivion_client_errors.log`.
+Endpoint fallback bawaan dapat memakai fail-open sesuai konfigurasi. Namun, secara default
+endpoint yang diubah melalui `oblivion.cfg` atau environment variable memaksa fail-closed
+agar pemeriksaan ban tidak bisa dilewati dengan mengarahkan client ke server mati.
+Opsi fail-open untuk endpoint lokal hanya boleh diaktifkan pada build development melalui
+`OBLIVION_ALLOW_LOCAL_ENDPOINT_FAIL_OPEN=1`; jangan aktifkan pada build produksi.
 
 ## Files
 
@@ -203,7 +208,7 @@ After=network.target
 Type=simple
 User=your-user
 WorkingDirectory=/path/to/server
-ExecStart=/path/to/server/server
+ExecStart=/path/to/server/oblivion-server
 Restart=always
 RestartSec=10
 Environment="OBLIVION_SECRET=your-secret-key"
@@ -228,7 +233,7 @@ If port 54321 is already in use, you can change it by modifying `DEFAULT_PORT` i
 ### Permission denied
 Make sure the server executable has execute permissions:
 ```bash
-chmod +x server
+chmod +x oblivion-server
 ```
 
 ### SSL library not found

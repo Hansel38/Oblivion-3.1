@@ -1,49 +1,46 @@
 # Makefile for Oblivion Server (Linux/Debian)
-# Usage: make
-#        make clean
-#        make install (optional)
+# Usage: make | make clean | make install
 
-CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -pthread
-LDFLAGS = -lssl -lcrypto -lpthread
+CXX ?= g++
+CXXFLAGS += -std=c++17 -Wall -Wextra -O2 -pthread
+CPPFLAGS ?=
+LDLIBS += -lssl -lcrypto -pthread
 
-# Directories
-SRC_DIR = src
-INCLUDE_DIR = include
-BUILD_DIR = build
+INCLUDE_DIR := include
+SRC_DIR := src
+BUILD_DIR := build
+TARGET := oblivion-server
+OBJECTS := $(BUILD_DIR)/server_linux.o $(BUILD_DIR)/secret_obf.o
+DEPS := $(OBJECTS:.o=.d)
 
-# Source files
-SOURCES = server_linux.cpp $(SRC_DIR)/secret_obf.cpp
-OBJECTS = $(SOURCES:.cpp=.o)
-TARGET = oblivion-server
+.PHONY: all clean install uninstall
 
-# Default target
 all: $(TARGET)
 
-# Build target
+$(BUILD_DIR):
+	mkdir -p $@
+
+$(BUILD_DIR)/server_linux.o: server_linux.cpp | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I$(INCLUDE_DIR) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/secret_obf.o: $(SRC_DIR)/secret_obf.cpp | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I$(INCLUDE_DIR) -MMD -MP -c $< -o $@
+
 $(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJECTS) $(LDFLAGS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 	@echo "Build complete: $(TARGET)"
 
-# Compile source files
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
-
-# Clean build artifacts
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -rf $(BUILD_DIR)
+	rm -f server_linux.o $(SRC_DIR)/secret_obf.o $(TARGET)
 	@echo "Clean complete"
 
-# Install (optional - copies to /usr/local/bin)
 install: $(TARGET)
-	cp $(TARGET) /usr/local/bin/
+	install -m 0755 $(TARGET) /usr/local/bin/$(TARGET)
 	@echo "Installed to /usr/local/bin/$(TARGET)"
 
-# Uninstall
 uninstall:
 	rm -f /usr/local/bin/$(TARGET)
 	@echo "Uninstalled from /usr/local/bin/$(TARGET)"
 
-# Phony targets
-.PHONY: all clean install uninstall
-
+-include $(DEPS)

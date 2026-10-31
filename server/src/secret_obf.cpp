@@ -2,9 +2,14 @@
 #include <vector>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include "secret_obf.h"
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <limits.h>
+#include <unistd.h>
 #endif
 
 // Obfuscation ringan untuk shared secret. Hindari menyimpan literal string.
@@ -18,11 +23,17 @@ namespace OblivionServer {
         // 1) Environment variable override
         // Aman: gunakan _dupenv_s di Windows
     #if defined(_WIN32)
-        char* envSecret = nullptr; size_t envLen = 0;
-        if (_dupenv_s(&envSecret, &envLen, "OBLIVION_SECRET") == 0 && envSecret && envLen > 0) {
-            cached = std::string(envSecret, envLen);
-            free(envSecret);
-            return cached;
+        char* envSecret = nullptr;
+        size_t envLen = 0;
+        if (_dupenv_s(&envSecret, &envLen, "OBLIVION_SECRET") == 0 && envSecret != nullptr) {
+            // MSVC envLen includes the terminating NUL; do not append it to the key.
+            if (envLen > 1) {
+                cached.assign(envSecret);
+            }
+            std::free(envSecret);
+            if (!cached.empty()) {
+                return cached;
+            }
         }
     #else
         const char* envSecret = getenv("OBLIVION_SECRET");
@@ -65,21 +76,43 @@ namespace OblivionServer {
             CloseHandle(hFile);
         }
 #else
-        // Non-Windows: simple file read from current dir
-        FILE* f = fopen("secret.dat", "rb");
+        // Resolve secret.dat beside the executable, not the current working directory.
+        char executablePath[PATH_MAX] = {0};
+        std::string executableDir = "./";
+        const ssize_t pathLength = readlink("/proc/self/exe", executablePath, sizeof(executablePath) - 1);
+        if (pathLength > 0) {
+            executablePath[pathLength] = '\0';
+            const std::string fullPath(executablePath);
+            const size_t slash = fullPath.find_last_of('/');
+            if (slash != std::string::npos) {
+                executableDir = fullPath.substr(0, slash + 1);
+            }
+        }
+
+        const std::string secretPath = executableDir + "secret.dat";
+        FILE* f = std::fopen(secretPath.c_str(), "rb");
+        // Backward compatibility for deployments that used the process working directory.
+        if (!f && executableDir != "./") {
+            f = std::fopen("secret.dat", "rb");
+        }
         if (f) {
-            std::vector<unsigned char> encoded;
-            unsigned char buf[256];
-            size_t r;
-            while ((r = fread(buf, 1, sizeof(buf), f)) > 0) {
-                encoded.insert(encoded.end(), buf, buf + r);
+            bool readOk = false;
+            if (std::fseek(f, 0, SEEK_END) == 0) {
+                const long fileSize = std::ftell(f);
+                if (fileSize > 0 && fileSize < 1024 && std::fseek(f, 0, SEEK_SET) == 0) {
+                    std::vector<unsigned char> encoded(static_cast<size_t>(fileSize));
+                    readOk = std::fread(encoded.data(), 1, encoded.size(), f) == encoded.size();
+                    if (readOk) {
+                        secret.reserve(encoded.size());
+                        for (size_t i = 0; i < encoded.size(); ++i) {
+                            const unsigned char key = static_cast<unsigned char>(0x5A + ((i * 7) % 0x3F));
+                            secret.push_back(static_cast<char>(encoded[i] ^ key));
+                        }
+                    }
+                }
             }
-            fclose(f);
-            for (size_t i = 0; i < encoded.size(); ++i) {
-                unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-                secret += (char)(encoded[i] ^ key);
-            }
-            if (!secret.empty()) {
+            std::fclose(f);
+            if (readOk && !secret.empty()) {
                 cached = secret;
                 return cached;
             }
