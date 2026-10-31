@@ -157,11 +157,21 @@ void InitializeSecuritySystem() {
             return; // Jika GDI+ gagal, lanjut tanpa splash
         }
 
-        wchar_t modulePath[MAX_PATH];
-        GetModuleFileNameW(g_hSelfModule ? g_hSelfModule : GetModuleHandleW(nullptr), modulePath, MAX_PATH);
-        wchar_t *lastSlash = wcsrchr(modulePath, L'\\');
-        if (lastSlash) *lastSlash = L'\0';
-        std::wstring imagePath = std::wstring(modulePath) + L"\\logo\\OblivionHS.png";
+        wchar_t modulePath[MAX_PATH] = { 0 };
+        const DWORD modulePathLength = GetModuleFileNameW(
+            g_hSelfModule ? g_hSelfModule : GetModuleHandleW(nullptr),
+            modulePath, MAX_PATH);
+        if (modulePathLength == 0 || modulePathLength >= MAX_PATH) {
+            GdiplusShutdown(gdiplusToken);
+            return;
+        }
+        wchar_t* lastSlash = wcsrchr(modulePath, L'\\');
+        if (!lastSlash) {
+            GdiplusShutdown(gdiplusToken);
+            return;
+        }
+        *lastSlash = L'\0';
+        const std::wstring imagePath = std::wstring(modulePath) + L"\\logo\\OblivionHS.png";
 
         HWND hwndSplash = nullptr;
         HBITMAP hBmp = nullptr;

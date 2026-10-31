@@ -100,14 +100,27 @@ namespace {
 
     // Folder tempat executable (client game) berada; config & log diletakkan di sini.
     std::wstring GetExecutableDirectory() {
-        wchar_t pathBuf[MAX_PATH] = {0};
-        const DWORD len = GetModuleFileNameW(NULL, pathBuf, MAX_PATH);
-        if (len == 0) {
-            return L"";
+        std::vector<wchar_t> pathBuffer(MAX_PATH, L'\0');
+        constexpr size_t kMaxPathCapacity = 32768;
+        while (pathBuffer.size() <= kMaxPathCapacity) {
+            const DWORD len = GetModuleFileNameW(
+                NULL, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+            if (len == 0) {
+                return L"";
+            }
+            if (static_cast<size_t>(len) < pathBuffer.size()) {
+                const std::wstring path(pathBuffer.data(), len);
+                const size_t lastSlash = path.find_last_of(L"\\/");
+                return lastSlash == std::wstring::npos
+                    ? std::wstring()
+                    : path.substr(0, lastSlash + 1);
+            }
+            if (pathBuffer.size() == kMaxPathCapacity) {
+                break;
+            }
+            pathBuffer.resize((std::min)(pathBuffer.size() * 2, kMaxPathCapacity), L'\0');
         }
-        std::wstring path(pathBuf, len);
-        const size_t lastSlash = path.find_last_of(L"\\/");
-        return (lastSlash == std::wstring::npos) ? L"" : path.substr(0, lastSlash + 1);
+        return L"";
     }
 
     // Pisahkan "host:port" (port opsional). Mendukung IPv6 dalam kurung: [::1]:54321
