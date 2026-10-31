@@ -853,11 +853,12 @@ namespace Oblivion {
                 uint64_t sequenceValue = 0;
                 uint64_t timestamp = 0;
                 uint64_t nonce = 0;
+                // Sequence IDs must increase, but gaps are allowed after a lost PONG.
                 if (!ParseUnsigned64(ping.substr(p1 + 1, p2 - p1 - 1), sequenceValue) ||
                     sequenceValue > static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)()) ||
                     !ParseUnsigned64(ping.substr(p2 + 1, p3 - p2 - 1), timestamp) ||
                     !ParseUnsigned64(ping.substr(p3 + 1), nonce) ||
-                    nonce == 0 || sequenceValue != static_cast<uint64_t>(lastSequence) + 1ULL) {
+                    nonce == 0 || sequenceValue == 0 || sequenceValue <= static_cast<uint64_t>(lastSequence)) {
                     failHeartbeat("sequence, timestamp, atau nonce PING tidak valid");
                     break;
                 }
