@@ -132,6 +132,28 @@ def verify_weak_secret_is_rejected(server_binary: Path) -> None:
         )
 
 
+def verify_initial_handshake_deadline() -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(8)
+    started = time.monotonic()
+    try:
+        # An attacker must not keep a worker alive by sending a partial request
+        # and then remaining silent (the total deadline is five seconds).
+        sock.sendall(b"C")
+        frame, _ = recv_frame(sock, b"")
+        elapsed = time.monotonic() - started
+        if frame != "ERROR:INVALID_FORMAT":
+            raise RuntimeError(f"unexpected response to partial check-in: {frame!r}")
+        if elapsed > 7.0:
+            raise RuntimeError(
+                f"initial frame deadline exceeded: server took {elapsed:.2f}s"
+            )
+        if sock.recv(1) != b"":
+            raise RuntimeError("server did not close an incomplete check-in connection")
+    finally:
+        sock.close()
+
+
 def run_integration(server_binary: Path) -> None:
     verify_weak_secret_is_rejected(server_binary)
 
@@ -170,6 +192,7 @@ def run_integration(server_binary: Path) -> None:
             sockets.append(good)
 
             verify_trailing_data_is_rejected()
+            verify_initial_handshake_deadline()
 
             good_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
             good_key, buffered = authenticate(good, good_hwid)
