@@ -49,7 +49,7 @@ clean:
 install: $(TARGET)
 	install -m 0755 $(TARGET) /usr/local/bin/$(TARGET)
 	@if [ ! -e /usr/local/bin/bans.txt ]; then \
-		install -m 0640 bans.txt /usr/local/bin/bans.txt; \
+		install -m 0644 bans.txt /usr/local/bin/bans.txt; \
 		echo "Installed initial ban list to /usr/local/bin/bans.txt"; \
 	else \
 		echo "Preserving existing /usr/local/bin/bans.txt"; \
