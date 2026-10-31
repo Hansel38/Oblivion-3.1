@@ -83,12 +83,18 @@ namespace Oblivion {
         
         std::cout << "[ProcessWatcher] Starting monitoring system..." << std::endl;
         m_isRunning = true;
-        
-        // Mulai thread pengawas terlebih dahulu
-        m_pAntiSuspend->Start();
-        
-        // Lalu mulai thread pemantauan utama
-        m_watcherThread = std::thread(&ProcessWatcher::WatcherLoop, this);
+        try {
+            if (m_pAntiSuspend) {
+                m_pAntiSuspend->Start();
+            }
+            m_watcherThread = std::thread(&ProcessWatcher::WatcherLoop, this);
+        } catch (...) {
+            m_isRunning = false;
+            if (m_pAntiSuspend) {
+                m_pAntiSuspend->Stop();
+            }
+            throw;
+        }
         std::cout << "[ProcessWatcher] Monitoring thread started" << std::endl;
     }
 

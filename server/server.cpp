@@ -552,6 +552,19 @@ static const int kMaxConcurrentClients = 256;
 static std::atomic<int> g_activeClients{ 0 };
 static Oblivion::HeartbeatConfig g_heartbeatConfig;
 
+static bool TryAcquireClientSlot() {
+    int current = g_activeClients.load(std::memory_order_relaxed);
+    while (current < kMaxConcurrentClients) {
+        if (g_activeClients.compare_exchange_weak(
+                current, current + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Generate nonces only with the operating system cryptographic random generator.
 // Failure returns zero and aborts the secure session rather than using weak entropy.
 
@@ -670,12 +683,17 @@ void HandleClient(SOCKET clientSocket) {
         // memuat pesan lengkap (TCP boleh memecahnya), dan pesan terpotong ditolak
         // sebagai MALFORMED_REQUEST sehingga check-in pemain sah gagal.
         std::string report;
-        while (report.find(';') == std::string::npos && report.size() < (size_t)(BUFFER_LEN - 1)) {
-            const int received = recv(clientSocket, buffer, BUFFER_LEN - 1, 0);
+        while (report.find(';') == std::string::npos &&
+               report.size() < static_cast<size_t>(BUFFER_LEN - 1)) {
+            // Respect the remaining capacity: multiple fragmented recv() calls
+            // must never make report.size() exceed buffer[] before termination.
+            const size_t remaining = static_cast<size_t>(BUFFER_LEN - 1) - report.size();
+            const int received =
+                recv(clientSocket, buffer, static_cast<int>(remaining), 0);
             if (received <= 0) {
                 break;
             }
-            report.append(buffer, received);
+            report.append(buffer, static_cast<size_t>(received));
         }
         bytesReceived = (int)report.size();
         if (bytesReceived > 0) {
@@ -1084,8 +1102,9 @@ int main() {
 
         std::cout << "\n[CONNECTION] New client connected" << std::endl;
 
-        // Tolak koneksi baru bila batas tercapai supaya thread/handle tidak habis.
-        if (g_activeClients.load() >= kMaxConcurrentClients) {
+        // Reserve a slot atomically; load()+fetch_add() allowed concurrent
+        // accepts to exceed the configured worker limit under connection floods.
+        if (!TryAcquireClientSlot()) {
             std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << kMaxConcurrentClients << "), koneksi baru ditolak" << std::endl;
             const char* busyResponse = "ERROR:BUSY;";
             SendAllBytes(ClientSocket, busyResponse);
@@ -1093,14 +1112,30 @@ int main() {
             continue;
         }
 
-        // Buat thread baru untuk menangani client agar server bisa menerima client lain
-        // Pass socket to handler; handler will use defaults; environment already logged
-        g_activeClients.fetch_add(1);
-        std::thread clientThread([ClientSocket]() {
-            HandleClient(ClientSocket);
-            g_activeClients.fetch_sub(1);
-        });
-        clientThread.detach(); // Lepaskan thread agar bisa berjalan mandiri
+        const SOCKET acceptedSocket = ClientSocket;
+        std::thread clientThread;
+        try {
+            clientThread = std::thread([acceptedSocket]() {
+                HandleClient(acceptedSocket);
+                g_activeClients.fetch_sub(1, std::memory_order_release);
+            });
+        } catch (const std::exception& e) {
+            g_activeClients.fetch_sub(1, std::memory_order_release);
+            std::cerr << "[ERROR] Tidak dapat membuat worker client: " << e.what() << std::endl;
+            closesocket(acceptedSocket);
+            continue;
+        }
+
+        // If detach fails, keep ownership and join rather than destructing a
+        // joinable std::thread (which would call std::terminate).
+        try {
+            clientThread.detach();
+        } catch (const std::exception& e) {
+            std::cerr << "[ERROR] Tidak dapat detach worker; menunggu worker selesai: " << e.what() << std::endl;
+            if (clientThread.joinable()) {
+                clientThread.join();
+            }
+        }
     }
 
     // Cleanup (tidak akan pernah tercapai dalam loop tak terbatas ini)
