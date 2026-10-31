@@ -114,6 +114,20 @@ def verify_trailing_data_is_rejected() -> None:
         sock.close()
 
 
+def verify_short_hwid_is_rejected() -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(3)
+    try:
+        # Production HWIDs are SHA-256 digests, never arbitrary short tokens.
+        sock.sendall(f"CHECKIN::A:{TEST_SECRET};".encode("ascii"))
+        frame, _ = recv_frame(sock, b"")
+        if frame != "ERROR:INVALID_FORMAT":
+            raise RuntimeError(f"server accepted a short HWID: {frame!r}")
+    finally:
+        sock.close()
+
+
+
 def verify_weak_secret_is_rejected(server_binary: Path) -> None:
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = "weak"
@@ -210,13 +224,14 @@ def run_integration(server_binary: Path) -> None:
             ready.close()
 
             verify_trailing_data_is_rejected()
+            verify_short_hwid_is_rejected()
             verify_initial_handshake_deadline()
             verify_violation_ack()
 
             good = socket.create_connection((HOST, PORT), timeout=4)
             good.settimeout(4)
             sockets.append(good)
-            good_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
+            good_hwid = os.urandom(32).hex()  # HWID protocol accepts exactly 64 hexadecimal SHA-256 characters
             good_key, buffered = authenticate(good, good_hwid)
             for _ in range(2):
                 ping, buffered = recv_ping(good, buffered)
