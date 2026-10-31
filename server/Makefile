@@ -2,9 +2,9 @@
 # Usage: make | make clean | make install
 
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -pthread
+CXXFLAGS += -std=c++17 -Wall -Wextra -O2 -pthread
 CPPFLAGS ?=
-LDLIBS ?= -lssl -lcrypto -pthread
+LDLIBS += -lssl -lcrypto -pthread
 
 INCLUDE_DIR := include
 SRC_DIR := src
