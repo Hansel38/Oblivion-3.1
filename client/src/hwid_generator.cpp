@@ -22,11 +22,11 @@
 
 namespace {
     std::string TrimHardwareValue(const std::string& value) {
-        const size_t first = value.find_first_not_of(" \\t\\r\\n\\0");
+        const size_t first = value.find_first_not_of(" \t\r\n");
         if (first == std::string::npos) {
             return "";
         }
-        const size_t last = value.find_last_not_of(" \\t\\r\\n\\0");
+        const size_t last = value.find_last_not_of(" \t\r\n");
         return value.substr(first, last - first + 1);
     }
 
