@@ -49,6 +49,10 @@ namespace {
         int port = 0;
     };
 
+    constexpr size_t kMinSharedSecretLength = 32;
+    constexpr size_t kMaxSharedSecretLength = 128;
+    constexpr size_t kMaxReportDetailsBytes = 2048;
+
     struct NetworkConfiguration {
         std::vector<EndpointSpec> endpoints;
         int defaultPort = 54321;
@@ -404,13 +408,33 @@ namespace {
     }
 
 
+    std::string EncodeProtocolDetails(const std::string& details) {
+        // The marker distinguishes the reversible format from legacy reports.
+        // Encode '%' first, so a literal "%3A" survives a full round trip.
+        static const std::string prefix = "!OBLV1!";
+        std::string encoded = prefix;
+        const size_t length = (std::min)(details.size(), kMaxReportDetailsBytes);
+        encoded.reserve(prefix.size() + length);
+        for (size_t i = 0; i < length; ++i) {
+            switch (details[i]) {
+            case '%': encoded += "%25"; break;
+            case ':': encoded += "%3A"; break;
+            case ';': encoded += "%3B"; break;
+            default: encoded.push_back(details[i]); break;
+            }
+        }
+        return encoded;
+    }
+
 }
 
 namespace Oblivion {
     NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
         : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
         // Resolve configuration before acquiring OS resources.
-        m_secretValid = (m_secretKey.size() >= 32);
+        m_secretValid = (m_secretKey.size() >= kMinSharedSecretLength &&
+                         m_secretKey.size() <= kMaxSharedSecretLength &&
+                         m_secretKey.find_first_of(":;") == std::string::npos);
         LoadConfiguration();
 
         InitializeCriticalSection(&m_pendingLock);
@@ -681,11 +705,11 @@ namespace Oblivion {
     bool NetworkReporter::CheckBanStatus() {
         if (!m_secretValid) {
             const std::string reason =
-                "Shared secret kosong atau terlalu pendek; gunakan secret acak minimal 32 byte";
+                "Shared secret harus memiliki panjang 32 sampai 128 byte dan tidak boleh mengandung ':' atau ';'.";
             LogClientIssue("SECRET_INVALID", reason);
             if (m_failClosed) {
                 MessageBoxW(nullptr,
-                    L"Konfigurasi secret Oblivion tidak valid.\n\nGunakan secret acak minimal 32 byte yang sama pada client dan server.",
+                    L"Konfigurasi secret Oblivion tidak valid.\n\nGunakan secret acak 32 sampai 128 byte yang sama pada client dan server, tanpa ':' atau ';'.",
                     L"Oblivion Hack Shield - Configuration Error",
                     MB_OK | MB_ICONERROR | MB_TOPMOST);
                 ExitProcess(1);
@@ -977,15 +1001,10 @@ namespace Oblivion {
 
         std::cout << "[NET] Melaporkan " << type << " ke " << activeHost << ":" << activePort << std::endl;
 
-        // --- FORMAT LAPORAN BARU MENGGUNAKAN HWID ---
-        // Sanitasi details: replace colon dengan pipe untuk menghindari konflik parsing
-        std::string sanitizedDetails = details;
-        for (char& c : sanitizedDetails) {
-            if (c == ':') c = '|';  // Replace colon dengan pipe
-            if (c == ';') c = ',';  // Replace semicolon dengan comma (delimiter utama)
-        }
-        
-        std::string report = type + ":" + sanitizedDetails + ":" + m_hwid + ":" + m_secretKey + ";";
+        // Escape protocol delimiters reversibly so paths and detection metadata
+        // retain their original ':' / ';' characters in server logs.
+        const std::string encodedDetails = EncodeProtocolDetails(details);
+        std::string report = type + ":" + encodedDetails + ":" + m_hwid + ":" + m_secretKey + ";";
         if (!SendAllBytes(connectSocket, report)) {
             // Gagal kirim = kegagalan jaringan, bukan bukti cheat -> antrikan saja.
             closesocket(connectSocket);

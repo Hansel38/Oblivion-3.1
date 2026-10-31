@@ -84,8 +84,8 @@ export OBLV_HB_RTT_WARN_MS=1500
 
 ### Server Secret
 Server harus memakai secret yang sama dengan client. Atur secret produksi melalui salah satu cara berikut:
-Buat nilai acak yang kuat (minimal 32 byte). Server dan client sekarang menolak konfigurasi secret
-yang kosong, memakai development fallback, atau lebih pendek dari 32 byte. Gunakan nilai yang sama
+Buat nilai acak yang kuat dengan panjang 32 sampai 128 byte dan tanpa karakter ':' atau ';'. Server dan client menolak secret
+kosong, development fallback, terlalu pendek, melebihi batas protokol, atau mengandung delimiter protokol. Gunakan nilai yang sama
 pada kedua sisi:
 
 ```bash

@@ -166,18 +166,62 @@ def verify_weak_secret_is_rejected(server_binary: Path) -> None:
         timeout=5,
     )
     output = (result.stdout or "") + (result.stderr or "")
-    if result.returncode == 0 or "minimal 32 byte" not in output:
+    if result.returncode == 0 or "32 dan 128 byte" not in output:
         raise RuntimeError(
             "server did not reject a short production secret before listening"
         )
 
 
-def verify_violation_ack() -> None:
+def verify_overlong_secret_is_rejected(server_binary: Path) -> None:
+    env = os.environ.copy()
+    env["OBLIVION_SECRET"] = "x" * 129
+    result = subprocess.run(
+        [str(server_binary)],
+        cwd=str(server_binary.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0 or "32 dan 128 byte" not in output:
+        raise RuntimeError(
+            "server did not reject a secret longer than the protocol's 128-byte limit"
+        )
+
+
+
+def verify_secret_delimiters_are_rejected(server_binary: Path) -> None:
+    for delimiter in (":", ";"):
+        env = os.environ.copy()
+        env["OBLIVION_SECRET"] = TEST_SECRET + delimiter
+        result = subprocess.run(
+            [str(server_binary)],
+            cwd=str(server_binary.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0 or "secret tidak boleh mengandung ':' atau ';'" not in output:
+            raise RuntimeError(
+                f"server did not reject a protocol delimiter in the secret: {delimiter!r}"
+            )
+
+
+def encode_protocol_details(details: str) -> str:
+    # Percent must be encoded first so literal "%3A" remains literal after decoding.
+    return "!OBLV1!" + details[:2048].replace("%", "%25").replace(":", "%3A").replace(";", "%3B")
+
+
+def verify_violation_ack(server_binary: Path) -> None:
     sock = socket.create_connection((HOST, PORT), timeout=3)
     sock.settimeout(3)
     try:
         hwid = os.urandom(32).hex()
-        report = f"TEST_VIOLATION:integration test:{hwid}:{TEST_SECRET};"
+        raw_details = r"path=C:\Games\Ragnarok; marker=%3A; token=OBV-DETAIL-ROUNDTRIP-9173"
+        report = f"TEST_VIOLATION:{encode_protocol_details(raw_details)}:{hwid}:{TEST_SECRET};"
         sock.sendall(report.encode("ascii"))
         frame, _ = recv_frame(sock, b"")
         if frame != "ACK":
@@ -186,6 +230,10 @@ def verify_violation_ack() -> None:
             )
         if sock.recv(1) != b"":
             raise RuntimeError("server did not close the violation-report connection")
+        log_path = server_binary.parent / "violations.log"
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        if raw_details not in log_text:
+            raise RuntimeError(f"server did not preserve escaped details in the log: {raw_details!r}")
     finally:
         sock.close()
 
@@ -214,6 +262,8 @@ def verify_initial_handshake_deadline() -> None:
 
 def run_integration(server_binary: Path) -> None:
     verify_weak_secret_is_rejected(server_binary)
+    verify_overlong_secret_is_rejected(server_binary)
+    verify_secret_delimiters_are_rejected(server_binary)
 
     ban_list_path = server_binary.parent / "bans.txt"
     original_ban_list = ban_list_path.read_bytes() if ban_list_path.exists() else None
@@ -259,7 +309,7 @@ def run_integration(server_binary: Path) -> None:
             verify_short_hwid_is_rejected()
             verify_initial_handshake_deadline()
             verify_missing_ban_list_is_rejected(ban_list_path)
-            verify_violation_ack()
+            verify_violation_ack(server_binary)
 
             good = socket.create_connection((HOST, PORT), timeout=4)
             good.settimeout(4)

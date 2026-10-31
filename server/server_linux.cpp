@@ -73,7 +73,7 @@
 #endif
 
 #define DEFAULT_PORT "54321"
-#define BUFFER_LEN 4096
+#define BUFFER_LEN 8192
 #define MAX_TYPE_LEN 64
 #define MAX_DETAILS_LEN 2048
 #define MAX_HWID_LEN 128
@@ -577,6 +577,39 @@ std::string ExtractHWIDFromRawData(const std::string& rawData) {
     return sanitizedHwid.empty() ? "UNKNOWN" : sanitizedHwid;
 }
 
+std::string DecodeProtocolDetails(const std::string& encoded) {
+    static const std::string prefix = "!OBLV1!";
+    if (encoded.rfind(prefix, 0) != 0) {
+        return encoded; // Backward compatibility with existing clients.
+    }
+
+    std::string decoded;
+    decoded.reserve(encoded.size() - prefix.size());
+    for (size_t i = prefix.size(); i < encoded.size(); ++i) {
+        if (encoded[i] == '%' && i + 2 < encoded.size()) {
+            const char hi = static_cast<char>(std::toupper(static_cast<unsigned char>(encoded[i + 1])));
+            const char lo = static_cast<char>(std::toupper(static_cast<unsigned char>(encoded[i + 2])));
+            if (hi == '2' && lo == '5') {
+                decoded.push_back('%');
+                i += 2;
+                continue;
+            }
+            if (hi == '3' && lo == 'A') {
+                decoded.push_back(':');
+                i += 2;
+                continue;
+            }
+            if (hi == '3' && lo == 'B') {
+                decoded.push_back(';');
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(encoded[i]);
+    }
+    return decoded;
+}
+
 std::string SanitizeInput(const std::string& input, size_t maxLen) {
     std::string sanitized;
     const size_t reserveSize = input.length() < maxLen ? input.length() : maxLen;
@@ -676,11 +709,6 @@ ParsedReport ParseProtocol(const std::string& report) {
         return result;
     }
     
-    if (result.details.length() > MAX_DETAILS_LEN) {
-        result.errorMessage = "DETAILS field exceeds maximum length (" + std::to_string(MAX_DETAILS_LEN) + ")";
-        return result;
-    }
-    
     if (result.hwid.length() > MAX_HWID_LEN) {
         result.errorMessage = "HWID field exceeds maximum length (" + std::to_string(MAX_HWID_LEN) + ")";
         return result;
@@ -721,6 +749,12 @@ ParsedReport ParseProtocol(const std::string& report) {
         return result;
     }
     
+    result.details = DecodeProtocolDetails(result.details);
+    if (result.details.length() > MAX_DETAILS_LEN) {
+        result.errorMessage = "DETAILS field exceeds maximum decoded length (" +
+            std::to_string(MAX_DETAILS_LEN) + ")";
+        return result;
+    }
     result.details = SanitizeInput(result.details, MAX_DETAILS_LEN);
     
     result.valid = true;
@@ -1115,10 +1149,13 @@ void HandleClient(SocketType clientSocket) {
 int main() {
     if (SERVER_SECRET.empty() ||
         SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
-        SERVER_SECRET.size() < 32) {
+        SERVER_SECRET.size() < 32 ||
+        SERVER_SECRET.size() > MAX_SECRET_LEN ||
+        SERVER_SECRET.find_first_of(":;") != std::string::npos) {
         std::cerr << "[FATAL] OBLIVION_SECRET/secret.dat wajib dikonfigurasi "
-                  << "dengan secret minimal 32 byte. Server menolak secret kosong, "
-                  << "development, atau terlalu pendek." << std::endl;
+                  << "dengan panjang secret antara 32 dan " << MAX_SECRET_LEN
+                  << " byte; secret tidak boleh mengandung ':' atau ';'. Server menolak secret kosong, "
+                  << "development, terlalu pendek, atau melebihi batas protokol." << std::endl;
         return 1;
     }
 
