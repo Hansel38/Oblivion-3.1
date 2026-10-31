@@ -100,12 +100,12 @@ namespace {
 
     // Folder tempat executable (client game) berada; config & log diletakkan di sini.
     std::wstring GetExecutableDirectory() {
-        wchar_t pathBuf[MAX_PATH] = {0};
+        wchar_t pathBuf[MAX_PATH] = { 0 };
         const DWORD len = GetModuleFileNameW(NULL, pathBuf, MAX_PATH);
-        if (len == 0) {
+        if (len == 0 || len >= MAX_PATH) {
             return L"";
         }
-        std::wstring path(pathBuf, len);
+        const std::wstring path(pathBuf, len);
         const size_t lastSlash = path.find_last_of(L"\\/");
         return (lastSlash == std::wstring::npos) ? L"" : path.substr(0, lastSlash + 1);
     }
