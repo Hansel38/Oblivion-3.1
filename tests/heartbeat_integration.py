@@ -132,7 +132,7 @@ def run_integration(server_binary: Path) -> None:
                     time.sleep(0.1)
             sockets.append(good)
 
-            good_hwid = f"TEST-GOOD-{os.urandom(8).hex()}"
+            good_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
             good_key, buffered = authenticate(good, good_hwid)
             for _ in range(2):
                 ping, buffered = recv_ping(good, buffered)
@@ -149,7 +149,7 @@ def run_integration(server_binary: Path) -> None:
             bad = socket.create_connection((HOST, PORT), timeout=3)
             bad.settimeout(3)
             sockets.append(bad)
-            bad_hwid = f"TEST-TAMPER-{os.urandom(8).hex()}"
+            bad_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
             bad_key, buffered = authenticate(bad, bad_hwid)
 
             for _ in range(2):
