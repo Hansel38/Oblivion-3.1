@@ -4,6 +4,7 @@
 #include <thread>
 #include <memory>
 #include <atomic>
+#include <mutex>
 #include <unordered_set>
 
 namespace Oblivion {
@@ -33,6 +34,8 @@ namespace Oblivion {
         void WatcherLoop();
         void PerformScan();
 
+        // Serialize lifecycle calls so Start/Stop cannot race over a joinable thread.
+        std::mutex m_lifecycleMutex;
         std::thread m_watcherThread;
         std::atomic<bool> m_isRunning;
 
