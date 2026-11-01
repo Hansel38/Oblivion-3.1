@@ -8,6 +8,7 @@
 #include <atomic>
 #include <thread>
 #include <winsock2.h>
+#include <openssl/ssl.h>
 #include "heartbeat_protocol.h"
 
 namespace Oblivion {
@@ -58,11 +59,14 @@ namespace Oblivion {
         bool m_hwidValid = false; // true bila m_hwid berformat sah (hex + dash) dan layak dikirim
         std::string m_secretKey;  // Shared key loaded from environment/config
         bool m_secretValid = false; // Production requires at least 32 bytes
+        std::vector<std::string> m_tlsPins; // Required leaf-certificate SHA-256 pin set
+        std::string m_tlsPinError;
+        SSL_CTX* m_tlsContext = nullptr;
 
         void LoadConfiguration();
         SOCKET ConnectToAnyEndpoint(std::string& outHost, int& outPort);
         SOCKET ConnectWithTimeout(const std::string& host, int port) const;
-        bool PerformCheckin(SOCKET s, bool& isBanned, std::string& errorOut);
+        bool PerformCheckin(SOCKET s, SSL* tls, bool& isBanned, std::string& errorOut);
         void LogClientIssue(const std::string& type, const std::string& details) const;
         void QueuePendingViolation(const std::string& type, const std::string& details) const;
 
@@ -76,6 +80,7 @@ namespace Oblivion {
         std::atomic<bool> m_hbRunning{ false };
         std::thread m_hbThread;
         SOCKET m_hbSocket = INVALID_SOCKET; // Socket untuk heartbeat
+        SSL* m_hbTls = nullptr; // TLS session bound to the heartbeat socket
         uint64_t m_sessionNonce = 0; // Session nonce dari server
         std::string m_pendingHeartbeatData; // TCP bytes received after the check-in response
 

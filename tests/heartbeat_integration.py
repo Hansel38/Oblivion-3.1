@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local TCP integration test for the Oblivion heartbeat protocol.
+"""Local TLS socket integration test for the Oblivion heartbeat protocol.
 
 The test launches an isolated server process, verifies valid authenticated
 heartbeats, then proves a status-bit modification invalidates the PONG HMAC.
@@ -11,6 +11,7 @@ import hmac
 import os
 import signal
 import shutil
+import ssl
 import socket
 import subprocess
 import sys
@@ -22,6 +23,27 @@ HOST = "127.0.0.1"
 PORT = 54321
 TEST_SECRET = "oblivion-integration-secret-at-least-32-bytes"
 MAX_FRAME_BYTES = 4096
+TLS_CONTEXT: ssl.SSLContext | None = None
+
+
+def connect_tls(timeout: float = 3) -> ssl.SSLSocket:
+    if TLS_CONTEXT is None:
+        raise RuntimeError("TLS test context was not initialized")
+    raw = socket.create_connection((HOST, PORT), timeout=timeout)
+    raw.settimeout(timeout)
+    try:
+        return TLS_CONTEXT.wrap_socket(raw, server_hostname=HOST)
+    except Exception:
+        raw.close()
+        raise
+
+
+def recv_closed(sock: socket.socket, size: int = 1) -> bytes:
+    try:
+        return sock.recv(size)
+    except (ssl.SSLError, ConnectionResetError, BrokenPipeError):
+        # A missing TLS close_notify is still treated as transport EOF here.
+        return b""
 
 
 def recv_frame(sock: socket.socket, buffered: bytes) -> tuple[str, bytes]:
@@ -99,7 +121,7 @@ def send_pong(
 
 
 def verify_trailing_data_is_rejected() -> None:
-    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock = connect_tls(timeout=3)
     sock.settimeout(3)
     try:
         hwid = os.urandom(32).hex()
@@ -116,7 +138,7 @@ def verify_trailing_data_is_rejected() -> None:
 
 
 def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
-    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock = connect_tls(timeout=3)
     sock.settimeout(3)
     log_path = server_binary.parent / "violations.log"
     previous_log = log_path.read_bytes() if log_path.exists() else b""
@@ -129,7 +151,7 @@ def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
         frame, _ = recv_frame(sock, b"")
         if frame != "ERROR:INVALID_FORMAT":
             raise RuntimeError(f"malformed request was not rejected: {frame!r}")
-        if sock.recv(1) != b"":
+        if recv_closed(sock, 1) != b"":
             raise RuntimeError("server kept the malformed-request connection open")
     finally:
         sock.close()
@@ -144,7 +166,7 @@ def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
 
 
 def verify_short_hwid_is_rejected() -> None:
-    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock = connect_tls(timeout=3)
     sock.settimeout(3)
     try:
         # Production HWIDs are SHA-256 digests, never arbitrary short tokens.
@@ -164,7 +186,7 @@ def verify_missing_ban_list_is_rejected(ban_list_path: Path) -> None:
         raise RuntimeError(f"stale ban-list backup exists: {backup_path}")
     ban_list_path.rename(backup_path)
     try:
-        sock = socket.create_connection((HOST, PORT), timeout=3)
+        sock = connect_tls(timeout=3)
         sock.settimeout(3)
         try:
             hwid = os.urandom(32).hex()
@@ -174,7 +196,7 @@ def verify_missing_ban_list_is_rejected(ban_list_path: Path) -> None:
                 raise RuntimeError(
                     f"server allowed check-in with an unreadable ban list: {frame!r}"
                 )
-            if sock.recv(1) != b"":
+            if recv_closed(sock, 1) != b"":
                 raise RuntimeError("server kept the connection open after ban-list error")
         finally:
             sock.close()
@@ -245,7 +267,7 @@ def encode_protocol_details(details: str) -> str:
 
 
 def verify_violation_ack(server_binary: Path) -> None:
-    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock = connect_tls(timeout=3)
     sock.settimeout(3)
     try:
         hwid = os.urandom(32).hex()
@@ -257,7 +279,7 @@ def verify_violation_ack(server_binary: Path) -> None:
             raise RuntimeError(
                 f"server did not acknowledge an unbanned violation report: {frame!r}"
             )
-        if sock.recv(1) != b"":
+        if recv_closed(sock, 1) != b"":
             raise RuntimeError("server did not close the violation-report connection")
         log_path = server_binary.parent / "violations.log"
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -267,32 +289,134 @@ def verify_violation_ack(server_binary: Path) -> None:
         sock.close()
 
 
-def verify_initial_handshake_deadline() -> None:
+def verify_plaintext_protocol_is_rejected() -> None:
     sock = socket.create_connection((HOST, PORT), timeout=3)
-    sock.settimeout(8)
-    started = time.monotonic()
+    sock.settimeout(3)
     try:
-        # An attacker must not keep a worker alive by sending a partial request
-        # and then remaining silent (the total deadline is five seconds).
-        sock.sendall(b"C")
-        frame, _ = recv_frame(sock, b"")
-        elapsed = time.monotonic() - started
-        if frame != "ERROR:INVALID_FORMAT":
-            raise RuntimeError(f"unexpected response to partial check-in: {frame!r}")
-        if elapsed > 7.0:
+        hwid = os.urandom(32).hex()
+        sock.sendall(f"CHECKIN::{hwid}:{TEST_SECRET};".encode("ascii"))
+        try:
+            response = sock.recv(512)
+        except (ConnectionResetError, socket.timeout):
+            response = b""
+        if response.startswith((b"OK;", b"KICK;", b"ERROR:")):
             raise RuntimeError(
-                f"initial frame deadline exceeded: server took {elapsed:.2f}s"
+                f"server processed a plaintext protocol frame instead of requiring TLS: {response!r}"
             )
-        if sock.recv(1) != b"":
-            raise RuntimeError("server did not close an incomplete check-in connection")
     finally:
         sock.close()
 
 
-def run_integration(server_binary: Path) -> None:
+def verify_tls_handshake_deadline() -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(8)
+    started = time.monotonic()
+    try:
+        # A peer that opens TCP but never sends a TLS ClientHello must be closed
+        # by the server's bounded TLS-handshake timeout.
+        try:
+            sock.recv(512)
+        except (ConnectionResetError, socket.timeout):
+            pass
+        elapsed = time.monotonic() - started
+        if elapsed > 7.0:
+            raise RuntimeError(f"TLS handshake deadline exceeded: {elapsed:.2f}s")
+    finally:
+        sock.close()
+
+
+def verify_tls_client_pin_checks(probe_binary: Path, server_certificate: Path) -> None:
+    certificate_der = subprocess.run(
+        ["openssl", "x509", "-in", str(server_certificate), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    certificate_pin = hashlib.sha256(certificate_der).hexdigest()
+    wrong_pin = ("0" if certificate_pin[0] != "0" else "1") + certificate_pin[1:]
+    cases = [
+        (HOST, certificate_pin, "accept", "valid certificate pin and IP SAN"),
+        (HOST, wrong_pin, "reject", "wrong certificate pin"),
+        ("wrong.invalid", certificate_pin, "reject", "hostname mismatch"),
+    ]
+    for expected_host, pin, expected_result, description in cases:
+        result = subprocess.run(
+            [str(probe_binary), HOST, expected_host, str(PORT), pin, expected_result],
+            capture_output=True, text=True, timeout=8,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"TLS client verification case failed ({description}): "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+
+
+def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
+    # Startup must fail before listening if no server certificate/key can be loaded.
+    with tempfile.TemporaryDirectory(prefix="oblivion-no-tls-cert-") as directory:
+        env = os.environ.copy()
+        env["OBLIVION_SECRET"] = TEST_SECRET
+        env["OBLIVION_TLS_CERT_FILE"] = str(Path(directory) / "missing-cert.pem")
+        env["OBLIVION_TLS_KEY_FILE"] = str(Path(directory) / "missing-key.pem")
+        result = subprocess.run(
+            [str(server_binary)],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            raise RuntimeError("server started successfully without a TLS certificate/key pair")
+        if "TLS initialization failed" not in output and "Cannot resolve TLS certificate/key paths" not in output:
+            raise RuntimeError(
+                "server failed without a TLS certificate/key pair for an unexpected reason: "
+                f"exit={result.returncode}, output={output!r}"
+            )
+
+def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
+    global TLS_CONTEXT
     verify_weak_secret_is_rejected(server_binary)
     verify_overlong_secret_is_rejected(server_binary)
     verify_secret_delimiters_are_rejected(server_binary)
+    verify_missing_tls_certificate_is_rejected(server_binary)
+
+    tls_temporary = tempfile.TemporaryDirectory(prefix="oblivion-tls-test-")
+    tls_directory = Path(tls_temporary.name)
+    ca_key = tls_directory / "test-ca.key"
+    ca_cert = tls_directory / "test-ca.pem"
+    server_key = tls_directory / "server.key"
+    server_csr = tls_directory / "server.csr"
+    server_cert = tls_directory / "server.pem"
+    extensions = tls_directory / "server-ext.cnf"
+
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(ca_key), "-out", str(ca_cert),
+        "-subj", "/CN=Oblivion Integration Test CA",
+        "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    ], check=True, capture_output=True, text=True)
+    subprocess.run([
+        "openssl", "req", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-keyout", str(server_key), "-out", str(server_csr),
+        "-subj", "/CN=127.0.0.1",
+    ], check=True, capture_output=True, text=True)
+    extensions.write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\n",
+        encoding="ascii",
+    )
+    subprocess.run([
+        "openssl", "x509", "-req", "-in", str(server_csr),
+        "-CA", str(ca_cert), "-CAkey", str(ca_key), "-CAcreateserial",
+        "-out", str(server_cert), "-days", "2", "-sha256",
+        "-extfile", str(extensions),
+    ], check=True, capture_output=True, text=True)
+
+    TLS_CONTEXT = ssl.create_default_context(cafile=str(ca_cert))
+    TLS_CONTEXT.check_hostname = True
 
     ban_list_path = server_binary.parent / "bans.txt"
     original_ban_list = ban_list_path.read_bytes() if ban_list_path.exists() else None
@@ -302,6 +426,8 @@ def run_integration(server_binary: Path) -> None:
 
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = TEST_SECRET
+    env["OBLIVION_TLS_CERT_FILE"] = str(server_cert)
+    env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
     env["OBLV_HB_INTERVAL_MS"] = "250"
     env["OBLV_HB_TIMEOUT_MS"] = "1000"
     env["OBLV_HB_MAX_MISS"] = "2"
@@ -342,13 +468,15 @@ def run_integration(server_binary: Path) -> None:
             ready.close()
 
             verify_trailing_data_is_rejected()
+            verify_plaintext_protocol_is_rejected()
+            verify_tls_handshake_deadline()
+            verify_tls_client_pin_checks(tls_probe_binary, server_cert)
             verify_malformed_request_does_not_log_secret(server_binary)
             verify_short_hwid_is_rejected()
-            verify_initial_handshake_deadline()
             verify_missing_ban_list_is_rejected(ban_list_path)
             verify_violation_ack(server_binary)
 
-            good = socket.create_connection((HOST, PORT), timeout=4)
+            good = connect_tls(timeout=4)
             good.settimeout(4)
             sockets.append(good)
             good_hwid = os.urandom(32).hex()  # HWID protocol accepts exactly 64 hexadecimal SHA-256 characters
@@ -365,7 +493,7 @@ def run_integration(server_binary: Path) -> None:
             good.close()
             sockets.remove(good)
 
-            bad = socket.create_connection((HOST, PORT), timeout=3)
+            bad = connect_tls(timeout=3)
             bad.settimeout(3)
             sockets.append(bad)
             bad_hwid = os.urandom(32).hex()  # HWID protocol accepts hex characters and dashes only
@@ -412,6 +540,8 @@ def run_integration(server_binary: Path) -> None:
             else:
                 ban_list_path.write_bytes(original_ban_list)
             shutil.rmtree(working_directory, ignore_errors=True)
+        tls_temporary.cleanup()
+        TLS_CONTEXT = None
 
         if process.returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
             server_log.seek(0)
@@ -422,19 +552,23 @@ def run_integration(server_binary: Path) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: heartbeat_integration.py PATH_TO_SERVER", file=sys.stderr)
+    if len(sys.argv) != 3:
+        print("Usage: heartbeat_integration.py PATH_TO_SERVER PATH_TO_TLS_PROBE", file=sys.stderr)
         return 2
     server_binary = Path(sys.argv[1]).resolve()
+    tls_probe_binary = Path(sys.argv[2]).resolve()
     if not server_binary.is_file():
         print(f"Server binary not found: {server_binary}", file=sys.stderr)
         return 2
+    if not tls_probe_binary.is_file():
+        print(f"TLS probe binary not found: {tls_probe_binary}", file=sys.stderr)
+        return 2
     try:
-        run_integration(server_binary)
+        run_integration(server_binary, tls_probe_binary)
     except Exception as exc:
-        print(f"Heartbeat TCP integration test: FAIL: {exc}", file=sys.stderr)
+        print(f"Heartbeat TLS integration test: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("Heartbeat TCP integration test: PASS")
+    print("Heartbeat TLS integration test: PASS")
     return 0
 
 

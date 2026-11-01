@@ -16,6 +16,11 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
+#include <filesystem>
+#include "../common/tls_transport.h"
 #include <cerrno>
 #include <csignal>
 #include <unistd.h>
@@ -80,6 +85,8 @@
 #define MAX_SECRET_LEN 128
 
 static std::string SERVER_SECRET = OblivionServer::GetServerSecret();
+static SSL_CTX* g_tlsServerContext = nullptr;
+static thread_local SSL* g_activeTls = nullptr;
 #define BAN_LIST_FILE "bans.txt"
 #define VIOLATION_LOG_FILE "violations.log"
 
@@ -139,6 +146,86 @@ std::string GetFilePath(const std::string& filename) {
     }
     return exeDir + filename;
 }
+
+static std::string ResolveTlsFilePath(const char* environmentName, const char* defaultName) {
+    const char* configured = std::getenv(environmentName);
+    if (configured == nullptr || *configured == '\0') {
+        return GetFilePath(defaultName);
+    }
+
+    const std::filesystem::path configuredPath(configured);
+    if (configuredPath.is_absolute()) {
+        return configuredPath.string();
+    }
+
+    const std::string executableDirectory = GetExecutableDirectory();
+    if (executableDirectory.empty()) {
+        return "";
+    }
+    return (std::filesystem::path(executableDirectory) / configuredPath).string();
+}
+
+static SSL_CTX* InitializeTlsServerContext() {
+    const std::string certificatePath =
+        ResolveTlsFilePath("OBLIVION_TLS_CERT_FILE", "server-cert.pem");
+    const std::string privateKeyPath =
+        ResolveTlsFilePath("OBLIVION_TLS_KEY_FILE", "server-key.pem");
+    if (certificatePath.empty() || privateKeyPath.empty()) {
+        std::cerr << "[FATAL] Cannot resolve TLS certificate/key paths; refusing plaintext startup." << std::endl;
+        return nullptr;
+    }
+
+    std::string error;
+    SSL_CTX* context = Oblivion::Tls::CreateServerContext(certificatePath, privateKeyPath, error);
+    if (context == nullptr) {
+        std::cerr << "[FATAL] TLS initialization failed: " << error << std::endl;
+        return nullptr;
+    }
+
+    const std::string pin = Oblivion::Tls::CertificateSha256Pin(
+        const_cast<X509*>(SSL_CTX_get0_certificate(context)));
+    if (pin.empty()) {
+        std::cerr << "[FATAL] Cannot calculate TLS certificate SHA-256 pin." << std::endl;
+        SSL_CTX_free(context);
+        return nullptr;
+    }
+    std::cout << "[TLS] TLS 1.2+ enabled; certificate SHA-256 pin: " << pin << std::endl;
+    return context;
+}
+
+static bool SetSocketNonBlocking(SocketType socket);
+
+static SSL* AcceptTlsConnection(SocketType clientSocket) {
+    if (!SetSocketNonBlocking(clientSocket)) {
+        std::cerr << "[TLS] Cannot set accepted socket nonblocking; closing connection." << std::endl;
+        return nullptr;
+    }
+
+    std::string error;
+    SSL* session = Oblivion::Tls::Accept(
+        g_tlsServerContext, static_cast<int>(clientSocket), error);
+    if (session == nullptr) {
+        std::cerr << "[TLS] Client TLS handshake rejected: " << error << std::endl;
+    }
+    return session;
+}
+
+class ActiveTlsSessionGuard {
+public:
+    explicit ActiveTlsSessionGuard(SSL* session)
+        : session_(session), previous_(g_activeTls) {
+        g_activeTls = session_;
+    }
+    ~ActiveTlsSessionGuard() {
+        g_activeTls = previous_;
+        if (session_ != nullptr) SSL_free(session_);
+    }
+    ActiveTlsSessionGuard(const ActiveTlsSessionGuard&) = delete;
+    ActiveTlsSessionGuard& operator=(const ActiveTlsSessionGuard&) = delete;
+private:
+    SSL* session_;
+    SSL* previous_;
+};
 
 std::string GetCurrentTimestamp() {
     auto now = std::time(nullptr);
@@ -838,16 +925,56 @@ void SleepHeartbeat(uint32_t milliseconds) {
 #endif
 }
 
+static bool WaitForTlsIo(SocketType socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
+    const int sslError = SSL_get_error(tls, sslResult);
+    if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE) return false;
+
+    fd_set readSet;
+    fd_set writeSet;
+    FD_ZERO(&readSet);
+    FD_ZERO(&writeSet);
+    if (sslError == SSL_ERROR_WANT_READ) FD_SET(socket, &readSet);
+    else FD_SET(socket, &writeSet);
+
+    struct timeval timeout{};
+    timeout.tv_sec = timeoutMs / 1000;
+    timeout.tv_usec = (timeoutMs % 1000) * 1000;
+#ifdef _WIN32
+    return select(0, &readSet, &writeSet, nullptr, &timeout) > 0;
+#else
+    return select(socket + 1, &readSet, &writeSet, nullptr, &timeout) > 0;
+#endif
+}
+
+static bool SetSocketNonBlocking(SocketType socket) {
+#ifdef _WIN32
+    u_long nonBlocking = 1;
+    return ioctlsocket(socket, FIONBIO, &nonBlocking) == 0;
+#else
+    const int flags = fcntl(socket, F_GETFL, 0);
+    return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
 bool SendAllBytes(SocketType socket, const std::string& payload) {
     size_t sent = 0;
     while (sent < payload.size()) {
         const size_t remaining = payload.size() - sent;
         const int chunk = static_cast<int>((std::min)(remaining, static_cast<size_t>(0x7fffffff)));
+        int result = 0;
+        if (g_activeTls != nullptr) {
+            result = SSL_write(g_activeTls, payload.data() + sent, chunk);
+        } else {
 #ifdef _WIN32
-        const int result = send(socket, payload.data() + sent, chunk, 0);
+            result = send(socket, payload.data() + sent, chunk, 0);
 #else
-        const ssize_t result = send(socket, payload.data() + sent, static_cast<size_t>(chunk), SEND_FLAGS);
+            result = static_cast<int>(send(socket, payload.data() + sent, static_cast<size_t>(chunk), SEND_FLAGS));
 #endif
+        }
+        if (g_activeTls != nullptr && result <= 0) {
+            if (WaitForTlsIo(socket, g_activeTls, result, 5000)) continue;
+            return false;
+        }
         if (result <= 0) return false;
         sent += static_cast<size_t>(result);
     }
@@ -867,18 +994,33 @@ bool ReceiveSemicolonFrame(SocketType socket, std::string& buffered, uint32_t ti
         struct timeval timeout{};
         timeout.tv_sec = remainingMs / 1000;
         timeout.tv_usec = (remainingMs % 1000) * 1000;
+        int ready = 1;
+        if (g_activeTls == nullptr || SSL_pending(g_activeTls) <= 0) {
 #ifdef _WIN32
-        const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
+            ready = select(0, &readSet, nullptr, nullptr, &timeout);
 #else
-        const int ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
+            ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
 #endif
-        if (ready <= 0) return false;
+            if (ready <= 0) return false;
+        }
         char chunk[512] = {};
+        int received = 0;
+        if (g_activeTls != nullptr) {
+            received = SSL_read(g_activeTls, chunk, static_cast<int>(sizeof(chunk)));
+        } else {
 #ifdef _WIN32
-        const int received = recv(socket, chunk, static_cast<int>(sizeof(chunk)), 0);
+            received = recv(socket, chunk, static_cast<int>(sizeof(chunk)), 0);
 #else
-        const ssize_t received = recv(socket, chunk, sizeof(chunk), 0);
+            received = static_cast<int>(recv(socket, chunk, sizeof(chunk), 0));
 #endif
+        }
+        if (g_activeTls != nullptr && received <= 0) {
+            const int sslError = SSL_get_error(g_activeTls, received);
+            if (sslError == SSL_ERROR_WANT_READ) continue;
+            if (sslError == SSL_ERROR_WANT_WRITE &&
+                WaitForTlsIo(socket, g_activeTls, received, remainingMs)) continue;
+            return false;
+        }
         if (received <= 0 || buffered.size() + static_cast<size_t>(received) > maxBytes) return false;
         buffered.append(chunk, static_cast<size_t>(received));
     }
@@ -926,6 +1068,13 @@ uint64_t GenerateSecureNonce() {
 void HandleClient(SocketType clientSocket) {
     ssize_t bytesReceived = 0;
     std::string extractedHwid = "UNKNOWN";
+
+    SSL* tlsSession = AcceptTlsConnection(clientSocket);
+    if (tlsSession == nullptr) {
+        closesocket_impl(clientSocket);
+        return;
+    }
+    ActiveTlsSessionGuard tlsGuard(tlsSession);
 
     try {
         // Use a single wall-clock deadline for the initial frame. A per-recv
@@ -1235,6 +1384,11 @@ int main() {
         return 1;
     }
 
+    g_tlsServerContext = InitializeTlsServerContext();
+    if (g_tlsServerContext == nullptr) {
+        return 1;
+    }
+
 #ifndef _WIN32
     // KRITIS: tanpa ini, send() ke socket yang sudah di-RST (pemain menutup client
     // secara kasar) membuat kernel mengirim SIGPIPE -> aksi default adalah MEMATIKAN
@@ -1360,8 +1514,7 @@ int main() {
         // accepts to exceed the configured worker limit under connection floods.
         if (!TryAcquireClientSlot()) {
             std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << kMaxConcurrentClients << "), koneksi baru ditolak" << std::endl;
-            const char* busyResponse = "ERROR:BUSY;";
-            SendAllBytes(ClientSocket, busyResponse);
+            // Do not emit a plaintext protocol response before TLS is established.
             closesocket_impl(ClientSocket);
             continue;
         }
