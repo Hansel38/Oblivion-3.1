@@ -43,6 +43,24 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertNotIn('std::string executableDir = "./";', source)
         self.assertNotIn('std::fopen("secret.dat", "rb")', source)
 
+    def test_client_has_no_implicit_localhost_endpoint(self) -> None:
+        reporter = (ROOT / "client" / "src" / "network_reporter.cpp").read_text(encoding="utf-8")
+        dllmain = (ROOT / "client" / "dllmain.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("fallbackHost", reporter)
+        self.assertNotIn("m_serverIP", reporter)
+        self.assertNotIn('"127.0.0.1"', dllmain)
+        self.assertIn("NetworkReporter(kClientSecret)", dllmain)
+
+    def test_checked_in_network_templates_do_not_contain_fake_values(self) -> None:
+        header = (ROOT / "client" / "include" / "production_network_config.generated.h").read_text(encoding="utf-8")
+        client_yaml = (ROOT / "client" / "oblivion.yaml.example").read_text(encoding="utf-8")
+        self.assertIn('#define OBLIVION_PRODUCTION_SERVER_ENDPOINTS ""', header)
+        self.assertIn('#define OBLIVION_PRODUCTION_TLS_PIN_SHA256 ""', header)
+        self.assertNotIn("PRODUCTION_ENDPOINTS_NOT_CONFIGURED", header)
+        self.assertNotIn('"PLACEHOLDER"', header)
+        self.assertIn("endpoints: []", client_yaml)
+        self.assertNotIn("your-domain.example", client_yaml)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)
