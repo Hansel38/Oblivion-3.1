@@ -4,6 +4,7 @@
 #include "../../common/windows_path_policy.h"
 #include "../../common/authenticode_verdict_policy.h"
 #include "../../common/module_trust_policy.h"
+#include "../include/unsigned_module_manifest.generated.h"
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
@@ -142,6 +143,98 @@ bool SameModuleFileStamp(const ModuleFileStamp& left, const ModuleFileStamp& rig
         left.fileIndexHigh == right.fileIndexHigh &&
         left.fileIndexLow == right.fileIndexLow &&
         left.changeTime == right.changeTime;
+}
+
+struct ModuleHashResources {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+
+    ~ModuleHashResources() {
+        if (hash != nullptr) BCryptDestroyHash(hash);
+        if (algorithm != nullptr) BCryptCloseAlgorithmProvider(algorithm, 0);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    }
+};
+
+std::string CalculateUnsignedModuleSha256(const std::wstring& filePath) {
+    ModuleHashResources resources;
+    resources.file = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
+    if (resources.file == INVALID_HANDLE_VALUE) {
+        return "";
+    }
+
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (!GetFileInformationByHandle(resources.file, &fileInfo) ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return "";
+    }
+
+    if (BCryptOpenAlgorithmProvider(
+            &resources.algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
+        return "";
+    }
+
+    DWORD objectLength = 0;
+    DWORD hashLength = 0;
+    DWORD bytesReturned = 0;
+    if (BCryptGetProperty(
+            resources.algorithm, BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength),
+            &bytesReturned, 0) < 0 ||
+        bytesReturned != sizeof(objectLength) || objectLength == 0) {
+        return "";
+    }
+    bytesReturned = 0;
+    if (BCryptGetProperty(
+            resources.algorithm, BCRYPT_HASH_LENGTH,
+            reinterpret_cast<PUCHAR>(&hashLength), sizeof(hashLength),
+            &bytesReturned, 0) < 0 ||
+        bytesReturned != sizeof(hashLength) || hashLength != 32) {
+        return "";
+    }
+
+    std::vector<BYTE> hashObject(objectLength);
+    std::vector<BYTE> digest(hashLength);
+    if (BCryptCreateHash(
+            resources.algorithm, &resources.hash, hashObject.data(),
+            objectLength, nullptr, 0, 0) < 0) {
+        return "";
+    }
+
+    BYTE buffer[64 * 1024];
+    for (;;) {
+        DWORD bytesRead = 0;
+        if (!ReadFile(resources.file, buffer, sizeof(buffer), &bytesRead, nullptr)) {
+            return "";
+        }
+        if (bytesRead == 0) {
+            break;
+        }
+        if (BCryptHashData(resources.hash, buffer, bytesRead, 0) < 0) {
+            return "";
+        }
+    }
+    if (BCryptFinishHash(resources.hash, digest.data(), hashLength, 0) < 0) {
+        return "";
+    }
+
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(digest.size() * 2);
+    for (BYTE byte : digest) {
+        result.push_back(kHex[(byte >> 4) & 0x0f]);
+        result.push_back(kHex[byte & 0x0f]);
+    }
+    return result;
 }
 
 using CatAcquireContext2Fn = BOOL (WINAPI*)(
@@ -781,7 +874,65 @@ namespace Oblivion {
 
         if (Oblivion::PathPolicy::CanTrustUnsignedModuleByName(
                 isAllowlistedName, filePath, gameDirectory)) {
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
+            // In a production build, the legacy filename allowlist is only a
+            // candidate set. Exact package hashes are mandatory to trust an
+            // unsigned DLL; changing a file in-place must invalidate this exemption.
+            if (!Oblivion::UnsignedModuleManifest::kReady) {
+                return ModuleTrustResult::Untrusted;
+            }
+
+            bool hasExpectedDigest = false;
+            for (size_t i = 0; i < Oblivion::UnsignedModuleManifest::kEntryCount; ++i) {
+                const auto& entry = Oblivion::UnsignedModuleManifest::kEntries[i];
+                if (_wcsicmp(entry.moduleName, moduleNameLower.c_str()) == 0 &&
+                    entry.sha256 != nullptr && strlen(entry.sha256) == 64) {
+                    hasExpectedDigest = true;
+                    break;
+                }
+            }
+            if (!hasExpectedDigest) {
+                return ModuleTrustResult::Untrusted;
+            }
+
+            ModuleFileStamp initialStamp;
+            const ModuleFileStampResult initialResult =
+                GetModuleFileStamp(filePath, initialStamp);
+            if (initialResult == ModuleFileStampResult::MissingOrInvalid) {
+                return ModuleTrustResult::Untrusted;
+            }
+            if (initialResult != ModuleFileStampResult::Success) {
+                return ModuleTrustResult::Inconclusive;
+            }
+            constexpr ULONGLONG kMaxUnsignedModuleHashBytes = 512ULL * 1024ULL * 1024ULL;
+            if (initialStamp.size > kMaxUnsignedModuleHashBytes) {
+                return ModuleTrustResult::Untrusted;
+            }
+
+            const std::string actualHash = CalculateUnsignedModuleSha256(filePath);
+            if (actualHash.empty()) {
+                return ModuleTrustResult::Inconclusive;
+            }
+            ModuleFileStamp finalStamp;
+            if (GetModuleFileStamp(filePath, finalStamp) != ModuleFileStampResult::Success ||
+                !SameModuleFileStamp(initialStamp, finalStamp)) {
+                return ModuleTrustResult::Inconclusive;
+            }
+
+            for (size_t i = 0; i < Oblivion::UnsignedModuleManifest::kEntryCount; ++i) {
+                const auto& entry = Oblivion::UnsignedModuleManifest::kEntries[i];
+                if (_wcsicmp(entry.moduleName, moduleNameLower.c_str()) == 0 &&
+                    entry.sha256 != nullptr &&
+                    _stricmp(entry.sha256, actualHash.c_str()) == 0) {
+                    return ModuleTrustResult::Trusted;
+                }
+            }
+            return ModuleTrustResult::Untrusted;
+#else
+            // Development builds retain legacy compatibility while the exact
+            // production package manifest is generated and reviewed.
             return ModuleTrustResult::Trusted;
+#endif
         }
 
         const std::wstring cacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);

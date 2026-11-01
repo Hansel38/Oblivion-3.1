@@ -24,6 +24,16 @@ int main() {
     Expect(!IsPathWithinDirectory(
         L"C:\\WindowsBackup\\Injected.dll", L"C:\\Windows"),
         "a sibling with a shared textual prefix is not a child directory");
+    Expect(!IsPathWithinDirectory(
+        L"C:\\Games\\Ragnarok\\..\\Injected.dll", L"C:\\Games\\Ragnarok"),
+        "parent-directory traversal cannot remain inside the game directory");
+    Expect(IsPathWithinDirectory(
+        L"C:\\Games\\Ragnarok\\plugins\\..\\client.dll", L"C:\\Games\\Ragnarok"),
+        "parent traversal that resolves within the game directory is normalized safely");
+    Expect(!IsPathWithinDirectory(
+        L"\\\\server\\share\\Ragnarok\\..\\outside.dll",
+        L"\\\\server\\share\\Ragnarok"),
+        "UNC paths are normalized without permitting escape from the target directory");
     Expect(IsPathWithinDirectory(
         L"c:/program files/Ragnarok/client.dll",
         L"C:\\Program Files\\Ragnarok\\"),
@@ -72,6 +82,16 @@ int main() {
         "an unresolved process path is not exempted");
     Expect(!ShouldWhitelistWindowsSystemProcess(false, true, true, true),
         "a valid Microsoft signature does not make an unrelated name a system process");
+
+    Expect(
+        Oblivion::PathPolicy::RelativePathWithinDirectory(
+            L"C:\\Games\\Ragnarok\\plugins\\client.dll", L"C:\\Games\\Ragnarok") ==
+            L"plugins\\client.dll",
+        "relative path is normalized before unsigned module manifest lookup");
+    Expect(
+        Oblivion::PathPolicy::RelativePathWithinDirectory(
+            L"C:\\Games\\RagnarokBackup\\client.dll", L"C:\\Games\\Ragnarok").empty(),
+        "relative path lookup rejects sibling directories");
 
     std::cout << "Windows path policy regression tests passed\n";
     return 0;
