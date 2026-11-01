@@ -53,8 +53,8 @@ namespace {
         std::vector<EndpointSpec> endpoints;
         int defaultPort = 54321;
         bool failClosed = false;
-        // true bila endpoint berasal dari konfigurasi yang bisa diubah pemain
-        // (oblivion.cfg / environment variable), bukan dari build yang di-pin admin.
+        // Indicates whether the entire trust policy came from local config. Release YAML
+        // may select an endpoint, but the certificate pin remains embedded in the DLL.
         bool endpointsFromLocalConfig = false;
         int connectTimeoutMs = 3000;
         int retryCount = 3;
