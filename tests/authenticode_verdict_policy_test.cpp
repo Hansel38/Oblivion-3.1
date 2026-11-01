@@ -53,6 +53,17 @@ int main() {
     Expect(!IsExactPublisherMatch(L"Not Microsoft Corporation", L"Microsoft Corporation"),
         "a publisher name with a trusted brand as a substring is rejected");
 
+
+    using Oblivion::SignaturePolicy::IsExpectedPublisherMatch;
+    Expect(IsExpectedPublisherMatch(L"Epic Games, Inc.", L"Epic Games"),
+        "a known full legal suffix is accepted for the expected publisher");
+    Expect(IsExpectedPublisherMatch(L"Electronic Arts Inc.", L"Electronic Arts"),
+        "a common legal suffix without a comma is accepted");
+    Expect(!IsExpectedPublisherMatch(L"Microsoft Corporation Fake", L"Microsoft Corporation"),
+        "arbitrary trailing publisher text is not accepted");
+    Expect(!IsExpectedPublisherMatch(L"Not Microsoft Corporation", L"Microsoft Corporation"),
+        "a trusted brand embedded in an unrelated publisher is rejected");
+
     std::cout << "Authenticode verdict policy tests passed\n";
     return 0;
 }

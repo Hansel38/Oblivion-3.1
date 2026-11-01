@@ -766,7 +766,7 @@ namespace {
             verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher ||
             verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher;
         const bool accepted = signatureVerified && !verifiedPublisher.empty() &&
-            Oblivion::SignaturePolicy::IsExactPublisherMatch(
+            Oblivion::SignaturePolicy::IsExpectedPublisherMatch(
                 verifiedPublisher, publisherEntry->second);
 
         if (!StoreTrustIfUnchanged(g_signatureCache, cacheKey, processPath, initialStamp, accepted)) {
