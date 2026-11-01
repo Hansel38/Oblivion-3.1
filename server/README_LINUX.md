@@ -216,7 +216,7 @@ Configure the client to pin the SHA-256 fingerprint shown by the server / calcul
 
 In the local development-only `oblivion.cfg`, set `server=` entries to actual endpoint values. Do not commit deployment-specific endpoints or TLS pin values.
 
-Alternatively set **OBLIVION_TLS_PIN_SHA256**. It overrides the file setting. Multiple SHA-256 leaf pins may be listed, separated by comma, semicolon, or whitespace, to permit certificate rotation. Each pin must be exactly 64 hex characters; an invalid or missing pin prevents a production client from connecting.
+In Debug/development builds, **OBLIVION_TLS_PIN_SHA256** can override the local pin setting. Release ignores file/environment pin values and always uses the generated, compiled trust policy. Multiple SHA-256 leaf pins may be listed, separated by comma, semicolon, or whitespace, to permit certificate rotation. Each pin must be exactly 64 hex characters; an invalid or missing pin prevents a production client from connecting.
 
 The server accepts these optional variables to select certificate and key files:
 - **OBLIVION_TLS_CERT_FILE**
@@ -456,6 +456,8 @@ EnvironmentFile=/etc/oblivion/oblivion.env
 [Install]
 WantedBy=multi-user.target
 ```
+
+Create **/etc/oblivion/oblivion.env** with the generated **OBLIVION_SECRET** value and restrict it to the service administrator (for example, owner **root**, mode **0600**). Do not put the secret value in this unit file or in YAML.
 
 Then:
 ```bash

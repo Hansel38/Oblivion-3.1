@@ -80,7 +80,6 @@
     #define SEND_FLAGS 0
 #endif
 
-#define DEFAULT_PORT "54321"
 #define BUFFER_LEN 8192
 #define MAX_TYPE_LEN 64
 #define MAX_DETAILS_LEN 2048
