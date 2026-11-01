@@ -423,7 +423,7 @@ def run_integration(server_binary: Path) -> None:
             verify_tls_handshake_deadline()
             verify_malformed_request_does_not_log_secret(server_binary)
             verify_short_hwid_is_rejected()
-            verify_initial_handshake_deadline()
+            verify_tls_handshake_deadline()
             verify_missing_ban_list_is_rejected(ban_list_path)
             verify_violation_ack(server_binary)
 
