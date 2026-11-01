@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "advanced_process_heuristics.h"
+#include "win_path_utils.h"
 #include "digital_signature_validator.h"
 #include <tlhelp32.h>
 #include <vector>
@@ -511,14 +512,7 @@ namespace {
             return L"";
         }
 
-        wchar_t processPath[MAX_PATH] = { 0 };
-        DWORD size = MAX_PATH;
-        std::wstring result;
-
-        if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
-            result = processPath;
-        }
-
+        std::wstring result = Oblivion::WinPath::GetProcessImagePath(hProcess);
         CloseHandle(hProcess);
         return result;
     }
@@ -731,19 +725,14 @@ namespace {
             return L"";
         }
 
-        wchar_t processName[MAX_PATH] = { 0 };
-        DWORD size = MAX_PATH;
         std::wstring result;
-
-        if (QueryFullProcessImageNameW(hProcess, 0, processName, &size)) {
-            // Extract filename from full path
-            std::wstring fullPath(processName);
-            size_t lastSlash = fullPath.find_last_of(L"\\/");
-            if (lastSlash != std::wstring::npos) {
-                result = fullPath.substr(lastSlash + 1);
-            } else {
-                result = fullPath;
-            }
+        const std::wstring fullPath = Oblivion::WinPath::GetProcessImagePath(hProcess);
+        if (!fullPath.empty()) {
+            // Extract filename from the complete process image path.
+            const size_t lastSlash = fullPath.find_last_of(L"\\/");
+            result = lastSlash != std::wstring::npos
+                ? fullPath.substr(lastSlash + 1)
+                : fullPath;
         }
 
         CloseHandle(hProcess);
