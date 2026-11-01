@@ -47,6 +47,34 @@ extern void ReportViolationSoft(const std::string& type, const std::string& deta
 #error Production builds must enable OBLIVION_ENFORCE_FILE_INTEGRITY=1
 #endif
 
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
+// Do not even emit a production DLL if the build still embeds placeholder or
+// malformed manifest values. The release preflight later compares these hashes
+// against the exact package, but compile-time validation prevents an easy mistake.
+constexpr bool IsSha256HexLiteral(const char* value) noexcept {
+    if (value == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i) {
+        const char c = value[i];
+        const bool decimal = c >= '0' && c <= '9';
+        const bool lowerHex = c >= 'a' && c <= 'f';
+        const bool upperHex = c >= 'A' && c <= 'F';
+        if (!decimal && !lowerHex && !upperHex) {
+            return false;
+        }
+    }
+    return value[64] == '\\0';
+}
+
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_RRO_EXE),
+    "Production manifest RRO.exe SHA-256 must contain exactly 64 hex characters");
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_EN_GRF),
+    "Production manifest en.grf SHA-256 must contain exactly 64 hex characters");
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI),
+    "Production manifest DATA.ini SHA-256 must contain exactly 64 hex characters");
+#endif
+
 #ifndef OBLIVION_MAX_HASH_FILE_SIZE_BYTES
 #define OBLIVION_MAX_HASH_FILE_SIZE_BYTES (512ULL * 1024ULL * 1024ULL)
 #endif
