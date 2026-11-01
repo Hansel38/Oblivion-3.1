@@ -32,7 +32,8 @@ namespace Oblivion {
             TrustedPublisher,    // Signature valid dan publisher ada di daftar tepercaya
             UntrustedPublisher,  // Signature valid tetapi publisher di luar daftar tepercaya
             Unsigned,            // File tidak memiliki signature Authenticode
-            VerificationError    // File bertanda tangan tetapi tidak dapat diverifikasi
+            InvalidSignature,    // Signature terbukti gagal integritas/trust policy
+            VerificationError    // Status tidak konklusif (misalnya trust-chain infrastructure)
         };
 
         // Verifikasi signature file dan kategorikan hasilnya (tri-state).
@@ -56,7 +57,7 @@ namespace Oblivion {
         bool GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName);
 
         // Fungsi helper untuk verifikasi signature file
-        static bool VerifyFileSignature(const std::wstring& filePath);
+        static LONG VerifyFileSignatureStatus(const std::wstring& filePath);
 
         // Daftar penerbit yang dipercaya
         static const std::vector<std::wstring> m_trustedPublishers;
