@@ -120,7 +120,7 @@ def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
     sock.settimeout(3)
     log_path = server_binary.parent / "violations.log"
     previous_log = log_path.read_bytes() if log_path.exists() else b""
-    secret_marker = "MALFORMED_SECRET_SENTINEL_7D4A91C2"
+    secret_marker = "SECRET_LEAK_SENTINEL_91C2"
     try:
         # A malformed TYPE forces the parser error path; the SECRET field must
         # not be copied into the server's persistent violation log.
