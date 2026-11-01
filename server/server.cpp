@@ -100,9 +100,12 @@ static std::string ReadEnvironmentValue(const char* name) {
 }
 
 static std::string ResolveTlsFilePath(const char* environmentName, const char* defaultName) {
-    const std::string configured = ReadEnvironmentValue(environmentName);
+    std::string configured = ReadEnvironmentValue(environmentName);
+    if (configured.empty() && defaultName != nullptr) {
+        configured = defaultName;
+    }
     if (configured.empty()) {
-        return GetFilePath(defaultName);
+        return "";
     }
 
     const std::filesystem::path configuredPath(configured);
