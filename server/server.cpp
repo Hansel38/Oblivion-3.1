@@ -79,9 +79,26 @@ std::string GetFilePath(const std::string& filename) {
     return exeDir + filename;
 }
 
+static std::string ReadEnvironmentValue(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        if (value != nullptr) free(value);
+        return "";
+    }
+    std::string result(value, length > 0 && value[length - 1] == '\0' ? length - 1 : length);
+    free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? "" : std::string(value);
+#endif
+}
+
 static std::string ResolveTlsFilePath(const char* environmentName, const char* defaultName) {
-    const char* configured = std::getenv(environmentName);
-    if (configured == nullptr || *configured == '\0') {
+    const std::string configured = ReadEnvironmentValue(environmentName);
+    if (configured.empty()) {
         return GetFilePath(defaultName);
     }
 
