@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "memory_scanner.h"
+#include "win_path_utils.h"
 #include <tlhelp32.h>
 #include <iostream>
 #include <iomanip>
@@ -1020,9 +1021,9 @@ namespace Oblivion {
     void MemoryScanner::PerformScan() {
         // === PHASE 1: Baseline Creation (ONCE, at first scan) ===
         if (!m_baselineCreated) {
-            wchar_t exePath[MAX_PATH];
-            if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
-                std::string details = "Failed to get executable path";
+            const std::wstring exePath = Oblivion::WinPath::GetModulePath(nullptr);
+            if (exePath.empty()) {
+                std::string details = "Failed to resolve the complete executable path";
                 LogScannerIssue("PATH_RETRIEVAL_FAILED", details);
                 return;
             }
