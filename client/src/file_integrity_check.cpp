@@ -47,6 +47,34 @@ extern void ReportViolationSoft(const std::string& type, const std::string& deta
 #error Production builds must enable OBLIVION_ENFORCE_FILE_INTEGRITY=1
 #endif
 
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
+// Do not even emit a production DLL if the build still embeds placeholder or
+// malformed manifest values. The release preflight later compares these hashes
+// against the exact package, but compile-time validation prevents an easy mistake.
+constexpr bool IsSha256HexLiteral(const char* value) noexcept {
+    if (value == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i) {
+        const char c = value[i];
+        const bool decimal = c >= '0' && c <= '9';
+        const bool lowerHex = c >= 'a' && c <= 'f';
+        const bool upperHex = c >= 'A' && c <= 'F';
+        if (!decimal && !lowerHex && !upperHex) {
+            return false;
+        }
+    }
+    return value[64] == '\0';
+}
+
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_RRO_EXE),
+    "Production manifest RRO.exe SHA-256 must contain exactly 64 hex characters");
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_EN_GRF),
+    "Production manifest en.grf SHA-256 must contain exactly 64 hex characters");
+static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI),
+    "Production manifest DATA.ini SHA-256 must contain exactly 64 hex characters");
+#endif
+
 #ifndef OBLIVION_MAX_HASH_FILE_SIZE_BYTES
 #define OBLIVION_MAX_HASH_FILE_SIZE_BYTES (512ULL * 1024ULL * 1024ULL)
 #endif
@@ -325,12 +353,35 @@ namespace Oblivion {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, // Penting: allow sharing untuk file yang sedang dieksekusi
             NULL,
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, // Optimize untuk sequential read
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, // Open the final path component itself so reparse-point targets can be rejected
             NULL
         );
         
         if (hFile == INVALID_HANDLE_VALUE) {
             return ""; // File tidak bisa dibuka
+        }
+
+        // Snapshot the opened file identity and mutation metadata before hashing.
+        // FILE_SHARE_WRITE/DELETE is retained for compatibility with patchers/AV,
+        // so the read must prove the file stayed stable throughout the operation.
+        BY_HANDLE_FILE_INFORMATION initialFileInfo{};
+        FILE_BASIC_INFO initialBasicInfo{};
+        if (!GetFileInformationByHandle(hFile, &initialFileInfo) ||
+            !GetFileInformationByHandleEx(
+                hFile, FileBasicInfo, &initialBasicInfo, sizeof(initialBasicInfo)) ||
+            (initialFileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+            (initialFileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            CloseHandle(hFile);
+            return "";
+        }
+
+        const unsigned long long initialFileSize =
+            (static_cast<unsigned long long>(initialFileInfo.nFileSizeHigh) << 32) |
+            initialFileInfo.nFileSizeLow;
+        if (initialFileSize > kMaxHashFileSizeBytes) {
+            CloseHandle(hFile);
+            SetLastError(ERROR_FILE_TOO_LARGE);
+            return "";
         }
 
         BCRYPT_ALG_HANDLE hAlg = NULL;
@@ -399,6 +450,7 @@ namespace Oblivion {
         DWORD bytesRead = 0;
         bool readFailed = false;
         DWORD readError = ERROR_SUCCESS;
+        unsigned long long totalBytesHashed = 0;
         for (;;) {
             if (!ReadFile(hFile, buffer, BUFFER_SIZE, &bytesRead, NULL)) {
                 readError = GetLastError();
@@ -411,6 +463,18 @@ namespace Oblivion {
             if (bytesRead == 0) {
                 break; // EOF normal
             }
+
+            // Enforce the byte cap during the read too; the path's size may have
+            // changed after PerformCheck inspected it but before/during this loop.
+            if (totalBytesHashed > kMaxHashFileSizeBytes ||
+                static_cast<unsigned long long>(bytesRead) >
+                    kMaxHashFileSizeBytes - totalBytesHashed) {
+                readFailed = true;
+                readError = ERROR_FILE_TOO_LARGE;
+                break;
+            }
+            totalBytesHashed += bytesRead;
+
             status = BCryptHashData(hHash, buffer, bytesRead, 0);
             if (!BCRYPT_SUCCESS(status)) { 
                 BCryptDestroyHash(hHash);
@@ -425,6 +489,37 @@ namespace Oblivion {
         // Periksa error dari ReadFile (bukan EOF)
         if (readFailed) {
             std::cerr << "[FileIntegrity] Gagal membaca file (kode " << readError << ")" << std::endl;
+            BCryptDestroyHash(hHash);
+            HeapFree(GetProcessHeap(), 0, pbHashObject);
+            HeapFree(GetProcessHeap(), 0, pbHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            CloseHandle(hFile);
+            return "";
+        }
+
+        // A file could be modified while ReadFile was running because sharing is
+        // allowed for compatibility. Refuse a hash if identity, length, last-write,
+        // or NTFS ChangeTime changed during the operation. ChangeTime also catches
+        // ordinary writes that restore the visible last-write timestamp.
+        BY_HANDLE_FILE_INFORMATION finalFileInfo{};
+        FILE_BASIC_INFO finalBasicInfo{};
+        const bool metadataReadable =
+            GetFileInformationByHandle(hFile, &finalFileInfo) != FALSE &&
+            GetFileInformationByHandleEx(
+                hFile, FileBasicInfo, &finalBasicInfo, sizeof(finalBasicInfo)) != FALSE;
+        const bool fileStable = metadataReadable &&
+            totalBytesHashed == initialFileSize &&
+            initialFileInfo.dwVolumeSerialNumber == finalFileInfo.dwVolumeSerialNumber &&
+            initialFileInfo.nFileIndexHigh == finalFileInfo.nFileIndexHigh &&
+            initialFileInfo.nFileIndexLow == finalFileInfo.nFileIndexLow &&
+            initialFileInfo.nFileSizeHigh == finalFileInfo.nFileSizeHigh &&
+            initialFileInfo.nFileSizeLow == finalFileInfo.nFileSizeLow &&
+            CompareFileTime(
+                &initialFileInfo.ftLastWriteTime, &finalFileInfo.ftLastWriteTime) == 0 &&
+            initialBasicInfo.ChangeTime.QuadPart == finalBasicInfo.ChangeTime.QuadPart;
+
+        if (!fileStable) {
+            std::cerr << "[FileIntegrity] File changed during SHA-256 verification; refusing the unstable result" << std::endl;
             BCryptDestroyHash(hHash);
             HeapFree(GetProcessHeap(), 0, pbHashObject);
             HeapFree(GetProcessHeap(), 0, pbHash);

@@ -17,6 +17,7 @@ from production_network_config import (  # noqa: E402
     parse_pin_list,
     read_network_config,
     render_header,
+    validate_deployable_endpoints,
 )
 
 PIN_A = "a" * 64
@@ -80,7 +81,7 @@ class ProductionNetworkConfigTests(unittest.TestCase):
                 read_network_config(path)
 
     def test_rendered_header_round_trips_through_reader(self) -> None:
-        endpoints = parse_endpoint_list("shield.example.test:54321,192.0.2.8:54321")
+        endpoints = parse_endpoint_list("192.168.56.20:54321,192.168.56.21:54321")
         pins = parse_pin_list(f"{PIN_A},{PIN_B}")
         header = render_header(endpoints, pins)
         with tempfile.TemporaryDirectory(prefix="oblivion-network-policy-") as directory:
@@ -89,9 +90,44 @@ class ProductionNetworkConfigTests(unittest.TestCase):
             parsed = read_network_config(path)
         self.assertEqual(
             [entry["spec"] for entry in parsed["endpoints"]],
-            ["shield.example.test:54321", "192.0.2.8:54321"],
+            ["192.168.56.20:54321", "192.168.56.21:54321"],
         )
         self.assertEqual(parsed["pins"], [PIN_A, PIN_B])
+
+    def test_reserved_test_endpoints_are_rejected_for_production(self) -> None:
+        for endpoint in (
+            "ci.invalid:54321",
+            "shield.example.test:54321",
+            "localhost:54321",
+            "127.0.0.1:54321",
+            "0.0.0.0:54321",
+            "192.0.2.10:54321",
+            "198.51.100.7:54321",
+            "203.0.113.19:54321",
+            "[2001:db8::17]:54321",
+        ):
+            with self.subTest(endpoint=endpoint):
+                parsed = parse_endpoint_list(endpoint)
+                with self.assertRaises(NetworkConfigError):
+                    validate_deployable_endpoints(parsed)
+
+    def test_reserved_test_endpoints_require_explicit_ci_override(self) -> None:
+        for endpoint in ("ci.invalid:54321", "192.0.2.10:54321", "[2001:db8::17]:54321"):
+            validate_deployable_endpoints(
+                parse_endpoint_list(endpoint),
+                allow_test_endpoints=True,
+            )
+
+    def test_network_config_reader_rejects_reserved_endpoint(self) -> None:
+        header = render_header(
+            [{"host": "ci.invalid", "port": 54321, "spec": "ci.invalid:54321"}],
+            [PIN_A],
+        )
+        with tempfile.TemporaryDirectory(prefix="oblivion-network-policy-") as directory:
+            path = Path(directory) / "network.h"
+            path.write_text(header, encoding="ascii")
+            with self.assertRaisesRegex(NetworkConfigError, "reserved/test hostname"):
+                read_network_config(path)
 
     def test_reader_rejects_malformed_endpoint_or_pin_macros(self) -> None:
         bad_endpoint = render_header(
