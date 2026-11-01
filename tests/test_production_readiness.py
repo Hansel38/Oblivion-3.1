@@ -77,14 +77,14 @@ class ProductionReadinessTests(unittest.TestCase):
             "_stricmp(entry.sha256, actualHash.c_str()) == 0 "
             "CanTrustUnsignedModuleByName UnsignedModuleManifest::kReady "
             "CalculateUnsignedModuleSha256 "
-            'm_allowedUnsignedDlls = { L"client.dll", L"granny2.dll" };\\n',
+            'm_allowedUnsignedDlls = { L"client.dll", L"granny2.dll" };\n',
             encoding="utf-8",
         )
         self.unsigned_module_manifest.write_text(
-            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\\n"
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\n"
             "namespace Oblivion::UnsignedModuleManifest { "
             "inline constexpr Entry kEntries[] = {{L\"__none__\", \"PLACEHOLDER\"}}; "
-            "inline constexpr std::size_t kEntryCount = 0; }\\n",
+            "inline constexpr std::size_t kEntryCount = 0; }\n",
             encoding="utf-8",
         )
 
@@ -225,7 +225,7 @@ class ProductionReadinessTests(unittest.TestCase):
             "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\\n"
             "namespace Oblivion::UnsignedModuleManifest { "
             "inline constexpr Entry kEntries[] = {{L\\"client.dll\\", \\"0000000000000000000000000000000000000000000000000000000000000000\\"}}; "
-            "inline constexpr std::size_t kEntryCount = 1; }\\n",
+            "inline constexpr std::size_t kEntryCount = 1; }\n",
             encoding="utf-8",
         )
         result = self.run_checker()
@@ -234,7 +234,7 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_rejects_unsigned_module_manifest_not_ready(self) -> None:
         self.unsigned_module_manifest.write_text(
-            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 0\\n",
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 0\n",
             encoding="utf-8",
         )
         result = self.run_checker()

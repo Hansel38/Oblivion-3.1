@@ -333,8 +333,9 @@ cleanup:
 }
 
 // Verify catalog-based signatures for Windows modules that do not embed an
-// Authenticode signature in the PE image. The catalog APIs are resolved from
-// Wintrust.dll dynamically; SHA-256 is preferred, with legacy SHA-1 as fallback.
+// Authenticode signature in the PE image. Production requires SHA-256 catalog
+// APIs; if they are unavailable, verification stays inconclusive rather than
+// silently downgrading to legacy SHA-1 catalog hashing.
 LONG VerifyCatalogSignatureStatus(
     const std::wstring& filePath,
     std::wstring& publisherName) {
@@ -512,6 +513,7 @@ LONG VerifyCatalogSignatureStatus(
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 
