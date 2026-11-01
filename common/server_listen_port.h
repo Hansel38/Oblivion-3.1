@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <limits>
 #include <string>
 
 namespace Oblivion {
@@ -58,6 +60,22 @@ inline bool ResolveListenPort(
     }
 
     normalizedPort = std::to_string(port);
+    return true;
+}
+
+inline bool ParseUint32Decimal(const std::string& text, std::uint32_t& parsedValue, std::string& error) {
+    parsedValue = 0;
+    error.clear();
+    if (text.empty()) { error = "value must not be empty"; return false; }
+    std::uint32_t value = 0;
+    const std::uint32_t maximum = (std::numeric_limits<std::uint32_t>::max)();
+    for (unsigned char ch : text) {
+        if (ch < '0' || ch > '9') { error = "value must contain decimal digits only"; return false; }
+        const std::uint32_t digit = static_cast<std::uint32_t>(ch - '0');
+        if (value > (maximum - digit) / 10U) { error = "value exceeds the unsigned 32-bit range"; return false; }
+        value = value * 10U + digit;
+    }
+    parsedValue = value;
     return true;
 }
 

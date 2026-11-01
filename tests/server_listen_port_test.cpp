@@ -1,5 +1,6 @@
 #include "../common/server_listen_port.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -48,6 +49,17 @@ int main() {
     Expect(!Oblivion::ServerConfig::ResolveListenPort(
         nullptr, nullptr, port, error) && !error.empty(),
         "missing default port is rejected");
+
+    std::uint32_t parsedValue = 0;
+    error.clear();
+    Expect(Oblivion::ServerConfig::ParseUint32Decimal("4294967295", parsedValue, error) &&
+           parsedValue == 4294967295U, "maximum unsigned 32-bit value is parsed without truncation");
+    for (const std::string invalid : {"", "-1", "+1", "2500ms", " 2500", "2500 ", "4294967296"}) {
+        parsedValue = 7;
+        error.clear();
+        Expect(!Oblivion::ServerConfig::ParseUint32Decimal(invalid, parsedValue, error) &&
+               parsedValue == 0 && !error.empty(), "malformed or overflowing unsigned values are rejected");
+    }
 
     std::cout << "Server listen-port configuration tests passed\n";
     return 0;

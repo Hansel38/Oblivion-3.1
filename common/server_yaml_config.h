@@ -35,6 +35,18 @@ struct ServerSettings {
     std::string tlsPrivateKeyFile = "server-key.pem";
     HeartbeatSettings heartbeat;
 };
+inline bool ValidateHeartbeatSettings(std::uint32_t intervalMs, std::uint32_t jitterMs,
+                                      std::uint32_t timeoutMs, std::uint32_t maxConsecutiveMisses,
+                                      std::uint32_t rttWarnMs, std::string& error) {
+    error.clear();
+    if (intervalMs < 250 || intervalMs > 60000) { error = "heartbeat.interval_ms must be in the range 250..60000"; return false; }
+    if (jitterMs >= intervalMs || jitterMs > 30000) { error = "heartbeat.jitter_ms must be smaller than interval_ms and at most 30000"; return false; }
+    if (timeoutMs < 250 || timeoutMs > 60000) { error = "heartbeat.timeout_ms must be in the range 250..60000"; return false; }
+    if (maxConsecutiveMisses < 1 || maxConsecutiveMisses > 10) { error = "heartbeat.max_consecutive_misses must be in the range 1..10"; return false; }
+    if (rttWarnMs > 60000) { error = "heartbeat.rtt_warn_ms must be in the range 0..60000"; return false; }
+    return true;
+}
+
 
 namespace Detail {
 
@@ -279,24 +291,8 @@ inline bool ParseServerYaml(
         }
 
         const auto& hb = settings.heartbeat;
-        if (hb.intervalMs < 250 || hb.intervalMs > 60000) {
-            error = "heartbeat.interval_ms must be in the range 250..60000";
-            return false;
-        }
-        if (hb.jitterMs >= hb.intervalMs || hb.jitterMs > 30000) {
-            error = "heartbeat.jitter_ms must be smaller than interval_ms and at most 30000";
-            return false;
-        }
-        if (hb.timeoutMs < 250 || hb.timeoutMs > 60000) {
-            error = "heartbeat.timeout_ms must be in the range 250..60000";
-            return false;
-        }
-        if (hb.maxConsecutiveMisses < 1 || hb.maxConsecutiveMisses > 10) {
-            error = "heartbeat.max_consecutive_misses must be in the range 1..10";
-            return false;
-        }
-        if (hb.rttWarnMs > 60000) {
-            error = "heartbeat.rtt_warn_ms must be in the range 0..60000";
+        if (!ValidateHeartbeatSettings(hb.intervalMs, hb.jitterMs, hb.timeoutMs,
+                                       hb.maxConsecutiveMisses, hb.rttWarnMs, error)) {
             return false;
         }
     } catch (const YAML::Exception& exception) {
