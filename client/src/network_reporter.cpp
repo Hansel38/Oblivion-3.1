@@ -406,14 +406,17 @@ namespace {
 
         // Pin override is deliberately strict. An oversized override becomes an
         // invalid setting so it cannot silently fall back to a weaker value.
-        char tlsPinEnv[4096] = {};
-        const DWORD tlsPinLength =
-            GetEnvironmentVariableA("OBLIVION_TLS_PIN_SHA256", tlsPinEnv, sizeof(tlsPinEnv));
-        if (tlsPinLength > 0) {
-            if (tlsPinLength < sizeof(tlsPinEnv)) {
-                cfg.tlsPinSpec.assign(tlsPinEnv, tlsPinLength);
-            } else {
+        const DWORD tlsPinRequiredChars =
+            GetEnvironmentVariableA("OBLIVION_TLS_PIN_SHA256", nullptr, 0);
+        if (tlsPinRequiredChars > 0) {
+            std::vector<char> tlsPinBuffer(
+                static_cast<size_t>(tlsPinRequiredChars), '\\0');
+            const DWORD tlsPinLength = GetEnvironmentVariableA(
+                "OBLIVION_TLS_PIN_SHA256", tlsPinBuffer.data(), tlsPinRequiredChars);
+            if (tlsPinLength == 0 || tlsPinLength >= tlsPinRequiredChars) {
                 cfg.tlsPinSettingInvalid = true;
+            } else {
+                cfg.tlsPinSpec.assign(tlsPinBuffer.data(), tlsPinLength);
             }
         }
 
@@ -668,7 +671,7 @@ namespace Oblivion {
 
         if (cfg.tlsPinSettingInvalid) {
             m_tlsPins.clear();
-            m_tlsPinError = "TLS certificate pin environment value exceeds the supported buffer limit";
+            m_tlsPinError = "could not read the complete TLS certificate pin environment value";
         } else if (!Oblivion::Tls::ParseSha256PinList(cfg.tlsPinSpec, m_tlsPins, m_tlsPinError)) {
             m_tlsPins.clear();
         } else {
