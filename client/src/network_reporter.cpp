@@ -2,6 +2,7 @@
 #include "network_reporter.h"
 #include "heartbeat_protocol.h"
 #include "../../common/heartbeat_auth.h"
+#include "../../common/client_yaml_config.h"
 #include "hwid_generator.h"
 #include "win_path_utils.h"
 #include "../../common/tls_transport.h"
@@ -28,24 +29,15 @@
 #endif
 
 // ============================================================================
-//  KONFIGURASI ENDPOINT SERVER
+//  CLIENT CONFIGURATION
 //
-//  Client harus bisa tersambung ke server Oblivion di VPS tanpa perlu recompile,
-//  apa pun konfigurasi server game-nya (lokal / rAthena). Prioritas (atas menang):
+//  Runtime settings are loaded from "oblivion.yaml" beside the game executable.
+//  The endpoint may be changed there for easier deployment, but Release clients
+//  always use the certificate pin embedded in the generated production header.
+//  Old oblivion.cfg and environment values are retained for development builds.
 //
-//   1. Environment variable
-//        OBLIVION_SERVER / OBLIVION_SERVERS = "host:port,host2:port2"
-//        OBLIVION_PORT                      = port default bila spec tanpa port
-//        OBLIVION_FAIL_MODE                 = open | closed
-//        OBLIVION_CONNECT_TIMEOUT_MS, OBLIVION_RETRY_COUNT, OBLIVION_HANDSHAKE_TIMEOUT_MS
-//
-//   2. File "oblivion.cfg" di folder executable (key=value, '#' = komentar), contoh:
-//        server=oblivion.example.com:54321
-//        server=103.150.1.10:54321
-//        port=54321
-//        fail_mode=open
-//
-//   3. Default di kode (parameter konstruktor), saat ini 127.0.0.1:54321 (dev)
+//  Production trust remains anchored to the compiled leaf-certificate pin and
+//  strict hostname/IP SAN validation; YAML cannot override the Release pin.
 // ============================================================================
 namespace {
     struct EndpointSpec {
@@ -246,7 +238,69 @@ namespace {
         NetworkConfiguration cfg;
         cfg.defaultPort = fallbackPort;
 
-        // ---- 1) File oblivion.cfg (dua pass supaya urutan baris tidak penting) ----
+        // Parse the runtime YAML beside the game executable. The YAML file is
+        // optional for backward compatibility, but a present invalid file is
+        // reported explicitly. Release fallback remains the compiled endpoint
+        // and, critically, the compiled certificate pin.
+        const std::wstring executableDirectory = GetExecutableDirectory();
+        bool yamlConfigPresent = false;
+        bool yamlEndpointsConfigured = false;
+        std::vector<EndpointSpec> yamlEndpoints;
+        std::ifstream yamlConfigFile;
+        const std::wstring yamlConfigPath =
+            executableDirectory.empty() ? std::wstring() : executableDirectory + L"oblivion.yaml";
+        if (!yamlConfigPath.empty()) {
+            yamlConfigFile.open(yamlConfigPath);
+        }
+        if (yamlConfigFile.is_open()) {
+            yamlConfigPresent = true;
+            Oblivion::Config::ClientSettings yamlSettings;
+            std::string yamlError;
+            if (Oblivion::Config::ParseClientYaml(yamlConfigFile, yamlSettings, yamlError)) {
+                cfg.defaultPort = yamlSettings.defaultPort;
+                cfg.endpoints.clear();
+                bool everyEndpointValid = true;
+                for (const std::string& endpoint : yamlSettings.endpoints) {
+                    const size_t endpointCountBefore = cfg.endpoints.size();
+                    AppendEndpointList(cfg, endpoint);
+                    if (cfg.endpoints.size() == endpointCountBefore) {
+                        everyEndpointValid = false;
+                        yamlError = "invalid server endpoint: " + endpoint;
+                        break;
+                    }
+                }
+                if (everyEndpointValid) {
+                    yamlEndpoints = cfg.endpoints;
+                    yamlEndpointsConfigured = !yamlEndpoints.empty();
+                    cfg.connectTimeoutMs = yamlSettings.connectTimeoutMs;
+                    cfg.retryCount = yamlSettings.retryCount;
+                    cfg.handshakeTimeoutMs = yamlSettings.handshakeTimeoutMs;
+                    cfg.failClosed = yamlSettings.failClosed;
+                    if (!yamlSettings.tlsPinSha256.empty()) {
+                        cfg.tlsPinSpec = yamlSettings.tlsPinSha256;
+                    }
+                    std::cout << "[CONFIG] Loaded oblivion.yaml" << std::endl;
+                } else {
+                    cfg.endpoints.clear();
+                    std::cerr << "[CONFIG] Invalid oblivion.yaml endpoint; "
+                                 "Release will use the compiled endpoint and certificate pin: "
+                              << yamlError << std::endl;
+                }
+            } else {
+                std::cerr << "[CONFIG] Invalid oblivion.yaml; "
+                             "Release will use the compiled endpoint and certificate pin: "
+                          << yamlError << std::endl;
+            }
+        } else if (!yamlConfigPath.empty() &&
+                   GetFileAttributesW(yamlConfigPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            yamlConfigPresent = true;
+            std::cerr << "[CONFIG] oblivion.yaml exists but cannot be opened; "
+                         "Release will use the compiled endpoint and certificate pin." << std::endl;
+        }
+
+        // Legacy INI is read only when no YAML file exists.
+        if (!yamlConfigPresent) {
+        // ---- 1) Legacy oblivion.cfg (two passes so entry order does not matter) ----
         std::vector<std::pair<std::string, std::string>> fileEntries;
         const std::wstring executableDirectory = GetExecutableDirectory();
         std::ifstream configFile;
@@ -306,7 +360,9 @@ namespace {
             }
         }
 
-        // ---- 2) Environment variable (menimpa file config) ----
+        }
+
+        // ---- 2) Environment variables override YAML/legacy INI in development builds ----
         cfg.defaultPort = ReadEnvInt("OBLIVION_PORT", cfg.defaultPort);
 
         char envSpec[2048] = {0};
@@ -353,11 +409,15 @@ namespace {
         if (cfg.handshakeTimeoutMs > 30000) cfg.handshakeTimeoutMs = 30000;
 
 #if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
-        // Release builds trust only the generated, reviewed endpoint/pin policy.
-        // Editable oblivion.cfg and environment variables remain available to
-        // development builds, but cannot redirect production check-in to another server.
-        cfg.endpoints.clear();
-        AppendEndpointList(cfg, OBLIVION_PRODUCTION_SERVER_ENDPOINTS);
+        // YAML may select a deployment endpoint for operational convenience,
+        // but it cannot replace the certificate pin or bypass SAN validation.
+        // This preserves trust in the compiled leaf-certificate identity.
+        if (yamlEndpointsConfigured) {
+            cfg.endpoints = yamlEndpoints;
+        } else {
+            cfg.endpoints.clear();
+            AppendEndpointList(cfg, OBLIVION_PRODUCTION_SERVER_ENDPOINTS);
+        }
         cfg.tlsPinSpec = OBLIVION_PRODUCTION_TLS_PIN_SHA256;
         cfg.endpointsFromLocalConfig = false;
         cfg.failClosed = true;
