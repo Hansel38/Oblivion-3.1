@@ -9,6 +9,8 @@
 #include <windows.h>
 #else
 #include <limits.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -90,18 +92,41 @@ namespace OblivionServer {
             }
         }
 
-        FILE* f = nullptr;
+        int secretFd = -1;
         if (!executableDir.empty()) {
             const std::string secretPath = executableDir + "secret.dat";
-            f = std::fopen(secretPath.c_str(), "rb");
+            int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+            flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+            flags |= O_NOFOLLOW;
+#endif
+            secretFd = open(secretPath.c_str(), flags);
         }
-        if (f) {
-            bool readOk = false;
-            if (std::fseek(f, 0, SEEK_END) == 0) {
-                const long fileSize = std::ftell(f);
-                if (fileSize > 0 && fileSize < 1024 && std::fseek(f, 0, SEEK_SET) == 0) {
-                    std::vector<unsigned char> encoded(static_cast<size_t>(fileSize));
-                    readOk = std::fread(encoded.data(), 1, encoded.size(), f) == encoded.size();
+
+        if (secretFd >= 0) {
+            struct stat metadata {};
+            const bool metadataOk = fstat(secretFd, &metadata) == 0;
+            const bool secureFile = metadataOk &&
+                S_ISREG(metadata.st_mode) &&
+                metadata.st_uid == geteuid() &&
+                (metadata.st_mode & (S_IRWXG | S_IRWXO)) == 0 &&
+                metadata.st_size > 0 && metadata.st_size < 1024;
+            if (!secureFile) {
+                close(secretFd);
+                secretFd = -1;
+            } else {
+                FILE* f = fdopen(secretFd, "rb");
+                if (f == nullptr) {
+                    close(secretFd);
+                    secretFd = -1;
+                } else {
+                    secretFd = -1; // fdopen now owns the descriptor.
+                    const size_t fileSize = static_cast<size_t>(metadata.st_size);
+                    std::vector<unsigned char> encoded(fileSize);
+                    const bool readOk = std::fread(encoded.data(), 1, encoded.size(), f) == encoded.size();
+                    std::fclose(f);
                     if (readOk) {
                         secret.reserve(encoded.size());
                         for (size_t i = 0; i < encoded.size(); ++i) {
@@ -109,12 +134,11 @@ namespace OblivionServer {
                             secret.push_back(static_cast<char>(encoded[i] ^ key));
                         }
                     }
+                    if (readOk && !secret.empty()) {
+                        cached = secret;
+                        return cached;
+                    }
                 }
-            }
-            std::fclose(f);
-            if (readOk && !secret.empty()) {
-                cached = secret;
-                return cached;
             }
         }
 #endif
