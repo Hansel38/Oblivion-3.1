@@ -4,6 +4,13 @@
 #include <iostream>
 
 namespace {
+void Expect(bool condition, const char* description) {
+    if (!condition) {
+        std::cerr << "FAIL: " << description << '\\n';
+        std::exit(1);
+    }
+}
+
 void Expect(
     Oblivion::SignaturePolicy::WinTrustResultClass actual,
     Oblivion::SignaturePolicy::WinTrustResultClass expected,
