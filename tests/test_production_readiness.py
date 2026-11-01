@@ -40,6 +40,7 @@ class ProductionReadinessTests(unittest.TestCase):
         self.manifest = self.root / "manifest.h"
         self.project = self.root / "client.vcxproj"
         self.runtime_source = self.root / "file_integrity_check.cpp"
+        self.signature_source = self.root / "digital_signature_validator.cpp"
         self.network_config = self.root / "production_network_config.generated.h"
         self.cert = self.root / "server-cert.pem"
         self.key = self.root / "server-key.pem"
@@ -65,6 +66,14 @@ class ProductionReadinessTests(unittest.TestCase):
         )
         self.pin = self.leaf_pin()
         self.write_network_config()
+        self.signature_source.write_text(
+            "VerifyCatalogSignatureStatus CryptCATAdminEnumCatalogFromHash "
+            "CryptCATAdminCalcHashFromFileHandle2 CMSG_SIGNER_CERT_INFO_PARAM "
+            "PCERT_INFO WTD_CHOICE_CATALOG WTD_REVOKE_WHOLECHAIN "
+            "WTD_DISABLE_MD2_MD4 ModuleTrustPolicy::Evaluate "
+            "SameModuleFileStamp(initialStamp, finalStamp)\\n",
+            encoding="utf-8",
+        )
 
     def generate_certificate(
         self,
@@ -156,6 +165,7 @@ class ProductionReadinessTests(unittest.TestCase):
                 "--manifest", str(self.manifest),
                 "--client-project", str(self.project),
                 "--runtime-source", str(self.runtime_source),
+                "--signature-source", str(self.signature_source),
                 "--network-config", str(self.network_config),
                 "--tls-cert", str(self.cert),
                 "--tls-key", str(self.key),
@@ -192,6 +202,17 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PRODUCTION PREFLIGHT PASSED", result.stdout)
         self.assertIn("compile-time endpoint", result.stdout)
+
+    def test_rejects_module_verifier_missing_catalog_signature_checks(self) -> None:
+        self.signature_source.write_text(
+            "VerifyCatalogSignatureStatus CMSG_SIGNER_CERT_INFO_PARAM PCERT_INFO "
+            "WTD_CHOICE_CATALOG WTD_REVOKE_WHOLECHAIN WTD_DISABLE_MD2_MD4 "
+            "ModuleTrustPolicy::Evaluate SameModuleFileStamp(initialStamp, finalStamp)\\n",
+            encoding="utf-8",
+        )
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("module signature verifier is missing release security token", result.stderr)
 
     def test_rejects_unprovisioned_network_policy(self) -> None:
         self.network_config.write_text(

@@ -29,6 +29,7 @@ DEFAULT_MANIFEST = ROOT / "client" / "include" / "file_integrity_manifest.genera
 DEFAULT_CLIENT_PROJECT = ROOT / "client" / "client.vcxproj"
 DEFAULT_RUNTIME_SOURCE = ROOT / "client" / "src" / "file_integrity_check.cpp"
 DEFAULT_NETWORK_SOURCE = ROOT / "client" / "src" / "network_reporter.cpp"
+DEFAULT_SIGNATURE_SOURCE = ROOT / "client" / "src" / "digital_signature_validator.cpp"
 DEFAULT_NETWORK_CONFIG = ROOT / "client" / "include" / "production_network_config.generated.h"
 
 REQUIRED_FILES = {
@@ -330,6 +331,33 @@ def validate_network_policy_source(source_path: Path) -> None:
             )
 
 
+def validate_module_signature_source(source_path: Path) -> None:
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReadinessError(f"cannot read module signature verifier {source_path}: {exc}") from exc
+
+    # Release preflight must fail closed if the module scanner loses its
+    # embedded/catalog Authenticode checks or stable-file identity guard.
+    required_tokens = (
+        "VerifyCatalogSignatureStatus",
+        "CryptCATAdminEnumCatalogFromHash",
+        "CryptCATAdminCalcHashFromFileHandle2",
+        "CMSG_SIGNER_CERT_INFO_PARAM",
+        "PCERT_INFO",
+        "WTD_CHOICE_CATALOG",
+        "WTD_REVOKE_WHOLECHAIN",
+        "WTD_DISABLE_MD2_MD4",
+        "ModuleTrustPolicy::Evaluate",
+        "SameModuleFileStamp(initialStamp, finalStamp)",
+    )
+    for token in required_tokens:
+        if token not in source:
+            raise ReadinessError(
+                f"module signature verifier is missing release security token {token!r}"
+            )
+
+
 def validate_compiled_network_policy(
     config_path: Path,
     primary_host: str,
@@ -384,6 +412,7 @@ def run_preflight(
     project_path: Path,
     runtime_source_path: Path,
     network_source_path: Path,
+    signature_source_path: Path,
     network_config_path: Path,
     tls_cert_path: Path,
     tls_key_path: Path,
@@ -393,6 +422,7 @@ def run_preflight(
     manifest = parse_manifest(manifest_path)
     max_size = release_limits(project_path, runtime_source_path)
     validate_network_policy_source(network_source_path)
+    validate_module_signature_source(signature_source_path)
     endpoint_hosts, compiled_pins = validate_compiled_network_policy(
         network_config_path, server_host, tls_pins
     )
@@ -408,6 +438,9 @@ def run_preflight(
         f"Production network policy: {len(endpoint_hosts)} compile-time endpoint(s); "
         "editable config/environment overrides are ignored"
     )
+    checks.append(
+        "Module trust policy: embedded/catalog Authenticode checks and stable-file identity guard verified"
+    )
     checks.append(f"Release enforcement: x86/x64 enabled; maximum hashed file size {max_size} bytes")
     return checks
 
@@ -421,6 +454,7 @@ def main() -> int:
     parser.add_argument("--client-project", type=Path, default=DEFAULT_CLIENT_PROJECT)
     parser.add_argument("--runtime-source", type=Path, default=DEFAULT_RUNTIME_SOURCE)
     parser.add_argument("--network-source", type=Path, default=DEFAULT_NETWORK_SOURCE)
+    parser.add_argument("--signature-source", type=Path, default=DEFAULT_SIGNATURE_SOURCE)
     parser.add_argument("--network-config", type=Path, default=DEFAULT_NETWORK_CONFIG)
     parser.add_argument("--tls-cert", type=Path, required=True, help="PEM leaf certificate deployed by the server")
     parser.add_argument("--tls-key", type=Path, required=True, help="matching PEM private key deployed by the server")
@@ -435,6 +469,7 @@ def main() -> int:
             args.client_project,
             args.runtime_source,
             args.network_source,
+            args.signature_source,
             args.network_config,
             args.tls_cert,
             args.tls_key,
