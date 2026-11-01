@@ -51,7 +51,7 @@ namespace {
 
     struct NetworkConfiguration {
         std::vector<EndpointSpec> endpoints;
-        int defaultPort = 54321;
+        int defaultPort = static_cast<int>(Oblivion::ServerConfig::kDefaultListenPortNumber);
         bool failClosed = false;
         // Indicates whether the entire trust policy came from local config. Release YAML
         // may select an endpoint, but the certificate pin remains embedded in the DLL.

@@ -7,6 +7,9 @@
 namespace Oblivion {
 namespace ServerConfig {
 
+inline constexpr char kDefaultListenPort[] = "54321";
+inline constexpr std::uint16_t kDefaultListenPortNumber = 54321;
+
 // Resolve the TCP port used by the server listener. An unset/empty environment
 // setting uses the compiled default; an invalid explicit value is a startup
 // error rather than silently selecting a different port.

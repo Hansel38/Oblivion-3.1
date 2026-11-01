@@ -19,10 +19,10 @@ int main() {
     std::string error;
 
     Expect(Oblivion::ServerConfig::ResolveListenPort(
-        nullptr, "54321", port, error) && port == "54321",
+        nullptr, Oblivion::ServerConfig::kDefaultListenPort, port, error) && port == "54321",
         "unset listen port uses the default");
     Expect(Oblivion::ServerConfig::ResolveListenPort(
-        "", "54321", port, error) && port == "54321",
+        "", Oblivion::ServerConfig::kDefaultListenPort, port, error) && port == "54321",
         "empty listen port uses the default");
     Expect(Oblivion::ServerConfig::ResolveListenPort(
         "443", "54321", port, error) && port == "443",

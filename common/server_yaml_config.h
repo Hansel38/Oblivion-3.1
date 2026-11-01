@@ -30,7 +30,7 @@ struct HeartbeatSettings {
 
 struct ServerSettings {
     std::string bindAddress = "0.0.0.0";
-    std::string listenPort = "54321";
+    std::string listenPort = Oblivion::ServerConfig::kDefaultListenPort;
     std::string tlsCertificateFile = "server-cert.pem";
     std::string tlsPrivateKeyFile = "server-key.pem";
     HeartbeatSettings heartbeat;
@@ -250,7 +250,7 @@ inline bool ParseServerYaml(
         }
 
         std::string normalizedPort;
-        if (!Oblivion::ServerConfig::ResolveListenPort(settings.listenPort.c_str(), "54321",
+        if (!Oblivion::ServerConfig::ResolveListenPort(settings.listenPort.c_str(), Oblivion::ServerConfig::kDefaultListenPort,
                                normalizedPort, error)) {
             error = "server.listen_port: " + error;
             return false;

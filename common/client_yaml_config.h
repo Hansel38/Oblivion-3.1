@@ -13,7 +13,7 @@ namespace Oblivion {
 namespace Config {
 
 struct ClientSettings {
-    int defaultPort = 54321;
+    int defaultPort = static_cast<int>(Oblivion::ServerConfig::kDefaultListenPortNumber);
     std::vector<std::string> endpoints;
     int connectTimeoutMs = 3000;
     int retryCount = 3;
