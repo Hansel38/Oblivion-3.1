@@ -179,6 +179,28 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no Subject Alternative Name", result.stderr)
 
+    def test_rejects_certificate_without_server_auth_eku(self) -> None:
+        subprocess.run(
+            [
+                shutil.which("openssl") or "openssl",
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+                "-days", "2", "-keyout", str(self.key), "-out", str(self.cert),
+                "-subj", "/CN=shield.example.test",
+                "-addext", "basicConstraints=critical,CA:FALSE",
+                "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+                "-addext", "extendedKeyUsage=clientAuth",
+                "-addext", "subjectAltName=DNS:shield.example.test",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.pin = self.leaf_pin()
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Extended Key Usage must include serverAuth", result.stderr)
+
     def test_real_client_project_enables_production_enforcement(self) -> None:
         # Guard the actual repository configuration, not only the synthetic fixture.
         from importlib.util import module_from_spec, spec_from_file_location
