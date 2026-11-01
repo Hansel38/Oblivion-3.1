@@ -3,6 +3,7 @@
 #include "heartbeat_protocol.h"
 #include "../../common/heartbeat_auth.h"
 #include "hwid_generator.h"
+#include "win_path_utils.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <thread>
@@ -1104,18 +1105,21 @@ namespace Oblivion {
         // sehingga admin tetap bisa mengaudit walaupun server sedang tidak bisa dihubungi.
         std::cerr << "[CLIENT_ISSUE] " << type << " - " << details << std::endl;
 
-        wchar_t exePath[MAX_PATH] = { 0 };
-        if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) {
+        // Resolve the complete executable path; MAX_PATH can silently
+        // truncate deep game installations and lose infrastructure diagnostics.
+        const std::wstring executablePath = Oblivion::WinPath::GetModulePath(nullptr);
+        if (executablePath.empty()) {
             return;
         }
 
-        wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-        if (!lastSlash) {
+        const size_t lastSlash = executablePath.find_last_of(L"\\/");
+        if (lastSlash == std::wstring::npos) {
             return;
         }
-        *(lastSlash + 1) = L'\0';
 
-        std::ofstream logFile(std::wstring(exePath) + L"oblivion_client_errors.log", std::ios::app);
+        const std::wstring logPath =
+            executablePath.substr(0, lastSlash + 1) + L"oblivion_client_errors.log";
+        std::ofstream logFile(logPath, std::ios::app);
         if (!logFile.is_open()) {
             return;
         }
