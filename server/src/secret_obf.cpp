@@ -81,7 +81,7 @@ namespace OblivionServer {
         char executablePath[PATH_MAX] = {0};
         std::string executableDir;
         const ssize_t pathLength = readlink("/proc/self/exe", executablePath, sizeof(executablePath) - 1);
-        if (pathLength > 0 && static_cast<size_t>(pathLength) < sizeof(executablePath)) {
+        if (pathLength > 0 && static_cast<size_t>(pathLength) < sizeof(executablePath) - 1) {
             executablePath[pathLength] = '\0';
             const std::string fullPath(executablePath);
             const size_t slash = fullPath.find_last_of('/');
