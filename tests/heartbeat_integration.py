@@ -436,7 +436,11 @@ def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
         output = (result.stdout or "") + (result.stderr or "")
         if result.returncode == 0:
             raise RuntimeError("server started successfully without a TLS certificate/key pair")
-        if "TLS initialization failed" not in output and "Cannot resolve TLS certificate/key paths" not in output:
+        if (
+            "TLS initialization failed" not in output
+            and "Cannot resolve TLS certificate/key paths" not in output
+            and "Cannot inspect TLS private key permissions" not in output
+        ):
             raise RuntimeError(
                 "server failed without a TLS certificate/key pair for an unexpected reason: "
                 f"exit={result.returncode}, output={output!r}"
