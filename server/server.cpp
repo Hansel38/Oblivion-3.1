@@ -805,12 +805,13 @@ bool ReceiveSemicolonFrame(SOCKET socket, std::string& buffered, uint32_t timeou
         struct timeval timeout{};
         timeout.tv_sec = remainingMs / 1000;
         timeout.tv_usec = (remainingMs % 1000) * 1000;
-#ifdef _WIN32
-        const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
-#else
-        const int ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
-#endif
+        int ready = 1;
         if (g_activeTls == nullptr || SSL_pending(g_activeTls) <= 0) {
+#ifdef _WIN32
+            ready = select(0, &readSet, nullptr, nullptr, &timeout);
+#else
+            ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
+#endif
             if (ready <= 0) return false;
         }
         char chunk[512] = {};
