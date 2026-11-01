@@ -1328,8 +1328,24 @@ int main() {
 
     std::string listenPort;
     std::string listenPortError;
+    const char* listenPortOverride = nullptr;
+#ifdef _WIN32
+    char listenPortOverrideBuffer[64] = {};
+    const DWORD listenPortOverrideLength = GetEnvironmentVariableA(
+        "OBLIVION_LISTEN_PORT", listenPortOverrideBuffer,
+        static_cast<DWORD>(sizeof(listenPortOverrideBuffer)));
+    if (listenPortOverrideLength >= sizeof(listenPortOverrideBuffer)) {
+        std::cerr << "[FATAL] OBLIVION_LISTEN_PORT exceeds the maximum supported length." << std::endl;
+        return 1;
+    }
+    if (listenPortOverrideLength > 0) {
+        listenPortOverride = listenPortOverrideBuffer;
+    }
+#else
+    listenPortOverride = std::getenv("OBLIVION_LISTEN_PORT");
+#endif
     if (!Oblivion::ServerConfig::ResolveListenPort(
-            std::getenv("OBLIVION_LISTEN_PORT"),
+            listenPortOverride,
             g_serverSettings.listenPort.c_str(), listenPort, listenPortError)) {
         std::cerr << "[FATAL] Invalid listen port: " << listenPortError << std::endl;
         return 1;
