@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import re
 import ssl
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -236,8 +237,19 @@ def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> s
             f"TLS leaf-certificate SHA-256 {actual_pin} is absent from the configured pin list"
         )
 
-    extended_usage = decoded.get("extendedKeyUsage", ())
-    if "TLS Web Server Authentication" not in extended_usage:
+    eku_result = subprocess.run(
+        ["openssl", "x509", "-in", str(cert_path), "-noout", "-ext", "extendedKeyUsage"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if eku_result.returncode != 0:
+        raise ReadinessError(
+            "cannot inspect TLS certificate Extended Key Usage with the OpenSSL CLI; "
+            "install openssl and retry"
+        )
+    if "TLS Web Server Authentication" not in eku_result.stdout:
         raise ReadinessError(
             "TLS certificate Extended Key Usage must include serverAuth"
         )
