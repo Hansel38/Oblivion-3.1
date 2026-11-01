@@ -15,6 +15,7 @@ constexpr std::uint32_t kTrustNoSignerCertificate = 0x80096002u;
 constexpr std::uint32_t kTrustCounterSignerInvalid = 0x80096003u;
 constexpr std::uint32_t kTrustCertificateSignatureInvalid = 0x80096004u;
 constexpr std::uint32_t kTrustSubjectNotTrusted = 0x800B0004u;
+constexpr std::uint32_t kTrustUntrustedRoot = 0x800B0109u;
 constexpr std::uint32_t kTrustNoSignature = 0x800B0100u;
 constexpr std::uint32_t kCertificateRevoked = 0x800B010Cu;
 constexpr std::uint32_t kTrustExplicitDistrust = 0x800B0111u;
@@ -40,6 +41,7 @@ constexpr WinTrustResultClass ClassifyWinTrustResult(std::uint32_t status) noexc
     case kTrustCounterSignerInvalid:
     case kTrustCertificateSignatureInvalid:
     case kTrustSubjectNotTrusted:
+    case kTrustUntrustedRoot:
     case kCertificateRevoked:
     case kTrustExplicitDistrust:
         return WinTrustResultClass::Rejected;

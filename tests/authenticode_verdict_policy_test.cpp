@@ -38,8 +38,8 @@ int main() {
         "an explicitly distrusted signer is not whitelisted");
     Expect(ClassifyWinTrustResult(0x800B0100u), WinTrustResultClass::NoSignature,
         "absence of a signature is classified separately");
-    Expect(ClassifyWinTrustResult(0x800B0109u), WinTrustResultClass::Inconclusive,
-        "an untrusted root remains distinct from a proven content-integrity failure");
+    Expect(ClassifyWinTrustResult(0x800B0109u), WinTrustResultClass::Rejected,
+        "a self-signed or untrusted-root publisher is not treated as a trust-provider outage");
     Expect(ClassifyWinTrustResult(0x80092013u), WinTrustResultClass::Inconclusive,
         "offline revocation infrastructure is not misclassified as tampering");
 
