@@ -115,6 +115,34 @@ def verify_trailing_data_is_rejected() -> None:
         sock.close()
 
 
+def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
+    sock = socket.create_connection((HOST, PORT), timeout=3)
+    sock.settimeout(3)
+    log_path = server_binary.parent / "violations.log"
+    previous_log = log_path.read_bytes() if log_path.exists() else b""
+    secret_marker = "SECRET_LEAK_SENTINEL_91C2"
+    try:
+        # A malformed TYPE forces the parser error path; the SECRET field must
+        # not be copied into the server's persistent violation log.
+        hwid = os.urandom(32).hex()
+        sock.sendall(f"!::{hwid}:{secret_marker};".encode("ascii"))
+        frame, _ = recv_frame(sock, b"")
+        if frame != "ERROR:INVALID_FORMAT":
+            raise RuntimeError(f"malformed request was not rejected: {frame!r}")
+        if sock.recv(1) != b"":
+            raise RuntimeError("server kept the malformed-request connection open")
+    finally:
+        sock.close()
+
+    current_log = log_path.read_bytes() if log_path.exists() else b""
+    if not current_log.startswith(previous_log):
+        appended = current_log
+    else:
+        appended = current_log[len(previous_log):]
+    if secret_marker.encode("ascii") in appended:
+        raise RuntimeError("server logged the SECRET field from a malformed request")
+
+
 def verify_short_hwid_is_rejected() -> None:
     sock = socket.create_connection((HOST, PORT), timeout=3)
     sock.settimeout(3)
@@ -314,6 +342,7 @@ def run_integration(server_binary: Path) -> None:
             ready.close()
 
             verify_trailing_data_is_rejected()
+            verify_malformed_request_does_not_log_secret(server_binary)
             verify_short_hwid_is_rejected()
             verify_initial_handshake_deadline()
             verify_missing_ban_list_is_rejected(ban_list_path)
