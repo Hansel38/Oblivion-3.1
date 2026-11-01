@@ -43,6 +43,16 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertNotIn('std::string executableDir = "./";', source)
         self.assertNotIn('std::fopen("secret.dat", "rb")', source)
 
+    def test_secret_loaders_have_no_embedded_development_secret(self) -> None:
+        client_source = (ROOT / "client" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
+        server_source = (ROOT / "server" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
+        server_windows = (ROOT / "server" / "server.cpp").read_text(encoding="utf-8")
+        server_linux = (ROOT / "server" / "server_linux.cpp").read_text(encoding="utf-8")
+        for source in (client_source, server_source, server_windows, server_linux):
+            self.assertNotIn("DEV_SECRET_NOT_SET", source)
+        self.assertIn("cached.clear();", client_source)
+        self.assertIn("cached.clear();", server_source)
+
     def test_client_has_no_implicit_localhost_endpoint(self) -> None:
         reporter = (ROOT / "client" / "src" / "network_reporter.cpp").read_text(encoding="utf-8")
         dllmain = (ROOT / "client" / "dllmain.cpp").read_text(encoding="utf-8")
