@@ -160,7 +160,7 @@ The server fails to start if it cannot load a matching TLS certificate and priva
 
 The installer now refuses a fresh install if it cannot find a certificate/key pair. If the pair is beside the Makefile, run `make install` and it is copied beside the installed binary (private key mode 0600). To copy a pair from another location, use `make install TLS_CERT_FILE=/secure/path/server-cert.pem TLS_KEY_FILE=/secure/path/server-key.pem`. Existing installed cert/key files are preserved when no source pair is supplied. If the service uses external paths instead, configure both `OBLIVION_TLS_CERT_FILE` and `OBLIVION_TLS_KEY_FILE` in the service environment before installing and starting the server.
 
-For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
+For a DNS endpoint, the certificate Subject Alternative Name (SAN) must include the exact DNS name configured by the operator. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
 
 ### VPS listen address, TCP port, and client endpoint
 
@@ -192,20 +192,23 @@ python3 tools/generate_production_network_config.py \
   --tls-pin-sha256 "$OBLIVION_TLS_PIN_SHA256"
 ```
 
-Replace the example hostname and pin with your real values; never ship the example values. The certificate SAN must match the host in the endpoint. Rebuild the Windows client after generating this header. Release clients intentionally ignore endpoint and pin overrides in `oblivion.cfg`; that file remains a development convenience, not the production trust policy.
+Provide the real endpoint list and matching leaf-certificate pin list through the required environment variables before generating the header. The certificate SAN must match every endpoint in the generated policy. Rebuild the Windows client after changing the compiled fallback endpoint or pins. Release ignores endpoint and pin overrides in `oblivion.cfg`; runtime YAML endpoints are still constrained by the compiled pin and SAN validation.
 
 Changing the port requires updating the VPS firewall and regenerating/rebuilding the client endpoint configuration with the same port. The anti-cheat listener uses TCP, not UDP.
 
-Example for a DNS endpoint (use your real server name):
+Create a self-signed certificate for the configured DNS hostname (for production, use a certificate issued by your chosen CA):
+
+~~~bash
+: "${OBLIVION_SERVER_HOST:?set the actual DNS hostname used by clients}"
 
 ~~~bash
 openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 365 \
   -keyout server-key.pem -out server-cert.pem \
-  -subj "/CN=shield.example.com" \
+  -subj "/CN=$OBLIVION_SERVER_HOST" \
   -addext "basicConstraints=critical,CA:FALSE" \
   -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
   -addext "extendedKeyUsage=serverAuth" \
-  -addext "subjectAltName=DNS:shield.example.com"
+  -addext "subjectAltName=DNS:$OBLIVION_SERVER_HOST"
 
 chmod 600 server-key.pem
 openssl x509 -in server-cert.pem -outform DER | openssl dgst -sha256
@@ -216,8 +219,6 @@ Configure the client to pin the SHA-256 fingerprint shown by the server / calcul
 Example oblivion.cfg:
 
 ~~~ini
-server=shield.example.com:54321
-tls_pin_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ~~~
 
 Alternatively set **OBLIVION_TLS_PIN_SHA256**. It overrides the file setting. Multiple SHA-256 leaf pins may be listed, separated by comma, semicolon, or whitespace, to permit certificate rotation. Each pin must be exactly 64 hex characters; an invalid or missing pin prevents a production client from connecting.
@@ -240,7 +241,9 @@ openssl rand -hex 32
 
 1. **Environment variable** (recommended):
    ```bash
-   export OBLIVION_SECRET="PASTE_THE_SAME_RANDOM_SECRET_HERE"
+   read -rsp "OBLIVION_SECRET: " OBLIVION_SECRET
+   echo
+   export OBLIVION_SECRET
    ./oblivion-server
    ```
 
@@ -270,13 +273,16 @@ enforcement detects mismatches after launch.
    Run from the repository root:
 
    ```powershell
+   $env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS = Read-Host "Actual DNS/IP endpoint(s), comma-separated"
+   $env:OBLIVION_TLS_PIN_SHA256 = Read-Host "Actual SHA-256 leaf-certificate pin(s), comma-separated"
+   if ([string]::IsNullOrWhiteSpace($env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS) -or
+       [string]::IsNullOrWhiteSpace($env:OBLIVION_TLS_PIN_SHA256)) { throw "Endpoint and TLS pin values are required" }
    python tools/generate_production_network_config.py \\
-     --server-endpoints "shield.example.com:54321,shield-backup.example.com:54321" \\
-     --tls-pin-sha256 "paste-real-primary-leaf-pin,paste-real-backup-leaf-pin"
+     --server-endpoints $env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS \\
+     --tls-pin-sha256 $env:OBLIVION_TLS_PIN_SHA256
    ```
 
-   The example values are placeholders, not deployable settings. Replace them with the
-   actual DNS names/IPs and SHA-256 leaf-certificate fingerprints from your infrastructure.
+   Enter actual DNS/IP endpoints and the certificate pin list for the deployed service.
    Changes to production endpoints or pins require regenerating the header and rebuilding
    Release x86/x64. Release ignores endpoint and TLS-pin overrides in `oblivion.cfg` and
    environment variables; Debug builds retain these overrides for development.
@@ -302,11 +308,11 @@ enforcement detects mismatches after launch.
 
    ```bash
    make -C server production-check \\
-     OBLIVION_PRODUCTION_GAME_DIR="/absolute/path/to/the/exact/game-package" \\
-     OBLIVION_SERVER_HOST="shield.example.com" \\
-     OBLIVION_TLS_PIN_SHA256="the-same-real-compiled-pin-list" \\
-     TLS_CERT_FILE="/absolute/path/to/server-cert.pem" \\
-     TLS_KEY_FILE="/absolute/path/to/server-key.pem"
+     OBLIVION_PRODUCTION_GAME_DIR="$OBLIVION_PRODUCTION_GAME_DIR" \\
+     OBLIVION_SERVER_HOST="$OBLIVION_SERVER_HOST" \\
+     OBLIVION_TLS_PIN_SHA256="$OBLIVION_TLS_PIN_SHA256" \\
+     TLS_CERT_FILE="$TLS_CERT_FILE" \\
+     TLS_KEY_FILE="$TLS_KEY_FILE"
    ```
 
 The preflight rejects placeholder/malformed hashes, package/hash mismatches, missing or
@@ -343,14 +349,11 @@ Debug/development clients can be pointed at a test VPS without recompiling. Rele
 use the compile-time endpoint and TLS-pin policy generated above; `server`, `servers`,
 `host`, `OBLIVION_SERVER`, `OBLIVION_SERVERS`, `OBLIVION_PORT`, and
 `OBLIVION_TLS_PIN_SHA256` cannot redirect production check-in or replace the production pin.
-To change a Release endpoint or pin, regenerate the network header and rebuild/distribute a new client.
+Runtime YAML may select a different endpoint only when the endpoint certificate passes the compiled pin and SAN checks. To change the compiled fallback endpoint or pin list, regenerate the network header and rebuild/distribute a new client.
 
 ```ini
 # oblivion.cfg
-# Put your actual DNS/IP endpoints here (one per line).
-server=your-real-hostname.example:54321
-# Optional additional endpoint:
-# server=your-real-backup-hostname.example:54321
+# Deployment-specific server endpoints are intentionally not included in this example.
 port=54321                    # default port when an endpoint omits the port
 fail_mode=closed              # build produksi selalu fail-closed
 connect_timeout_ms=3000
@@ -453,7 +456,7 @@ WorkingDirectory=/path/to/server
 ExecStart=/path/to/server/oblivion-server
 Restart=always
 RestartSec=10
-Environment="OBLIVION_SECRET=your-secret-key"
+EnvironmentFile=/etc/oblivion/oblivion.env
 
 [Install]
 WantedBy=multi-user.target
