@@ -71,8 +71,8 @@ class ProductionNetworkConfigTests(unittest.TestCase):
         header = (
             "#pragma once\n"
             "#define OBLIVION_PRODUCTION_NETWORK_CONFIG_READY 0\n"
-            '#define OBLIVION_PRODUCTION_SERVER_ENDPOINTS "PRODUCTION_ENDPOINTS_NOT_CONFIGURED"\n'
-            '#define OBLIVION_PRODUCTION_TLS_PIN_SHA256 "PLACEHOLDER"\n'
+            '#define OBLIVION_PRODUCTION_SERVER_ENDPOINTS ""\n'
+            '#define OBLIVION_PRODUCTION_TLS_PIN_SHA256 ""\n'
         )
         with tempfile.TemporaryDirectory(prefix="oblivion-network-policy-") as directory:
             path = Path(directory) / "network.h"
