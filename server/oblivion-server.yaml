@@ -1,0 +1,23 @@
+# Oblivion server runtime configuration, schema version 1.
+# Never place OBLIVION_SECRET or any private key material in this file.
+# Environment variables override the corresponding YAML value where supported.
+
+version: 1
+
+server:
+  # 0.0.0.0 listens on all local IPv4 interfaces. Use 127.0.0.1 only behind
+  # a local reverse proxy/tunnel; this server currently uses an IPv4 listener.
+  bind_address: "0.0.0.0"
+  listen_port: "54321"
+
+tls:
+  # Relative paths are resolved beside the server executable.
+  certificate_file: "server-cert.pem"
+  private_key_file: "server-key.pem"
+
+heartbeat:
+  interval_ms: 3000
+  jitter_ms: 250
+  timeout_ms: 4000
+  max_consecutive_misses: 3
+  rtt_warn_ms: 1500
