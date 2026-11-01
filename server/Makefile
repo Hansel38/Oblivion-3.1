@@ -10,6 +10,9 @@ INCLUDE_DIR := include
 SRC_DIR := src
 BUILD_DIR := build
 TARGET := oblivion-server
+INSTALL_DIR ?= /usr/local/bin
+TLS_CERT_FILE ?= server-cert.pem
+TLS_KEY_FILE ?= server-key.pem
 OBJECTS := $(BUILD_DIR)/server_linux.o $(BUILD_DIR)/secret_obf.o
 DEPS := $(OBJECTS:.o=.d)
 
@@ -56,14 +59,32 @@ clean:
 	@echo "Clean complete"
 
 install: $(TARGET)
-	install -m 0755 $(TARGET) /usr/local/bin/$(TARGET)
-	@if [ ! -e /usr/local/bin/bans.txt ]; then \
-		install -m 0644 bans.txt /usr/local/bin/bans.txt; \
-		echo "Installed initial ban list to /usr/local/bin/bans.txt"; \
+	@set -eu; \
+	if [ -f "$(TLS_CERT_FILE)" ] && [ -f "$(TLS_KEY_FILE)" ]; then \
+		echo "TLS certificate/key source pair found: $(TLS_CERT_FILE), $(TLS_KEY_FILE)"; \
+	elif [ -f "$(INSTALL_DIR)/server-cert.pem" ] && [ -f "$(INSTALL_DIR)/server-key.pem" ]; then \
+		echo "Preserving existing TLS certificate/key in $(INSTALL_DIR)"; \
+	elif [ -n "$(OBLIVION_TLS_CERT_FILE)" ] && [ -n "$(OBLIVION_TLS_KEY_FILE)" ] && \
+	     [ -f "$(OBLIVION_TLS_CERT_FILE)" ] && [ -f "$(OBLIVION_TLS_KEY_FILE)" ]; then \
+		echo "Using externally configured TLS certificate/key paths"; \
 	else \
-		echo "Preserving existing /usr/local/bin/bans.txt"; \
+		echo "[ERROR] TLS certificate/key missing. Create server-cert.pem/server-key.pem, preserve an installed pair, or configure OBLIVION_TLS_CERT_FILE and OBLIVION_TLS_KEY_FILE."; \
+		exit 1; \
 	fi
-	@echo "Installed to /usr/local/bin/$(TARGET)"
+	install -d -m 0755 "$(INSTALL_DIR)"
+	install -m 0755 $(TARGET) "$(INSTALL_DIR)/$(TARGET)"
+	@if [ -f "$(TLS_CERT_FILE)" ] && [ -f "$(TLS_KEY_FILE)" ]; then \
+		install -m 0644 "$(TLS_CERT_FILE)" "$(INSTALL_DIR)/server-cert.pem"; \
+		install -m 0600 "$(TLS_KEY_FILE)" "$(INSTALL_DIR)/server-key.pem"; \
+		echo "Installed TLS certificate and private key to $(INSTALL_DIR)"; \
+	fi
+	@if [ ! -e "$(INSTALL_DIR)/bans.txt" ]; then \
+		install -m 0644 bans.txt "$(INSTALL_DIR)/bans.txt"; \
+		echo "Installed initial ban list to $(INSTALL_DIR)/bans.txt"; \
+	else \
+		echo "Preserving existing $(INSTALL_DIR)/bans.txt"; \
+	fi
+	@echo "Installed to $(INSTALL_DIR)/$(TARGET)"
 
 uninstall:
 	rm -f /usr/local/bin/$(TARGET)
