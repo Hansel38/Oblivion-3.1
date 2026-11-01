@@ -125,7 +125,7 @@ inline bool ParseClientYaml(
                     if (value.empty() || value.size() > 300 ||
                         std::any_of(value.begin(), value.end(), [](unsigned char ch) {
                             return std::isspace(ch) || ch < 0x21 || ch > 0x7e ||
-                                   ch == ';' || ch == '\\' || ch == '/';
+                                   ch == ',' || ch == ';' || ch == '\\' || ch == '/';
                         })) {
                         error = "server.endpoints entries must be non-empty host[:port] values without whitespace or path separators";
                         return false;
