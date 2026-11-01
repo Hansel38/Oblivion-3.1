@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "AntiDebug.h"
+#include "win_path_utils.h"
+#include <vector>
 #include <windows.h>
 #include <winternl.h> // Untuk fungsi-fungsi NT yang tidak berdokumentasi
 
@@ -86,35 +88,54 @@ static bool ShouldLogAntiDebug() {
     return (_wcsicmp(buf, L"1") == 0 || _wcsicmp(buf, L"true") == 0 || _wcsicmp(buf, L"on") == 0);
 }
 
+static std::wstring ReadEnvironmentVariableString(const wchar_t* name) {
+    if (name == nullptr || *name == L'\0') {
+        return L"";
+    }
+
+    constexpr DWORD kMaxEnvironmentValueChars = 32768;
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (required == 0 || required > kMaxEnvironmentValueChars) {
+        return L"";
+    }
+
+    std::vector<wchar_t> buffer(required, L'\0');
+    const DWORD copied = GetEnvironmentVariableW(
+        name, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (copied == 0 || copied >= buffer.size()) {
+        return L"";
+    }
+    return std::wstring(buffer.data(), copied);
+}
+
 static void LogAntiDebugEvent(const std::string& details) {
     if (!ShouldLogAntiDebug()) return;
 
-    wchar_t exePath[MAX_PATH] = {0};
-    wchar_t logDir[MAX_PATH] = {0};
-    DWORD dn = GetEnvironmentVariableW(L"OBLIVION_ANTIDEBUG_LOG_DIR", logDir, MAX_PATH);
-    if (dn > 0 && dn < MAX_PATH) {
-        // Ensure directory exists (best-effort)
-        DWORD attrs = GetFileAttributesW(logDir);
+    std::wstring logPath;
+    const std::wstring configuredDirectory =
+        ReadEnvironmentVariableString(L"OBLIVION_ANTIDEBUG_LOG_DIR");
+    if (!configuredDirectory.empty()) {
+        // Ensure the configured directory exists (best-effort).
+        const DWORD attrs = GetFileAttributesW(configuredDirectory.c_str());
         if (attrs == INVALID_FILE_ATTRIBUTES) {
-            CreateDirectoryW(logDir, NULL);
+            CreateDirectoryW(configuredDirectory.c_str(), NULL);
         }
-        // Build path: <logDir>\antidebug.log
-        wcsncpy_s(exePath, logDir, _TRUNCATE);
-        size_t len = wcslen(exePath);
-        if (len > 0 && exePath[len - 1] != L'\\' && exePath[len - 1] != L'/') {
-            wcscat_s(exePath, L"\\");
+
+        logPath = configuredDirectory;
+        if (logPath.back() != L'\\' && logPath.back() != L'/') {
+            logPath.push_back(L'\\');
         }
-        wcscat_s(exePath, L"antidebug.log");
+        logPath += L"antidebug.log";
     } else {
-        if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) return;
-        // Build log path next to the executable
-        wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-        if (!lastSlash) return;
-        *(lastSlash + 1) = L'\0';
-        wcscat_s(exePath, L"antidebug.log");
+        const std::wstring executablePath = Oblivion::WinPath::GetModulePath(nullptr);
+        if (executablePath.empty()) return;
+
+        const size_t lastSlash = executablePath.find_last_of(L"\\/");
+        if (lastSlash == std::wstring::npos) return;
+        logPath = executablePath.substr(0, lastSlash + 1) + L"antidebug.log";
     }
 
-    HANDLE h = CreateFileW(exePath, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = CreateFileW(logPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
 
     // Move to end for append
@@ -438,10 +459,9 @@ namespace Oblivion {
                 HMODULE actual = nullptr;
                 if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                        (LPCWSTR)addr, &actual)) {
-                    wchar_t modName[MAX_PATH] = {0};
-                    GetModuleFileNameW(actual, modName, MAX_PATH);
+                    const std::wstring modName = Oblivion::WinPath::GetModulePath(actual);
                     char utf8[512] = {0};
-                    WideCharToMultiByte(CP_UTF8, 0, modName, -1, utf8, sizeof(utf8)-1, NULL, NULL);
+                    WideCharToMultiByte(CP_UTF8, 0, modName.c_str(), -1, utf8, sizeof(utf8)-1, NULL, NULL);
                     char msg[768];
                     sprintf_s(msg, sizeof(msg), "APIHook %s addr=%p module=%s (expected=%p)", name, addr, utf8, expected);
                     LogAntiDebugEvent(std::string(msg));
@@ -525,10 +545,9 @@ namespace Oblivion {
             if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                    (LPCSTR)p->Handler, &hMod)) {
                 // Jika handler berada di modul yang tidak dikenal, anggap mencurigakan
-                wchar_t modName[MAX_PATH] = {0};
-                GetModuleFileNameW(hMod, modName, MAX_PATH);
-                bool allowed = (wcsstr(modName, L"ntdll.dll") != nullptr) ||
-                               (wcsstr(modName, L"kernel32.dll") != nullptr);
+                const std::wstring modName = Oblivion::WinPath::GetModulePath(hMod);
+                bool allowed = (wcsstr(modName.c_str(), L"ntdll.dll") != nullptr) ||
+                               (wcsstr(modName.c_str(), L"kernel32.dll") != nullptr);
                 HMODULE hSelf = nullptr;
                 if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                        (LPCWSTR)&IsAddressInModule, &hSelf)) {
@@ -542,7 +561,7 @@ namespace Oblivion {
                     if (ShouldLogAntiDebug()) {
                         std::string msg = "SEH suspicious module: ";
                         char utf8[512] = {0};
-                        WideCharToMultiByte(CP_UTF8, 0, modName, -1, utf8, sizeof(utf8)-1, NULL, NULL);
+                        WideCharToMultiByte(CP_UTF8, 0, modName.c_str(), -1, utf8, sizeof(utf8)-1, NULL, NULL);
                         msg += utf8;
                         LogAntiDebugEvent(msg);
                     }
@@ -603,14 +622,14 @@ static bool IsModuleWhitelisted(HMODULE hMod) {
     DWORD n = GetEnvironmentVariableW(L"OBLIVION_HOOK_WHITELIST", wl, 1024);
     if (n == 0 || n >= 1024) return false;
 
-    wchar_t modPath[MAX_PATH] = {0};
-    if (!GetModuleFileNameW(hMod, modPath, MAX_PATH)) return false;
-    wchar_t* fname = wcsrchr(modPath, L'\\');
-    fname = fname ? (fname + 1) : modPath;
-
-    wchar_t fnameLower[MAX_PATH] = {0};
-    wcsncpy_s(fnameLower, fname, _TRUNCATE);
-    _wcslwr_s(fnameLower, wcslen(fnameLower) + 1);
+    const std::wstring modPath = Oblivion::WinPath::GetModulePath(hMod);
+    if (modPath.empty()) return false;
+    const size_t lastSlash = modPath.find_last_of(L"\\/");
+    std::wstring fnameLower = lastSlash == std::wstring::npos
+        ? modPath
+        : modPath.substr(lastSlash + 1);
+    std::transform(fnameLower.begin(), fnameLower.end(), fnameLower.begin(),
+        [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
 
     wchar_t* ctx = nullptr;
     wchar_t* token = wcstok_s(wl, L";", &ctx);
@@ -619,7 +638,7 @@ static bool IsModuleWhitelisted(HMODULE hMod) {
         size_t len = wcslen(token);
         while (len && (token[len-1] == L' ' || token[len-1] == L'\t')) { token[--len] = L'\0'; }
         _wcslwr_s(token, len + 1);
-        if (len && wcsstr(fnameLower, token) != nullptr) {
+        if (len && fnameLower.find(token) != std::wstring::npos) {
             return true;
         }
         token = wcstok_s(nullptr, L";", &ctx);
