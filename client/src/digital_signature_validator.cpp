@@ -303,7 +303,7 @@ namespace Oblivion {
                 // Hanya periksa modul yang berasal dari folder game atau folder lain yang mencurigakan
                 // (seperti modul yang di-inject dari cheat engine, wpe, rpe, openkore)
                 std::wstring moduleName(me32.szModule);
-                if (!IsModuleTrusted(me32.hModule, moduleName)) {
+                if (!IsModuleTrusted(me32.hModule, moduleName, modulePath, gameDir)) {
                     // Modul tidak tepercaya!
                     std::wstring message = L"Modul tidak tepercaya (tidak ditandatangani atau penerbit tidak dikenal) terdeteksi: ";
                     message += me32.szModule;
@@ -336,21 +336,34 @@ namespace Oblivion {
         CloseHandle(hSnapshot);
     }
 
-    bool DigitalSignatureValidator::IsModuleTrusted(HMODULE hModule, std::wstring& moduleName) {
-        // Cek apakah DLL ada di daftar yang diizinkan meskipun tidak ditandatangani
+    bool DigitalSignatureValidator::IsModuleTrusted(
+        HMODULE hModule,
+        std::wstring& moduleName,
+        const std::wstring& filePath,
+        const std::wstring& gameDirectory) {
+        if (filePath.empty()) {
+            return false; // Tidak bisa mendapatkan path lengkap, anggap tidak tepercaya
+        }
+
+        // A filename-only allowlist is not sufficient: an unsigned DLL with a
+        // familiar name could be loaded from a temp/download folder or another
+        // unrelated location. Only preserve the legacy unsigned-DLL exemption
+        // when the loaded module is actually inside this game's directory.
         std::wstring moduleNameLower = moduleName;
         std::transform(moduleNameLower.begin(), moduleNameLower.end(), moduleNameLower.begin(), ::towlower);
+        bool isAllowlistedName = false;
         for (const auto& allowedDll : m_allowedUnsignedDlls) {
             std::wstring allowedDllLower = allowedDll;
             std::transform(allowedDllLower.begin(), allowedDllLower.end(), allowedDllLower.begin(), ::towlower);
             if (moduleNameLower == allowedDllLower) {
-                return true; // DLL diizinkan meskipun tidak ditandatangani
+                isAllowlistedName = true;
+                break;
             }
         }
 
-        const std::wstring filePath = Oblivion::WinPath::GetModulePath(hModule);
-        if (filePath.empty()) {
-            return false; // Tidak bisa mendapatkan path lengkap, anggap tidak tepercaya
+        if (Oblivion::PathPolicy::CanTrustUnsignedModuleByName(
+                isAllowlistedName, filePath, gameDirectory)) {
+            return true; // Legacy unsigned DLL exemption restricted to the game directory
         }
 
         std::wstring cacheKey = filePath;
