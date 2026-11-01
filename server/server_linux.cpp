@@ -1538,35 +1538,42 @@ int main() {
     std::cout << "[INFO] Menunggu koneksi dari client..." << std::endl;
     std::cout << "==================================================" << std::endl;
 
-    auto readEnvUint = [](const char* name, uint32_t defVal) {
-        const char* envVal = getenv(name);
-        if (!envVal || !*envVal) return defVal;
-        try {
-            return (uint32_t)std::stoul(std::string(envVal));
-        } catch (...) {
-            return defVal;
+    // Environment overrides use strict unsigned-decimal parsing and the same ranges as YAML.
+    std::string heartbeatConfigError;
+    auto readEnvUint = [&](const char* name, uint32_t& target) {
+        const char* rawEnvironmentValue = std::getenv(name);
+        if (rawEnvironmentValue == nullptr || rawEnvironmentValue[0] == 0) return true;
+        const std::string envValueToParse(rawEnvironmentValue);
+        uint32_t parsed = 0;
+        if (!Oblivion::ServerConfig::ParseUint32Decimal(envValueToParse, parsed, heartbeatConfigError)) {
+            heartbeatConfigError = std::string(name) + ": " + heartbeatConfigError;
+            return false;
         }
+        target = parsed;
+        return true;
     };
-    
     Oblivion::HeartbeatConfig globalHbCfg;
     globalHbCfg.interval_ms = g_serverSettings.heartbeat.intervalMs;
     globalHbCfg.jitter_ms = g_serverSettings.heartbeat.jitterMs;
     globalHbCfg.timeout_ms = g_serverSettings.heartbeat.timeoutMs;
     globalHbCfg.max_consecutive_miss = g_serverSettings.heartbeat.maxConsecutiveMisses;
     globalHbCfg.rtt_warn_ms = g_serverSettings.heartbeat.rttWarnMs;
-    globalHbCfg.interval_ms = readEnvUint("OBLV_HB_INTERVAL_MS", globalHbCfg.interval_ms);
-    globalHbCfg.jitter_ms = readEnvUint("OBLV_HB_JITTER_MS", globalHbCfg.jitter_ms);
-    globalHbCfg.timeout_ms = readEnvUint("OBLV_HB_TIMEOUT_MS", globalHbCfg.timeout_ms);
-    globalHbCfg.max_consecutive_miss = readEnvUint("OBLV_HB_MAX_MISS", globalHbCfg.max_consecutive_miss);
-    globalHbCfg.rtt_warn_ms = readEnvUint("OBLV_HB_RTT_WARN_MS", globalHbCfg.rtt_warn_ms);
-    // Bound externally supplied timing values to avoid zero intervals and overflow.
-    if (globalHbCfg.interval_ms < 250 || globalHbCfg.interval_ms > 60000) globalHbCfg.interval_ms = 3000;
-    if (globalHbCfg.timeout_ms < 250 || globalHbCfg.timeout_ms > 60000) globalHbCfg.timeout_ms = 4000;
-    if (globalHbCfg.max_consecutive_miss < 1 || globalHbCfg.max_consecutive_miss > 10) globalHbCfg.max_consecutive_miss = 3;
-    if (globalHbCfg.jitter_ms >= globalHbCfg.interval_ms || globalHbCfg.jitter_ms > 30000) {
-        globalHbCfg.jitter_ms = (std::min)(250U, globalHbCfg.interval_ms / 4U);
+    if (!readEnvUint("OBLV_HB_INTERVAL_MS", globalHbCfg.interval_ms) ||
+        !readEnvUint("OBLV_HB_JITTER_MS", globalHbCfg.jitter_ms) ||
+        !readEnvUint("OBLV_HB_TIMEOUT_MS", globalHbCfg.timeout_ms) ||
+        !readEnvUint("OBLV_HB_MAX_MISS", globalHbCfg.max_consecutive_miss) ||
+        !readEnvUint("OBLV_HB_RTT_WARN_MS", globalHbCfg.rtt_warn_ms) ||
+        !Oblivion::Config::ValidateHeartbeatSettings(
+            globalHbCfg.interval_ms, globalHbCfg.jitter_ms, globalHbCfg.timeout_ms,
+            globalHbCfg.max_consecutive_miss, globalHbCfg.rtt_warn_ms, heartbeatConfigError)) {
+        std::cerr << "[FATAL] Invalid heartbeat configuration: " << heartbeatConfigError << std::endl;
+        closesocket_impl(ListenSocket);
+        if (g_tlsServerContext != nullptr) { SSL_CTX_free(g_tlsServerContext); g_tlsServerContext = nullptr; }
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 1;
     }
-    if (globalHbCfg.rtt_warn_ms > 60000) globalHbCfg.rtt_warn_ms = 1500;
     g_heartbeatConfig = globalHbCfg;
     std::cout << "[HB CFG] interval=" << globalHbCfg.interval_ms << "ms jitter=" << globalHbCfg.jitter_ms
               << "ms timeout=" << globalHbCfg.timeout_ms << "ms maxMiss=" << globalHbCfg.max_consecutive_miss
