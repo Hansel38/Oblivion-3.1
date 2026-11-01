@@ -56,11 +56,18 @@ jobs:
           & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install openssl:x64-windows-static-md openssl:x86-windows-static-md --disable-metrics
           "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Generate disposable network policy for compile-only CI
+      - name: Generate disposable policies for compile-only CI
         shell: pwsh
         run: |
-          # CI validates compilation only; this host/pin must never be shipped.
+          # The generated endpoint/pin and fixture hashes are for compilation only and must never ship.
           python tools/generate_production_network_config.py --server-endpoints "ci.invalid:54321" --tls-pin-sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $package = Join-Path $env:RUNNER_TEMP "oblivion-compile-only-package"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          [System.IO.File]::WriteAllBytes((Join-Path $package "RRO.exe"), [System.Text.Encoding]::ASCII.GetBytes("CI ONLY - NOT A REAL GAME EXECUTABLE"))
+          [System.IO.File]::WriteAllBytes((Join-Path $package "en.grf"), [System.Text.Encoding]::ASCII.GetBytes("CI ONLY - NOT A REAL GRF"))
+          [System.IO.File]::WriteAllBytes((Join-Path $package "DATA.ini"), [System.Text.Encoding]::ASCII.GetBytes("[CI ONLY]"))
+          python tools/generate_integrity_manifest.py $package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Release x64 solution
