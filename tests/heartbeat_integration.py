@@ -446,6 +446,35 @@ def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
                 f"exit={result.returncode}, output={output!r}"
             )
 
+def verify_invalid_heartbeat_environment_is_rejected(
+    server_binary: Path, server_certificate: Path, server_key: Path
+) -> None:
+    cases = [
+        ("250ms", "decimal digits only"),
+        ("100", "heartbeat.interval_ms must be in the range 250..60000"),
+        ("4294967296", "unsigned 32-bit range"),
+    ]
+    for value, expected_message in cases:
+        env = os.environ.copy()
+        env["OBLIVION_SECRET"] = TEST_SECRET
+        env["OBLIVION_TLS_CERT_FILE"] = str(server_certificate)
+        env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
+        env["OBLV_HB_INTERVAL_MS"] = value
+        result = subprocess.run(
+            [str(server_binary)],
+            cwd=str(server_key.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0 or "Invalid heartbeat configuration" not in output or expected_message not in output:
+            raise RuntimeError(
+                f"server accepted invalid heartbeat override {value!r}: exit={result.returncode}, output={output!r}"
+            )
+
+
 def verify_insecure_tls_private_key_is_rejected(
     server_binary: Path, server_certificate: Path, server_key: Path
 ) -> None:
@@ -523,6 +552,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     TLS_CONTEXT = ssl.create_default_context(cafile=str(ca_cert))
     TLS_CONTEXT.check_hostname = True
 
+    verify_invalid_heartbeat_environment_is_rejected(server_binary, server_cert, server_key)
     verify_insecure_tls_private_key_is_rejected(server_binary, server_cert, server_key)
 
     ban_list_path = server_binary.parent / "bans.txt"
