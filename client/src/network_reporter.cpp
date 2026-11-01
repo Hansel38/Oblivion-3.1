@@ -234,9 +234,8 @@ namespace {
         }
     }
 
-    NetworkConfiguration LoadNetworkConfiguration(const std::string& fallbackHost, int fallbackPort) {
+    NetworkConfiguration LoadNetworkConfiguration() {
         NetworkConfiguration cfg;
-        cfg.defaultPort = fallbackPort;
 
         // Parse the runtime YAML beside the game executable. The YAML file is
         // optional for backward compatibility, but a present invalid file is
@@ -426,10 +425,8 @@ namespace {
             cfg.tlsPinSpec.clear();
         }
 #else
-        // ---- 3) Default dari kode (fallback terakhir) ----
-        if (cfg.endpoints.empty()) {
-            AppendEndpointList(cfg, fallbackHost + ":" + std::to_string(cfg.defaultPort));
-        }
+        // No implicit localhost/public endpoint fallback. Development must configure
+        // an endpoint via YAML, legacy config, or the supported environment variables.
 #endif
 
         return cfg;
@@ -565,8 +562,8 @@ namespace {
 }
 
 namespace Oblivion {
-    NetworkReporter::NetworkReporter(const std::string& serverIP, int serverPort, const std::string& secretKey)
-        : m_serverIP(serverIP), m_serverPort(serverPort), m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
+    NetworkReporter::NetworkReporter(const std::string& secretKey)
+        : m_secretKey(secretKey), m_hbSocket(INVALID_SOCKET) {
         // Resolve configuration before acquiring OS resources.
         m_secretValid = (m_secretKey.size() >= kMinSharedSecretLength &&
                          m_secretKey.size() <= kMaxSharedSecretLength &&
@@ -648,7 +645,7 @@ namespace Oblivion {
     }
 
     void NetworkReporter::LoadConfiguration() {
-        const NetworkConfiguration cfg = LoadNetworkConfiguration(m_serverIP, m_serverPort);
+        const NetworkConfiguration cfg = LoadNetworkConfiguration();
 
         if (!Oblivion::Tls::ParseSha256PinList(cfg.tlsPinSpec, m_tlsPins, m_tlsPinError)) {
             m_tlsPins.clear();
@@ -661,11 +658,6 @@ namespace Oblivion {
         for (const auto& ep : cfg.endpoints) {
             m_endpoints.push_back(Endpoint{ep.host, ep.port});
         }
-        if (m_endpoints.empty()) {
-            // Minimal satu endpoint supaya check-in tidak pernah "mati total".
-            m_endpoints.push_back(Endpoint{m_serverIP, m_serverPort});
-        }
-
         m_activeEndpoint = 0;
 #if OBLIVION_ALLOW_NETWORK_FAIL_OPEN
         m_failClosed = cfg.failClosed;
