@@ -56,4 +56,16 @@ inline bool CanTrustUnsignedModuleByName(
     return isAllowlistedName && IsPathWithinDirectory(modulePath, gameDirectory);
 }
 
+
+inline bool ShouldWhitelistWindowsSystemProcess(
+    bool nameIsKnownSystemProcess,
+    bool imagePathResolved,
+    bool imageIsInsideWindowsDirectory,
+    bool hasTrustedSignature) noexcept {
+    return nameIsKnownSystemProcess &&
+        imagePathResolved &&
+        imageIsInsideWindowsDirectory &&
+        hasTrustedSignature;
+}
+
 } // namespace Oblivion::PathPolicy

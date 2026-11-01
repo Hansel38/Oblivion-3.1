@@ -56,13 +56,15 @@ std::wstring ResolveWindowsDirectory() {
 const std::vector<std::wstring> Oblivion::DigitalSignatureValidator::m_trustedPublishers = {
     L"Microsoft Corporation",
     L"Microsoft Windows",
+    L"Microsoft Windows Publisher",
     L"NVIDIA Corporation",
     L"Advanced Micro Devices, Inc.",
     L"Intel Corporation",
     L"Valve Corporation", // Untuk DLL Steam
     L"Discord Inc.",      // Untuk DLL Discord
     L"Google LLC",        // Untuk DLL Chrome/Gecko
-    L"Mozilla Corporation" // Untuk DLL Firefox
+    L"Mozilla Corporation", // Untuk DLL Firefox
+    L"VideoLAN"              // VLC (explicitly listed process publisher)
     // Tambahkan penerbit lain yang Anda percaya di sini
 };
 
@@ -74,6 +76,8 @@ const std::map<std::wstring, std::wstring> Oblivion::DigitalSignatureValidator::
     {L"firefox.exe", L"Mozilla Corporation"},
     {L"msedge.exe", L"Microsoft Corporation"},
     {L"msedgewebview2.exe", L"Microsoft Corporation"},  // Microsoft Edge WebView2 Runtime
+    {L"msmpeng.exe", L"Microsoft Corporation"},   // Windows Defender antimalware
+    {L"mssense.exe", L"Microsoft Corporation"},    // Microsoft Defender for Endpoint
     
     // Communication apps
     {L"discord.exe", L"Discord Inc."},
@@ -662,13 +666,11 @@ namespace Oblivion {
             publisherName = actualPublisher;
 
             if (!actualPublisher.empty()) {
-                std::wstring lowerActual = actualPublisher;
-                std::transform(lowerActual.begin(), lowerActual.end(), lowerActual.begin(), ::towlower);
-
                 for (const auto& trustedPublisher : m_trustedPublishers) {
-                    std::wstring lowerTrusted = trustedPublisher;
-                    std::transform(lowerTrusted.begin(), lowerTrusted.end(), lowerTrusted.begin(), ::towlower);
-                    if (!lowerTrusted.empty() && lowerActual.find(lowerTrusted) != std::wstring::npos) {
+                    // A trusted brand appearing as a substring is not enough:
+                    // exact publisher identity avoids names such as "Microsoft Corporation Fake".
+                    if (Oblivion::SignaturePolicy::IsExactPublisherMatch(
+                            actualPublisher, trustedPublisher)) {
                         return SignatureVerdict::TrustedPublisher;
                     }
                 }

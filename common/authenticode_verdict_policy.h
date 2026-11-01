@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cwctype>
+#include <string>
 
 namespace Oblivion::SignaturePolicy {
 
@@ -46,6 +48,29 @@ constexpr WinTrustResultClass ClassifyWinTrustResult(std::uint32_t status) noexc
         // failures to avoid banning legitimate applications on infrastructure errors.
         return WinTrustResultClass::Inconclusive;
     }
+}
+
+
+inline std::wstring NormalizePublisherName(std::wstring publisher) {
+    auto isSpace = [](wchar_t ch) { return std::iswspace(static_cast<std::wint_t>(ch)) != 0; };
+    while (!publisher.empty() && isSpace(publisher.front())) {
+        publisher.erase(publisher.begin());
+    }
+    while (!publisher.empty() && isSpace(publisher.back())) {
+        publisher.pop_back();
+    }
+    for (wchar_t& ch : publisher) {
+        ch = static_cast<wchar_t>(std::towlower(static_cast<std::wint_t>(ch)));
+    }
+    return publisher;
+}
+
+inline bool IsExactPublisherMatch(
+    const std::wstring& actual,
+    const std::wstring& trusted) {
+    const std::wstring normalizedActual = NormalizePublisherName(actual);
+    const std::wstring normalizedTrusted = NormalizePublisherName(trusted);
+    return !normalizedActual.empty() && normalizedActual == normalizedTrusted;
 }
 
 } // namespace Oblivion::SignaturePolicy

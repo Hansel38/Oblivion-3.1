@@ -4,6 +4,13 @@
 #include <iostream>
 
 namespace {
+void Expect(bool condition, const char* description) {
+    if (!condition) {
+        std::cerr << "FAIL: " << description << '\\n';
+        std::exit(1);
+    }
+}
+
 void Expect(
     Oblivion::SignaturePolicy::WinTrustResultClass actual,
     Oblivion::SignaturePolicy::WinTrustResultClass expected,
@@ -35,6 +42,16 @@ int main() {
         "an untrusted root remains distinct from a proven content-integrity failure");
     Expect(ClassifyWinTrustResult(0x80092013u), WinTrustResultClass::Inconclusive,
         "offline revocation infrastructure is not misclassified as tampering");
+
+    using Oblivion::SignaturePolicy::IsExactPublisherMatch;
+    Expect(IsExactPublisherMatch(L"Microsoft Corporation", L"microsoft corporation"),
+        "publisher matching is case-insensitive");
+    Expect(IsExactPublisherMatch(L"  VideoLAN  ", L"VideoLAN"),
+        "publisher matching ignores surrounding whitespace");
+    Expect(!IsExactPublisherMatch(L"Microsoft Corporation Fake", L"Microsoft Corporation"),
+        "a publisher name containing a trusted brand is not an exact trusted publisher");
+    Expect(!IsExactPublisherMatch(L"Not Microsoft Corporation", L"Microsoft Corporation"),
+        "a publisher name with a trusted brand as a substring is rejected");
 
     std::cout << "Authenticode verdict policy tests passed\n";
     return 0;
