@@ -8,13 +8,14 @@
 #   hostname/IP SAN. Do not disable TLS verification to make a connection work.
 # - OBLIVION_SECRET must match the server; use the supported environment or
 #   secret.dat mechanism instead of placing secrets in this file.
+# - Add your real deployment hostname/IP below. An empty list falls back to the
+#   endpoint provisioned in the compiled Release policy.
 
 version: 1
 
 server:
   default_port: 54321
-  endpoints:
-    - "shield.your-domain.example:54321"
+  endpoints: []
 
 tls:
   # Development only. Do not rely on this value in Release.
