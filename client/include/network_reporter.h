@@ -14,9 +14,9 @@
 namespace Oblivion {
     class NetworkReporter {
     public:
-        // defaultHost/defaultPort dipakai HANYA sebagai fallback bila tidak ada
-        // konfigurasi lain (file oblivion.cfg / environment variable).
-        NetworkReporter(const std::string& defaultHost, int defaultPort, const std::string& secretKey);
+        // Endpoints must come from runtime config or the provisioned Release policy.
+        // There is deliberately no implicit localhost/public-IP fallback.
+        explicit NetworkReporter(const std::string& secretKey);
         ~NetworkReporter();
 
         // Fungsi untuk check-in ke server (cek apakah di-ban).
@@ -53,8 +53,6 @@ namespace Oblivion {
 
         std::function<ClientStatus()> m_statusProvider;
 
-        std::string m_serverIP;   // fallback host (parameter konstruktor)
-        int m_serverPort;         // fallback port
         std::string m_hwid;       // Hardware ID yang di-generate saat konstruktor
         bool m_hwidValid = false; // true bila m_hwid berformat sah (hex + dash) dan layak dikirim
         std::string m_secretKey;  // Shared key loaded from environment/config
