@@ -15,6 +15,7 @@ from production_network_config import (
     parse_endpoint_list,
     parse_pin_list,
     render_header,
+    validate_deployable_endpoints,
 )
 
 
@@ -60,6 +61,11 @@ def main() -> int:
         help="comma/semicolon/space-separated host:port endpoints; IPv6 must use [address]:port",
     )
     parser.add_argument(
+        "--allow-test-endpoints",
+        action="store_true",
+        help="allow reserved test endpoints (compile-only CI use; never for production)",
+    )
+    parser.add_argument(
         "--tls-pin-sha256",
         required=True,
         help="one or more real 64-hex SHA-256 leaf certificate pins, comma/semicolon/space-separated",
@@ -74,6 +80,9 @@ def main() -> int:
 
     try:
         endpoints = parse_endpoint_list(args.server_endpoints)
+        validate_deployable_endpoints(
+            endpoints, allow_test_endpoints=args.allow_test_endpoints
+        )
         pins = parse_pin_list(args.tls_pin_sha256)
         rendered = render_header(endpoints, pins)
         write_atomically(args.output, rendered)
