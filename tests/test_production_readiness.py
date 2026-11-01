@@ -83,7 +83,7 @@ class ProductionReadinessTests(unittest.TestCase):
         self.unsigned_module_manifest.write_text(
             "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\n"
             "namespace Oblivion::UnsignedModuleManifest { "
-            "inline constexpr Entry kEntries[] = {{L\"__none__\", \"PLACEHOLDER\"}}; "
+            "inline constexpr Entry kEntries[] = {{L\"client.dll\", \"0000000000000000000000000000000000000000000000000000000000000000\"}}; "
             "inline constexpr std::size_t kEntryCount = 0; }\n",
             encoding="utf-8",
         )
