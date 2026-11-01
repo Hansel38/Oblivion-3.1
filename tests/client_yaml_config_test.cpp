@@ -44,6 +44,13 @@ int main() {
     Expect(settings.failClosed, "fail-closed policy is loaded");
     Expect(settings.tlsPinSha256.size() == 64, "development pin is read from YAML");
 
+    ClientSettings emptyEndpointSettings;
+    std::istringstream emptyEndpoints(
+        "version: 1\\nserver:\\n  default_port: 54321\\n  endpoints: []\\n");
+    Expect(ParseClientYaml(emptyEndpoints, emptyEndpointSettings, error) &&
+           emptyEndpointSettings.endpoints.empty(),
+           "empty endpoint list is valid when Release uses the provisioned policy");
+
     for (const std::string invalidYaml : {
             "version: 2\n",
             "version: 1\nserver:\n  endpoints: shield.example.com:54321\n",
