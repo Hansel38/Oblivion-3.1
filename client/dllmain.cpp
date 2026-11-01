@@ -25,7 +25,6 @@
 static std::atomic<Oblivion::ProcessWatcher*> g_pProcessWatcher{ nullptr };
 
 // Buat instance global NetworkReporter agar bisa diakses
-// Ganti 127.0.0.1 dengan IP server Anda
 static std::atomic<Oblivion::NetworkReporter*> g_pNetworkReporter{ nullptr };
 static std::atomic<Oblivion::SelfIntegrityGuard*> g_pSelfIntegrityGuard{ nullptr };
 static HMODULE g_hSelfModule = nullptr;
@@ -331,9 +330,9 @@ void InitializeSecuritySystem() {
     try {
         // Ambil secret yang di-obfuscate (bukan string literal langsung).
         const std::string kClientSecret = Oblivion::GetClientSecret();
-        // localhost adalah fallback khusus development. Endpoint produksi dibaca
-        // dari oblivion.yaml; TLS pin tetap berasal dari header yang dikompilasi.
-        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
+        // Endpoint berasal dari oblivion.yaml/legacy config in development, or the
+        // provisioned Release policy. There is no implicit localhost fallback.
+        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter(kClientSecret);
         g_pNetworkReporter.store(reporter);
         std::cout << "[INIT] Network reporter created" << std::endl;
 
