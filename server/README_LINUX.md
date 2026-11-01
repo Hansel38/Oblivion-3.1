@@ -247,7 +247,7 @@ openssl rand -hex 32
    secret development `DEV_SECRET_NOT_SET`; server sekarang menolak startup dengan nilai ini.
    Jangan pernah memakai nilai development tersebut di produksi.
    - Create a file named `secret.dat` in the same directory as the server executable
-   - The file should contain XOR-encoded secret (same format as Windows version)
+   - The file should contain XOR-encoded secret (same format as Windows version). On Linux, it must be a regular file owned by the service user with mode `0600` (or stricter); group/world permissions and symlinks are rejected.
 
 ### Production release preflight (required)
 
