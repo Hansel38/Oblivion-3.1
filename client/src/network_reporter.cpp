@@ -666,7 +666,10 @@ namespace Oblivion {
     void NetworkReporter::LoadConfiguration() {
         const NetworkConfiguration cfg = LoadNetworkConfiguration();
 
-        if (!Oblivion::Tls::ParseSha256PinList(cfg.tlsPinSpec, m_tlsPins, m_tlsPinError)) {
+        if (cfg.tlsPinSettingInvalid) {
+            m_tlsPins.clear();
+            m_tlsPinError = "TLS certificate pin environment value exceeds the supported buffer limit";
+        } else if (!Oblivion::Tls::ParseSha256PinList(cfg.tlsPinSpec, m_tlsPins, m_tlsPinError)) {
             m_tlsPins.clear();
         } else {
             m_tlsPinError.clear();
