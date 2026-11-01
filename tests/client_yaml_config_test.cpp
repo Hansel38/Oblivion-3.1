@@ -49,6 +49,7 @@ int main() {
             "version: 1\nserver:\n  endpoints: shield.example.com:54321\n",
             "version: 1\nserver:\n  endpoints:\n    - ''\n",
             "version: 1\nserver:\n  endpoints:\n    - 'host name:54321'\n",
+            "version: 1\nserver:\n  endpoints:\n    - 'host-a:54321,host-b:54321'\n",
             "version: 1\nserver:\n  default_port: 0\n",
             "version: 1\nconnection:\n  retry_count: 0\n",
             "version: 1\nconnection:\n  connect_timeout_ms: 999999\n",
