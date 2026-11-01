@@ -126,22 +126,15 @@ static SSL_CTX* InitializeTlsServerContext() {
 }
 
 static SSL* AcceptTlsConnection(SOCKET clientSocket) {
-    const DWORD handshakeTimeoutMs = 5000;
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&handshakeTimeoutMs), sizeof(handshakeTimeoutMs));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-        reinterpret_cast<const char*>(&handshakeTimeoutMs), sizeof(handshakeTimeoutMs));
+    u_long nonBlocking = 1;
+    if (ioctlsocket(clientSocket, FIONBIO, &nonBlocking) != 0) {
+        std::cerr << "[TLS] Cannot set accepted socket nonblocking; closing connection." << std::endl;
+        return nullptr;
+    }
 
     std::string error;
     SSL* session = Oblivion::Tls::Accept(
         g_tlsServerContext, static_cast<int>(clientSocket), error);
-
-    const DWORD noTimeout = 0;
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-        reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-
     if (session == nullptr) {
         std::cerr << "[TLS] Client TLS handshake rejected: " << error << std::endl;
     }
@@ -771,6 +764,21 @@ void SleepHeartbeat(uint32_t milliseconds) {
 #endif
 }
 
+bool WaitForTlsIo(SOCKET socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
+    const int sslError = SSL_get_error(tls, sslResult);
+    if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE) return false;
+    fd_set readSet;
+    fd_set writeSet;
+    FD_ZERO(&readSet);
+    FD_ZERO(&writeSet);
+    if (sslError == SSL_ERROR_WANT_READ) FD_SET(socket, &readSet);
+    else FD_SET(socket, &writeSet);
+    struct timeval timeout{};
+    timeout.tv_sec = timeoutMs / 1000;
+    timeout.tv_usec = (timeoutMs % 1000) * 1000;
+    return select(0, &readSet, &writeSet, nullptr, &timeout) > 0;
+}
+
 bool SendAllBytes(SOCKET socket, const std::string& payload) {
     size_t sent = 0;
     while (sent < payload.size()) {
@@ -785,6 +793,10 @@ bool SendAllBytes(SOCKET socket, const std::string& payload) {
 #else
             result = static_cast<int>(send(socket, payload.data() + sent, static_cast<size_t>(chunk), SEND_FLAGS));
 #endif
+        }
+        if (g_activeTls != nullptr && result <= 0) {
+            if (WaitForTlsIo(socket, g_activeTls, result, 5000)) continue;
+            return false;
         }
         if (result <= 0) return false;
         sent += static_cast<size_t>(result);
@@ -824,6 +836,13 @@ bool ReceiveSemicolonFrame(SOCKET socket, std::string& buffered, uint32_t timeou
 #else
             received = static_cast<int>(recv(socket, chunk, sizeof(chunk), 0));
 #endif
+        }
+        if (g_activeTls != nullptr && received <= 0) {
+            const int sslError = SSL_get_error(g_activeTls, received);
+            if (sslError == SSL_ERROR_WANT_READ) continue;
+            if (sslError == SSL_ERROR_WANT_WRITE &&
+                WaitForTlsIo(socket, g_activeTls, received, remainingMs)) continue;
+            return false;
         }
         if (received <= 0 || buffered.size() + static_cast<size_t>(received) > maxBytes) return false;
         buffered.append(chunk, static_cast<size_t>(received));
