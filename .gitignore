@@ -42,3 +42,6 @@
 oblivion.cfg
 oblivion_client_errors.log
 secret.dat
+
+# Runtime client configuration kept beside the game executable
+oblivion.yaml

@@ -24,7 +24,7 @@ jobs:
       - name: Install OpenSSL development headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev
+          sudo apt-get install -y build-essential libssl-dev libyaml-cpp-dev
 
       - name: Validate startup script syntax
         run: bash -n server/oblivion-start
@@ -53,7 +53,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
           & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install openssl:x64-windows-static-md openssl:x86-windows-static-md --disable-metrics
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install openssl:x64-windows-static-md openssl:x86-windows-static-md yaml-cpp:x64-windows-static-md yaml-cpp:x86-windows-static-md --disable-metrics
           "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Generate disposable policies for compile-only CI

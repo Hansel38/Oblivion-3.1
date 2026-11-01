@@ -4,7 +4,7 @@
 CXX ?= g++
 CXXFLAGS += -std=c++17 -Wall -Wextra -O2 -pthread
 CPPFLAGS ?=
-LDLIBS += -lssl -lcrypto -pthread
+LDLIBS += -lssl -lcrypto -lyaml-cpp -pthread
 
 INCLUDE_DIR := include
 SRC_DIR := src
@@ -27,13 +27,17 @@ TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 PATH_POLICY_TEST_TARGET := $(BUILD_DIR)/windows_path_policy_test
 AUTHENTICODE_POLICY_TEST_TARGET := $(BUILD_DIR)/authenticode_verdict_policy_test
 LISTEN_PORT_TEST_TARGET := $(BUILD_DIR)/server_listen_port_test
+SERVER_YAML_TEST_TARGET := $(BUILD_DIR)/server_yaml_config_test
+CLIENT_YAML_TEST_TARGET := $(BUILD_DIR)/client_yaml_config_test
 
-test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET)
+test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HWID_TEST_TARGET)
 	./$(PATH_POLICY_TEST_TARGET)
 	./$(AUTHENTICODE_POLICY_TEST_TARGET)
 	./$(LISTEN_PORT_TEST_TARGET)
+	./$(SERVER_YAML_TEST_TARGET)
+	./$(CLIENT_YAML_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
@@ -61,6 +65,12 @@ $(AUTHENTICODE_POLICY_TEST_TARGET): ../tests/authenticode_verdict_policy_test.cp
 
 $(LISTEN_PORT_TEST_TARGET): ../tests/server_listen_port_test.cpp ../common/server_listen_port.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
+
+$(SERVER_YAML_TEST_TARGET): ../tests/server_yaml_config_test.cpp ../common/server_yaml_config.h ../common/server_listen_port.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
+
+$(CLIENT_YAML_TEST_TARGET): ../tests/client_yaml_config_test.cpp ../common/client_yaml_config.h ../common/server_yaml_config.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
 
 $(TLS_PROBE_TARGET): ../tests/tls_client_probe.cpp ../common/tls_transport.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< -lssl -lcrypto
@@ -98,6 +108,12 @@ install: $(TARGET)
 	fi
 	install -d -m 0755 "$(INSTALL_DIR)"
 	install -m 0755 $(TARGET) "$(INSTALL_DIR)/$(TARGET)"
+	@if [ ! -e "$(INSTALL_DIR)/oblivion-server.yaml" ]; then \
+		install -m 0644 oblivion-server.yaml "$(INSTALL_DIR)/oblivion-server.yaml"; \
+		echo "Installed default YAML configuration to $(INSTALL_DIR)/oblivion-server.yaml"; \
+	else \
+		echo "Preserving existing $(INSTALL_DIR)/oblivion-server.yaml"; \
+	fi
 	@if [ -f "$(TLS_CERT_FILE)" ] && [ -f "$(TLS_KEY_FILE)" ]; then \
 		install -m 0644 "$(TLS_CERT_FILE)" "$(INSTALL_DIR)/server-cert.pem"; \
 		install -m 0600 "$(TLS_KEY_FILE)" "$(INSTALL_DIR)/server-key.pem"; \
