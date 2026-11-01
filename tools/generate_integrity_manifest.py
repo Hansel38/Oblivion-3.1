@@ -50,7 +50,7 @@ def calculate_sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def render_header(entries: Iterable[tuple[str, str, int]]) -> str:
+def render_header(entries: Iterable[tuple[str, str, str]]) -> str:
     lines = [
         "#pragma once",
         "",
