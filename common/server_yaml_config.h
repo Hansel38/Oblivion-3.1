@@ -236,7 +236,7 @@ inline bool ParseServerYaml(
         }
 
         std::string normalizedPort;
-        if (!ResolveListenPort(settings.listenPort.c_str(), "54321",
+        if (!Oblivion::ServerConfig::ResolveListenPort(settings.listenPort.c_str(), "54321",
                                normalizedPort, error)) {
             error = "server.listen_port: " + error;
             return false;
