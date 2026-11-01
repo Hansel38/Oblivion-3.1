@@ -132,6 +132,11 @@ def release_limits(project_path: Path, runtime_source_path: Path) -> int:
         "#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_ENFORCE_FILE_INTEGRITY != 1",
         "OBLIVION_MAX_HASH_FILE_SIZE_BYTES",
         "kMaxHashFileSizeBytes",
+        "GetFileInformationByHandleEx",
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        "initialBasicInfo.ChangeTime.QuadPart == finalBasicInfo.ChangeTime.QuadPart",
+        "unsigned long long totalBytesHashed",
+        "ERROR_FILE_TOO_LARGE",
     )
     for token in required_source_tokens:
         if token not in source:
