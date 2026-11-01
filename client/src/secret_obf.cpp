@@ -13,20 +13,35 @@ namespace Oblivion {
             return cached;
         }
 
-        // 1) Coba ambil dari environment variable (runtime configurable)
-        //    Set dengan nama OBLIVION_SECRET untuk override tanpa recompile
-        wchar_t envBuf[256] = {0};
-        DWORD envLen = GetEnvironmentVariableW(L"OBLIVION_SECRET", envBuf, 255);
-        if (envLen > 0 && envLen < 255) {
-            int size_needed = WideCharToMultiByte(CP_UTF8, 0, envBuf, (int)envLen, NULL, 0, NULL, NULL);
-            if (size_needed > 0) {
-                std::string envSecret(size_needed, '\0');
-                WideCharToMultiByte(CP_UTF8, 0, envBuf, (int)envLen, &envSecret[0], size_needed, NULL, NULL);
-                cached = envSecret;
+        // 1) Read the environment secret using its reported length. Never silently
+        // fall back to secret.dat when a configured environment value is malformed.
+        const DWORD requiredChars = GetEnvironmentVariableW(L"OBLIVION_SECRET", nullptr, 0);
+        if (requiredChars > 0) {
+            std::vector<wchar_t> envBuffer(static_cast<size_t>(requiredChars), L'\0');
+            const DWORD envLen = GetEnvironmentVariableW(
+                L"OBLIVION_SECRET", envBuffer.data(), requiredChars);
+            if (envLen == 0 || envLen >= requiredChars) {
+                cached.clear();
                 return cached;
             }
+            const int sizeNeeded = WideCharToMultiByte(
+                CP_UTF8, WC_ERR_INVALID_CHARS, envBuffer.data(), static_cast<int>(envLen),
+                nullptr, 0, nullptr, nullptr);
+            if (sizeNeeded <= 0) {
+                cached.clear();
+                return cached;
+            }
+            std::string envSecret(static_cast<size_t>(sizeNeeded), '\0');
+            const int converted = WideCharToMultiByte(
+                CP_UTF8, WC_ERR_INVALID_CHARS, envBuffer.data(), static_cast<int>(envLen),
+                &envSecret[0], sizeNeeded, nullptr, nullptr);
+            if (converted != sizeNeeded) {
+                cached.clear();
+                return cached;
+            }
+            cached = envSecret;
+            return cached;
         }
-
         // 2) Coba load dari file berdampingan (secret.dat) untuk produksi
         //    File berisi bytes yang sudah di-XOR (encoded) agar tidak terlihat literal
         std::wstring secretPathW;
