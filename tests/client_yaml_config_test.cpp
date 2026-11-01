@@ -46,7 +46,7 @@ int main() {
 
     ClientSettings emptyEndpointSettings;
     std::istringstream emptyEndpoints(
-        "version: 1\\nserver:\\n  default_port: 54321\\n  endpoints: []\\n");
+        "version: 1\nserver:\n  default_port: 54321\n  endpoints: []\n");
     Expect(ParseClientYaml(emptyEndpoints, emptyEndpointSettings, error) &&
            emptyEndpointSettings.endpoints.empty(),
            "empty endpoint list is valid when Release uses the provisioned policy");
