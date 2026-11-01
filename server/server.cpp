@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include "../common/tls_transport.h"
+#include "../common/server_listen_port.h"
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
@@ -1301,6 +1302,14 @@ int main() {
         return 1;
     }
 
+    std::string listenPort;
+    std::string listenPortError;
+    if (!Oblivion::ServerConfig::ResolveListenPort(
+            std::getenv("OBLIVION_LISTEN_PORT"), DEFAULT_PORT, listenPort, listenPortError)) {
+        std::cerr << "[FATAL] Invalid OBLIVION_LISTEN_PORT: " << listenPortError << std::endl;
+        return 1;
+    }
+
     if (GetExecutableDirectory().empty()) {
         std::cerr << "[FATAL] Cannot resolve executable directory; refusing to start because file paths cannot be secured." << std::endl;
         return 1;
@@ -1334,7 +1343,7 @@ int main() {
     hints.ai_flags = AI_PASSIVE; // Untuk bind()
 
     // Resolve alamat server dan port
-    iResult = getaddrinfo(NULL, DEFAULT_PORT, &hints, &result);
+    iResult = getaddrinfo(NULL, listenPort.c_str(), &hints, &result);
     if (iResult != 0) {
         std::cerr << "getaddrinfo gagal dengan error: " << iResult << std::endl;
         WSACleanup();
@@ -1384,7 +1393,7 @@ int main() {
     std::cout << "  OBLIVION HACK SHIELD - Server Component" << std::endl;
     std::cout << "  Version 1.0 - Ragnarok Online Protection" << std::endl;
     std::cout << "==================================================" << std::endl;
-    std::cout << "[INFO] Server berjalan dan mendengarkan di port " << DEFAULT_PORT << std::endl;
+    std::cout << "[INFO] Server berjalan dan mendengarkan di port " << listenPort << " (TCP)" << std::endl;
     std::cout << "[INFO] Ban list file: " << GetFilePath(BAN_LIST_FILE) << std::endl;
     std::cout << "[INFO] Violation log file: " << GetFilePath(VIOLATION_LOG_FILE) << std::endl;
     std::cout << "[INFO] Menunggu koneksi dari client..." << std::endl;
