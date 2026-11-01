@@ -172,6 +172,8 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn("CMSG_SIGNER_CERT_INFO_PARAM", source)
         self.assertIn("PCERT_INFO", source)
         self.assertNotIn("PCMSG_SIGNER_INFO", source)
+        self.assertIn("SignaturePolicy::IsExpectedPublisherMatch", source)
+        self.assertNotIn("lowerActual.find(lowerExpected)", source)
 
     def test_catalog_signature_fallback_is_present(self) -> None:
         source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")

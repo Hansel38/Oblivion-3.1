@@ -1035,34 +1035,30 @@ namespace Oblivion {
         return result;
     }
 
-    // Static function untuk verifikasi process signature dengan expected publisher
-    bool DigitalSignatureValidator::VerifyProcessSignature(const std::wstring& processPath, const std::wstring& expectedPublisher) {
-        // Step 1: Verify digital signature
-        if (VerifyFileSignatureStatus(processPath) != ERROR_SUCCESS) {
-            // Signature tidak valid atau tidak ada
+    // Verify an expected publisher using the same embedded/catalog signature policy.
+    // Do not use substring matching: "Vendor Fake" must not match "Vendor".
+    bool DigitalSignatureValidator::VerifyProcessSignature(
+        const std::wstring& processPath,
+        const std::wstring& expectedPublisher) {
+        if (processPath.empty() || expectedPublisher.empty()) {
             return false;
         }
 
-        // Step 2: Get publisher name
         std::wstring actualPublisher;
-        if (!GetFilePublisher(processPath, actualPublisher)) {
-            // Tidak bisa mendapatkan publisher
+        LONG status = VerifyFileSignatureStatus(processPath);
+        if (Oblivion::SignaturePolicy::ClassifyWinTrustResult(
+                static_cast<std::uint32_t>(status)) ==
+            Oblivion::SignaturePolicy::WinTrustResultClass::NoSignature) {
+            status = VerifyCatalogSignatureStatus(processPath, actualPublisher);
+        } else if (status == ERROR_SUCCESS) {
+            GetFilePublisher(processPath, actualPublisher);
+        }
+
+        if (status != ERROR_SUCCESS || actualPublisher.empty()) {
             return false;
         }
-
-        // Step 3: Compare with expected publisher (case-insensitive contains check)
-        std::wstring lowerActual = actualPublisher;
-        std::wstring lowerExpected = expectedPublisher;
-        std::transform(lowerActual.begin(), lowerActual.end(), lowerActual.begin(), ::towlower);
-        std::transform(lowerExpected.begin(), lowerExpected.end(), lowerExpected.begin(), ::towlower);
-
-        // Check if actual publisher contains expected publisher name
-        if (lowerActual.find(lowerExpected) != std::wstring::npos) {
-            return true;
-        }
-
-        // Publisher mismatch
-        return false;
+        return Oblivion::SignaturePolicy::IsExpectedPublisherMatch(
+            actualPublisher, expectedPublisher);
     }
 
     // Verifikasi signature file + kategorikan hasilnya.
