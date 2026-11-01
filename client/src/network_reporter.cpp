@@ -302,7 +302,7 @@ namespace {
         if (!yamlConfigPresent) {
         // ---- 1) Legacy oblivion.cfg (two passes so entry order does not matter) ----
         std::vector<std::pair<std::string, std::string>> fileEntries;
-        const std::wstring executableDirectory = GetExecutableDirectory();
+
         std::ifstream configFile;
         // Never let an unresolved executable path turn into a current-working-
         // directory lookup for endpoint or TLS pin configuration.
