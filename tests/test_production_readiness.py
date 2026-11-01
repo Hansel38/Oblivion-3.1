@@ -136,6 +136,13 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DATA.ini: package SHA-256 does not match", result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "POSIX key mode bits do not describe Windows ACLs")
+    def test_rejects_group_or_world_readable_tls_private_key(self) -> None:
+        self.key.chmod(0o644)
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("permissions expose the key to group/other users", result.stderr)
+
     def test_rejects_mismatched_tls_private_key(self) -> None:
         other_key = self.root / "other-key.pem"
         other_cert = self.root / "other-cert.pem"
