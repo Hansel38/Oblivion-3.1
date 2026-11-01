@@ -145,10 +145,8 @@ bool SameModuleFileStamp(const ModuleFileStamp& left, const ModuleFileStamp& rig
 }
 
 using CatAcquireContext2Fn = BOOL (WINAPI*)(
-    HCATADMIN*, const GUID*, PCWSTR, const CERT_STRONG_SIGN_PARA*, DWORD);
-using CatAcquireContextFn = BOOL (WINAPI*)(HCATADMIN*, const GUID*, DWORD);
+    HCATADMIN*, const GUID*, PCWSTR, PCCERT_STRONG_SIGN_PARA, DWORD);
 using CatCalcHash2Fn = BOOL (WINAPI*)(HCATADMIN, HANDLE, DWORD*, BYTE*, DWORD);
-using CatCalcHashFn = BOOL (WINAPI*)(HANDLE, DWORD*, BYTE*, DWORD);
 using CatEnumFromHashFn = HCATINFO (WINAPI*)(HCATADMIN, BYTE*, DWORD, DWORD, HCATINFO*);
 using CatCatalogInfoFn = BOOL (WINAPI*)(HCATINFO, CATALOG_INFO*, DWORD);
 using CatReleaseCatalogFn = BOOL (WINAPI*)(HCATADMIN, HCATINFO, DWORD);
@@ -258,10 +256,6 @@ LONG VerifyCatalogSignatureStatus(
         GetProcAddress(wintrustModule, "CryptCATAdminAcquireContext2"));
     const auto calcHash2 = reinterpret_cast<CatCalcHash2Fn>(
         GetProcAddress(wintrustModule, "CryptCATAdminCalcHashFromFileHandle2"));
-    const auto acquireContext = reinterpret_cast<CatAcquireContextFn>(
-        GetProcAddress(wintrustModule, "CryptCATAdminAcquireContext"));
-    const auto calcHash = reinterpret_cast<CatCalcHashFn>(
-        GetProcAddress(wintrustModule, "CryptCATAdminCalcHashFromFileHandle"));
     const auto enumCatalog = reinterpret_cast<CatEnumFromHashFn>(
         GetProcAddress(wintrustModule, "CryptCATAdminEnumCatalogFromHash"));
     const auto getCatalogInfo = reinterpret_cast<CatCatalogInfoFn>(
@@ -271,10 +265,12 @@ LONG VerifyCatalogSignatureStatus(
     const auto releaseContext = reinterpret_cast<CatReleaseContextFn>(
         GetProcAddress(wintrustModule, "CryptCATAdminReleaseContext"));
 
-    if (enumCatalog == nullptr || getCatalogInfo == nullptr ||
-        releaseCatalog == nullptr || releaseContext == nullptr ||
-        ((acquireContext2 == nullptr || calcHash2 == nullptr) &&
-         (acquireContext == nullptr || calcHash == nullptr))) {
+    if (acquireContext2 == nullptr || calcHash2 == nullptr ||
+        enumCatalog == nullptr || getCatalogInfo == nullptr ||
+        releaseCatalog == nullptr || releaseContext == nullptr) {
+        // Do not fall back to legacy SHA-1 catalog hashing in a production
+        // anti-cheat. If SHA-256 catalog APIs are unavailable, report an
+        // inconclusive verifier result instead of silently weakening the policy.
         FreeLibrary(wintrustModule);
         return TRUST_E_PROVIDER_UNKNOWN;
     }
@@ -308,18 +304,8 @@ LONG VerifyCatalogSignatureStatus(
     }
 
     HCATADMIN catalogAdmin = nullptr;
-    bool usedSha256 = false;
-    BOOL acquired = FALSE;
-    if (acquireContext2 != nullptr && calcHash2 != nullptr) {
-        // If the modern API exists but fails to initialize, preserve that error.
-        // Fall back to SHA-1 only when the modern exports are unavailable.
-        acquired = acquireContext2(
-            &catalogAdmin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-        usedSha256 = acquired != FALSE;
-    } else if (acquireContext != nullptr && calcHash != nullptr) {
-        acquired = acquireContext(&catalogAdmin, nullptr, 0);
-        usedSha256 = false;
-    }
+    const BOOL acquired = acquireContext2(
+        &catalogAdmin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
     if (!acquired || catalogAdmin == nullptr) {
         const LONG error = Win32ErrorToTrustStatus(GetLastError());
         CloseHandle(file);
@@ -328,9 +314,7 @@ LONG VerifyCatalogSignatureStatus(
     }
 
     DWORD hashLength = 0;
-    const BOOL sized = usedSha256
-        ? calcHash2(catalogAdmin, file, &hashLength, nullptr, 0)
-        : calcHash(file, &hashLength, nullptr, 0);
+    const BOOL sized = calcHash2(catalogAdmin, file, &hashLength, nullptr, 0);
     if (!sized || hashLength == 0 || hashLength > 128) {
         const LONG error = Win32ErrorToTrustStatus(GetLastError());
         releaseContext(catalogAdmin, 0);
@@ -340,9 +324,7 @@ LONG VerifyCatalogSignatureStatus(
     }
 
     std::vector<BYTE> hash(hashLength);
-    const BOOL hashed = usedSha256
-        ? calcHash2(catalogAdmin, file, &hashLength, hash.data(), 0)
-        : calcHash(file, &hashLength, hash.data(), 0);
+    const BOOL hashed = calcHash2(catalogAdmin, file, &hashLength, hash.data(), 0);
     if (!hashed || hashLength != hash.size()) {
         const LONG error = Win32ErrorToTrustStatus(GetLastError());
         releaseContext(catalogAdmin, 0);
@@ -381,7 +363,7 @@ LONG VerifyCatalogSignatureStatus(
         trustCatalog.hMemberFile = file;
         trustCatalog.pbCalculatedFileHash = hash.data();
         trustCatalog.cbCalculatedFileHash = hashLength;
-        trustCatalog.hCatAdmin = usedSha256 ? catalogAdmin : nullptr;
+        trustCatalog.hCatAdmin = catalogAdmin;
 
         WINTRUST_DATA trustData{};
         trustData.cbStruct = sizeof(trustData);

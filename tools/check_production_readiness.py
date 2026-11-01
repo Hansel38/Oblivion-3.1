@@ -342,7 +342,9 @@ def validate_module_signature_source(source_path: Path) -> None:
     required_tokens = (
         "VerifyCatalogSignatureStatus",
         "CryptCATAdminEnumCatalogFromHash",
+        "CryptCATAdminAcquireContext2",
         "CryptCATAdminCalcHashFromFileHandle2",
+        "BCRYPT_SHA256_ALGORITHM",
         "CMSG_SIGNER_CERT_INFO_PARAM",
         "PCERT_INFO",
         "WTD_CHOICE_CATALOG",

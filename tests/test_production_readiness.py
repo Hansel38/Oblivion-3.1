@@ -68,7 +68,8 @@ class ProductionReadinessTests(unittest.TestCase):
         self.write_network_config()
         self.signature_source.write_text(
             "VerifyCatalogSignatureStatus CryptCATAdminEnumCatalogFromHash "
-            "CryptCATAdminCalcHashFromFileHandle2 CMSG_SIGNER_CERT_INFO_PARAM "
+            "CryptCATAdminAcquireContext2 CryptCATAdminCalcHashFromFileHandle2 "
+            "BCRYPT_SHA256_ALGORITHM CMSG_SIGNER_CERT_INFO_PARAM "
             "PCERT_INFO WTD_CHOICE_CATALOG WTD_REVOKE_WHOLECHAIN "
             "WTD_DISABLE_MD2_MD4 ModuleTrustPolicy::Evaluate "
             "SameModuleFileStamp(initialStamp, finalStamp)\\n",
@@ -190,7 +191,9 @@ class ProductionReadinessTests(unittest.TestCase):
         for token in (
             "VerifyCatalogSignatureStatus",
             "CryptCATAdminEnumCatalogFromHash",
+            "CryptCATAdminAcquireContext2",
             "CryptCATAdminCalcHashFromFileHandle2",
+            "BCRYPT_SHA256_ALGORITHM",
             "WTD_CHOICE_CATALOG",
             "CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED",
         ):
@@ -205,7 +208,8 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_rejects_module_verifier_missing_catalog_signature_checks(self) -> None:
         self.signature_source.write_text(
-            "VerifyCatalogSignatureStatus CMSG_SIGNER_CERT_INFO_PARAM PCERT_INFO "
+            "VerifyCatalogSignatureStatus CryptCATAdminAcquireContext2 "
+            "CMSG_SIGNER_CERT_INFO_PARAM PCERT_INFO "
             "WTD_CHOICE_CATALOG WTD_REVOKE_WHOLECHAIN WTD_DISABLE_MD2_MD4 "
             "ModuleTrustPolicy::Evaluate SameModuleFileStamp(initialStamp, finalStamp)\\n",
             encoding="utf-8",
