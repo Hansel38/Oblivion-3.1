@@ -54,6 +54,10 @@ class ProductionReadinessTests(unittest.TestCase):
         server_linux = (ROOT / "server" / "server_linux.cpp").read_text(encoding="utf-8")
         for source in (client_source, server_source, server_windows, server_linux):
             self.assertNotIn("DEV_SECRET_NOT_SET", source)
+        client_source = (ROOT / "client" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
+        self.assertIn('GetEnvironmentVariableW(L"OBLIVION_SECRET", nullptr, 0)', client_source)
+        self.assertIn("WC_ERR_INVALID_CHARS", client_source)
+        self.assertNotIn("wchar_t envBuf[256]", client_source)
         self.assertIn("cached.clear();", client_source)
         self.assertIn("cached.clear();", server_source)
 
