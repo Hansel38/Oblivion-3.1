@@ -41,6 +41,7 @@ class ProductionReadinessTests(unittest.TestCase):
         self.project = self.root / "client.vcxproj"
         self.runtime_source = self.root / "file_integrity_check.cpp"
         self.signature_source = self.root / "digital_signature_validator.cpp"
+        self.unsigned_module_manifest = self.root / "unsigned_module_manifest.generated.h"
         self.network_config = self.root / "production_network_config.generated.h"
         self.cert = self.root / "server-cert.pem"
         self.key = self.root / "server-key.pem"
@@ -72,7 +73,18 @@ class ProductionReadinessTests(unittest.TestCase):
             "BCRYPT_SHA256_ALGORITHM CMSG_SIGNER_CERT_INFO_PARAM "
             "PCERT_INFO WTD_CHOICE_CATALOG WTD_REVOKE_WHOLECHAIN "
             "WTD_DISABLE_MD2_MD4 ModuleTrustPolicy::Evaluate "
-            "SameModuleFileStamp(initialStamp, finalStamp)\\n",
+            "SameModuleFileStamp(initialStamp, finalStamp) "
+            "_stricmp(entry.sha256, actualHash.c_str()) == 0 "
+            "CanTrustUnsignedModuleByName UnsignedModuleManifest::kReady "
+            "CalculateUnsignedModuleSha256 "
+            'm_allowedUnsignedDlls = { L"client.dll", L"granny2.dll" }\\n',
+            encoding="utf-8",
+        )
+        self.unsigned_module_manifest.write_text(
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\\n"
+            "namespace Oblivion::UnsignedModuleManifest { "
+            "inline constexpr Entry kEntries[] = {{L\"__none__\", \"PLACEHOLDER\"}}; "
+            "inline constexpr std::size_t kEntryCount = 0; }\\n",
             encoding="utf-8",
         )
 
@@ -167,6 +179,7 @@ class ProductionReadinessTests(unittest.TestCase):
                 "--client-project", str(self.project),
                 "--runtime-source", str(self.runtime_source),
                 "--signature-source", str(self.signature_source),
+                "--unsigned-module-manifest", str(self.unsigned_module_manifest),
                 "--network-config", str(self.network_config),
                 "--tls-cert", str(self.cert),
                 "--tls-key", str(self.key),
@@ -205,6 +218,15 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PRODUCTION PREFLIGHT PASSED", result.stdout)
         self.assertIn("compile-time endpoint", result.stdout)
+
+    def test_rejects_unsigned_module_manifest_not_ready(self) -> None:
+        self.unsigned_module_manifest.write_text(
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 0\\n",
+            encoding="utf-8",
+        )
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsigned-module SHA-256 manifest is not generated", result.stderr)
 
     def test_rejects_module_verifier_missing_catalog_signature_checks(self) -> None:
         self.signature_source.write_text(

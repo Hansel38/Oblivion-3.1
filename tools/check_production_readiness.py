@@ -30,6 +30,7 @@ DEFAULT_CLIENT_PROJECT = ROOT / "client" / "client.vcxproj"
 DEFAULT_RUNTIME_SOURCE = ROOT / "client" / "src" / "file_integrity_check.cpp"
 DEFAULT_NETWORK_SOURCE = ROOT / "client" / "src" / "network_reporter.cpp"
 DEFAULT_SIGNATURE_SOURCE = ROOT / "client" / "src" / "digital_signature_validator.cpp"
+DEFAULT_UNSIGNED_MODULE_MANIFEST = ROOT / "client" / "include" / "unsigned_module_manifest.generated.h"
 DEFAULT_NETWORK_CONFIG = ROOT / "client" / "include" / "production_network_config.generated.h"
 
 REQUIRED_FILES = {
@@ -308,6 +309,99 @@ def validate_tls_certificate(cert_path: Path, hosts: list[str], pins_setting: st
     return actual_pin
 
 
+def parse_unsigned_module_allowlist(signature_source_path: Path) -> set[str]:
+    try:
+        source = signature_source_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReadinessError(f"cannot read module signature verifier {signature_source_path}: {exc}") from exc
+    match = re.search(
+        r"m_allowedUnsignedDlls\s*=\s*\{(?P<body>.*?)\};",
+        source,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise ReadinessError("module signature verifier has no parseable unsigned-DLL compatibility list")
+    names = {name.casefold() for name in re.findall(r'L"([^"\\]+)"', match.group("body"))}
+    if not names:
+        raise ReadinessError("unsigned-DLL compatibility list is empty or malformed")
+    if any(not name.isascii() or "/" in name or "\\" in name for name in names):
+        raise ReadinessError("unsigned-DLL compatibility names must be ASCII basenames")
+    return names
+
+
+def digest_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as exc:
+        raise ReadinessError(f"cannot read module package file {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def validate_unsigned_module_manifest(
+    game_directory: Path,
+    manifest_path: Path,
+    signature_source_path: Path,
+) -> None:
+    try:
+        header = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReadinessError(f"cannot read unsigned-module manifest {manifest_path}: {exc}") from exc
+
+    ready = re.search(
+        r"^#define\s+OBLIVION_UNSIGNED_MODULE_MANIFEST_READY\s+(\d+)\s*$",
+        header,
+        flags=re.MULTILINE,
+    )
+    if ready is None or ready.group(1) != "1":
+        raise ReadinessError("unsigned-module SHA-256 manifest is not generated for a production package")
+
+    count_match = re.search(
+        r"kEntryCount\s*=\s*(\d+)\s*;",
+        header,
+    )
+    if count_match is None:
+        raise ReadinessError("unsigned-module manifest is missing kEntryCount")
+    manifest_entries = {
+        (name.casefold(), digest.lower())
+        for name, digest in re.findall(
+            r'\{\s*L"([^"]+)"\s*,\s*"([0-9a-fA-F]{64})"\s*\}',
+            header,
+        )
+    }
+    if int(count_match.group(1)) != len(manifest_entries):
+        raise ReadinessError("unsigned-module manifest entry count does not match its SHA-256 entries")
+
+    allowed_names = parse_unsigned_module_allowlist(signature_source_path)
+    for name, _ in manifest_entries:
+        if name not in allowed_names:
+            raise ReadinessError(f"unsigned-module manifest contains a name outside the runtime allowlist: {name}")
+
+    actual_entries: set[tuple[str, str]] = set()
+    try:
+        for path in game_directory.rglob("*"):
+            if path.is_symlink():
+                raise ReadinessError(f"symlinks are not accepted in the production game package: {path}")
+            if not path.is_file() or path.name.casefold() not in allowed_names:
+                continue
+            actual_entries.add((path.name.casefold(), digest_file_sha256(path)))
+    except OSError as exc:
+        raise ReadinessError(f"cannot enumerate production package for unsigned modules: {exc}") from exc
+
+    if manifest_entries != actual_entries:
+        missing = sorted(actual_entries - manifest_entries)
+        extra = sorted(manifest_entries - actual_entries)
+        raise ReadinessError(
+            "unsigned-module manifest does not match the exact package "
+            f"(missing={missing[:5]!r}, extra={extra[:5]!r})"
+        )
+
+
 def validate_network_policy_source(source_path: Path) -> None:
     try:
         source = source_path.read_text(encoding="utf-8")
@@ -352,6 +446,10 @@ def validate_module_signature_source(source_path: Path) -> None:
         "WTD_DISABLE_MD2_MD4",
         "ModuleTrustPolicy::Evaluate",
         "SameModuleFileStamp(initialStamp, finalStamp)",
+        "UnsignedModuleManifest::kReady",
+        "CalculateUnsignedModuleSha256",
+        "CanTrustUnsignedModuleByName",
+        "_stricmp(entry.sha256, actualHash.c_str()) == 0",
     )
     for token in required_tokens:
         if token not in source:
@@ -415,6 +513,7 @@ def run_preflight(
     runtime_source_path: Path,
     network_source_path: Path,
     signature_source_path: Path,
+    unsigned_module_manifest_path: Path,
     network_config_path: Path,
     tls_cert_path: Path,
     tls_key_path: Path,
@@ -425,6 +524,7 @@ def run_preflight(
     max_size = release_limits(project_path, runtime_source_path)
     validate_network_policy_source(network_source_path)
     validate_module_signature_source(signature_source_path)
+    validate_unsigned_module_manifest(game_directory, unsigned_module_manifest_path, signature_source_path)
     endpoint_hosts, compiled_pins = validate_compiled_network_policy(
         network_config_path, server_host, tls_pins
     )
@@ -443,6 +543,9 @@ def run_preflight(
     checks.append(
         "Module trust policy: embedded/catalog Authenticode checks and stable-file identity guard verified"
     )
+    checks.append(
+        "Unsigned legacy DLLs: exact package SHA-256 manifest verified"
+    )
     checks.append(f"Release enforcement: x86/x64 enabled; maximum hashed file size {max_size} bytes")
     return checks
 
@@ -457,6 +560,7 @@ def main() -> int:
     parser.add_argument("--runtime-source", type=Path, default=DEFAULT_RUNTIME_SOURCE)
     parser.add_argument("--network-source", type=Path, default=DEFAULT_NETWORK_SOURCE)
     parser.add_argument("--signature-source", type=Path, default=DEFAULT_SIGNATURE_SOURCE)
+    parser.add_argument("--unsigned-module-manifest", type=Path, default=DEFAULT_UNSIGNED_MODULE_MANIFEST)
     parser.add_argument("--network-config", type=Path, default=DEFAULT_NETWORK_CONFIG)
     parser.add_argument("--tls-cert", type=Path, required=True, help="PEM leaf certificate deployed by the server")
     parser.add_argument("--tls-key", type=Path, required=True, help="matching PEM private key deployed by the server")
@@ -472,6 +576,7 @@ def main() -> int:
             args.runtime_source,
             args.network_source,
             args.signature_source,
+            args.unsigned_module_manifest,
             args.network_config,
             args.tls_cert,
             args.tls_key,
