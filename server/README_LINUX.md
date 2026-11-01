@@ -1,6 +1,6 @@
 # Oblivion Server - Linux Build Guide
 
-> **Transport security:** this branch requires TLS 1.2 or newer for every client connection.
+> **Transport security:** this build requires TLS 1.2 or newer for every client connection.
 > Plaintext protocol frames are not accepted. The client verifies the certificate validity period,
 > server-auth certificate purpose, endpoint hostname/IP SAN, and a configured SHA-256 pin of
 > the leaf certificate before sending check-in/report data. Keep the private key secret, distribute
@@ -102,6 +102,8 @@ The server fails to start if it cannot load a matching TLS certificate and priva
 
 - **server-cert.pem** — server certificate in PEM format.
 - **server-key.pem** — private key in PEM format; restrict file permissions (on Linux, use **chmod 600 server-key.pem**).
+
+The installer now refuses a fresh install if it cannot find a certificate/key pair. If the pair is beside the Makefile, run `make install` and it is copied beside the installed binary (private key mode 0600). To copy a pair from another location, use `make install TLS_CERT_FILE=/secure/path/server-cert.pem TLS_KEY_FILE=/secure/path/server-key.pem`. Existing installed cert/key files are preserved when no source pair is supplied. If the service uses external paths instead, configure both `OBLIVION_TLS_CERT_FILE` and `OBLIVION_TLS_KEY_FILE` in the service environment before installing and starting the server.
 
 For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
 
