@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "self_integrity_guard.h"
+#include "win_path_utils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -151,11 +152,7 @@ namespace Oblivion {
         : m_module(moduleHandle),
           m_running(false) {
         if (m_module) {
-            wchar_t pathBuffer[MAX_PATH] = { 0 };
-            const DWORD pathLength = GetModuleFileNameW(m_module, pathBuffer, MAX_PATH);
-            if (pathLength > 0 && pathLength < MAX_PATH) {
-                m_modulePath.assign(pathBuffer, pathLength);
-            }
+            m_modulePath = Oblivion::WinPath::GetModulePath(m_module);
         }
     }
 
