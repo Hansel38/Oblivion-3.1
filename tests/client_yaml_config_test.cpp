@@ -53,7 +53,7 @@ int main() {
             "version: 1\nserver:\n  default_port: 0\n",
             "version: 1\nconnection:\n  retry_count: 0\n",
             "version: 1\nconnection:\n  connect_timeout_ms: 999999\n",
-            "version: 1\ntls:\n  pin_sha256: PLACEHOLDER\n  disable_verification: true\n",
+            "version: 1\ntls:\n  pin_sha256: not-a-valid-sha256-pin\n  disable_verification: true\n",
             "version: 1\npolicy:\n  fail_closed: maybe\n",
             "version: 1\nshared_secret: not-allowed-here\n"}) {
         settings = ClientSettings{};
