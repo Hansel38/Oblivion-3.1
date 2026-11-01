@@ -1,13 +1,14 @@
 # Oblivion Server - Linux Build Guide
 
-> **Production security warning:** this version still uses plain TCP (port 54321).
-> The initial check-in and violation-report frames include the shared secret in plaintext.
-> The XOR/obfuscated `secret.dat` file is not encryption and does not protect a captured
-> network session. Do **not** expose this listener to an untrusted public network or treat
-> this build as production-ready. Before public deployment, add TLS with certificate
-> validation (or an equivalent end-to-end encrypted tunnel) and remove the static secret
-> from all on-wire frames. Also perform load tests and validate false-positive behavior
-> with the actual Ragnarok client/server setup.
+> **Transport security:** this branch requires TLS 1.2 or newer for every client connection.
+> Plaintext protocol frames are not accepted. The client verifies the certificate validity period,
+> server-auth certificate purpose, endpoint hostname/IP SAN, and a configured SHA-256 pin of
+> the leaf certificate before sending check-in/report data. Keep the private key secret, distribute
+> the certificate pin through a trusted deployment channel, and do not treat a writable local
+> oblivion.cfg as tamper-proof policy. The shared secret is still embedded/loaded by the client
+> and can be recovered by local reverse engineering; TLS protects it in transit, not at rest or
+> against a compromised client. Load-test and validate false-positive behavior with the actual
+> Ragnarok client/server setup before declaring a deployment production-ready.
 
 
 ## Requirements
@@ -82,6 +83,47 @@ export OBLV_HB_RTT_WARN_MS=1500
 ./oblivion-server
 ```
 
+### TLS certificate and client pin (required)
+
+The server fails to start if it cannot load a matching TLS certificate and private key. By default it looks for these files next to the server executable:
+
+- **server-cert.pem** — server certificate in PEM format.
+- **server-key.pem** — private key in PEM format; restrict file permissions (on Linux, use **chmod 600 server-key.pem**).
+
+For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
+
+Example for a DNS endpoint (use your real server name):
+
+~~~bash
+openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 365 \
+  -keyout server-key.pem -out server-cert.pem \
+  -subj "/CN=shield.example.com" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth" \
+  -addext "subjectAltName=DNS:shield.example.com"
+
+chmod 600 server-key.pem
+openssl x509 -in server-cert.pem -outform DER | openssl dgst -sha256
+~~~
+
+Configure the client to pin the SHA-256 fingerprint shown by the server / calculated above. The value is 64 hexadecimal characters (without the SHA2-256(stdin)= prefix). Copy the pin to the client through a trusted deployment channel.
+
+Example oblivion.cfg:
+
+~~~ini
+server=shield.example.com:54321
+tls_pin_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+~~~
+
+Alternatively set **OBLIVION_TLS_PIN_SHA256**. It overrides the file setting. Multiple SHA-256 leaf pins may be listed, separated by comma, semicolon, or whitespace, to permit certificate rotation. Each pin must be exactly 64 hex characters; an invalid or missing pin prevents a production client from connecting.
+
+The server accepts these optional variables to select certificate and key files:
+- **OBLIVION_TLS_CERT_FILE**
+- **OBLIVION_TLS_KEY_FILE**
+
+A relative certificate/key path is resolved relative to the server executable directory; absolute paths are also accepted. The client checks hostname/IP SAN and certificate validity in addition to the pin. During certificate renewal, install a new certificate and distribute its pin before removing the old pin from clients.
+
 ### Server Secret
 Server harus memakai secret yang sama dengan client. Atur secret produksi melalui salah satu cara berikut:
 Buat nilai acak yang kuat dengan panjang 32 sampai 128 byte dan tanpa karakter ':' atau ';'. Server dan client menolak secret
@@ -150,6 +192,7 @@ handshake_timeout_ms=4000
 | `OBLIVION_CONNECT_TIMEOUT_MS` | timeout connect per endpoint (500–30000 ms) |
 | `OBLIVION_RETRY_COUNT` | jumlah putaran percobaan seluruh endpoint (1–10) |
 | `OBLIVION_HANDSHAKE_TIMEOUT_MS` | timeout menunggu respons check-in (500–30000 ms) |
+| `OBLIVION_TLS_PIN_SHA256` | daftar pin SHA-256 sertifikat server (wajib pada client produksi) |
 
 Catatan kebijakan produksi:
 - Build Release memaksa `fail_mode=closed`; konfigurasi `open` tidak dapat menonaktifkan pemeriksaan ban.
