@@ -48,6 +48,10 @@ namespace Oblivion {
         struct ModuleTrustCacheEntry {
             ULONGLONG fileSize;
             FILETIME lastWriteTime;
+            DWORD volumeSerial;
+            DWORD fileIndexHigh;
+            DWORD fileIndexLow;
+            LONGLONG changeTime;
             bool isTrusted;
         };
 

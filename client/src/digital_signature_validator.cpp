@@ -68,6 +68,63 @@ std::string WideToUtf8(const std::wstring& value) {
     }
     return result;
 }
+
+struct ModuleFileStamp {
+    ULONGLONG size = 0;
+    FILETIME lastWriteTime{};
+    DWORD volumeSerial = 0;
+    DWORD fileIndexHigh = 0;
+    DWORD fileIndexLow = 0;
+    LONGLONG changeTime = 0;
+};
+
+bool GetModuleFileStamp(const std::wstring& path, ModuleFileStamp& stamp) {
+    stamp = ModuleFileStamp{};
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    FILE_BASIC_INFO basicInfo{};
+    const bool okay =
+        GetFileInformationByHandle(file, &fileInfo) != FALSE &&
+        GetFileInformationByHandleEx(
+            file, FileBasicInfo, &basicInfo, sizeof(basicInfo)) != FALSE;
+    CloseHandle(file);
+    if (!okay ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return false;
+    }
+
+    stamp.size =
+        (static_cast<ULONGLONG>(fileInfo.nFileSizeHigh) << 32) |
+        fileInfo.nFileSizeLow;
+    stamp.lastWriteTime = fileInfo.ftLastWriteTime;
+    stamp.volumeSerial = fileInfo.dwVolumeSerialNumber;
+    stamp.fileIndexHigh = fileInfo.nFileIndexHigh;
+    stamp.fileIndexLow = fileInfo.nFileIndexLow;
+    stamp.changeTime = basicInfo.ChangeTime.QuadPart;
+    return true;
+}
+
+bool SameModuleFileStamp(const ModuleFileStamp& left, const ModuleFileStamp& right) {
+    return left.size == right.size &&
+        CompareFileTime(&left.lastWriteTime, &right.lastWriteTime) == 0 &&
+        left.volumeSerial == right.volumeSerial &&
+        left.fileIndexHigh == right.fileIndexHigh &&
+        left.fileIndexLow == right.fileIndexLow &&
+        left.changeTime == right.changeTime;
+}
+
 } // namespace
 
 #pragma comment(lib, "wintrust.lib")
@@ -439,21 +496,22 @@ namespace Oblivion {
         }
 
         const std::wstring cacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
-        WIN32_FILE_ATTRIBUTE_DATA attributes{};
-        const bool hasAttributes = GetFileAttributesExW(
-            filePath.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
-        if (hasAttributes) {
-            const ULARGE_INTEGER size = {
-                attributes.nFileSizeLow, attributes.nFileSizeHigh
-            };
-            const auto cached = m_moduleTrustCache.find(cacheKey);
-            if (cached != m_moduleTrustCache.end() &&
-                cached->second.fileSize == size.QuadPart &&
-                CompareFileTime(&cached->second.lastWriteTime, &attributes.ftLastWriteTime) == 0) {
-                return cached->second.isTrusted
-                    ? ModuleTrustResult::Trusted
-                    : ModuleTrustResult::Untrusted;
-            }
+        ModuleFileStamp initialStamp;
+        if (!GetModuleFileStamp(filePath, initialStamp)) {
+            return ModuleTrustResult::Inconclusive;
+        }
+
+        const auto cached = m_moduleTrustCache.find(cacheKey);
+        if (cached != m_moduleTrustCache.end() &&
+            cached->second.fileSize == initialStamp.size &&
+            CompareFileTime(&cached->second.lastWriteTime, &initialStamp.lastWriteTime) == 0 &&
+            cached->second.volumeSerial == initialStamp.volumeSerial &&
+            cached->second.fileIndexHigh == initialStamp.fileIndexHigh &&
+            cached->second.fileIndexLow == initialStamp.fileIndexLow &&
+            cached->second.changeTime == initialStamp.changeTime) {
+            return cached->second.isTrusted
+                ? ModuleTrustResult::Trusted
+                : ModuleTrustResult::Untrusted;
         }
 
         std::wstring publisherName;
@@ -478,6 +536,16 @@ namespace Oblivion {
             break;
         }
 
+        // WinVerifyTrust consumes a path, so make sure the file identity and
+        // mutation metadata remained unchanged while the provider opened/read it.
+        // If the path was replaced or written during verification, discard the
+        // verdict and retry on the next scan rather than caching ambiguous trust.
+        ModuleFileStamp finalStamp;
+        if (!GetModuleFileStamp(filePath, finalStamp) ||
+            !SameModuleFileStamp(initialStamp, finalStamp)) {
+            return ModuleTrustResult::Inconclusive;
+        }
+
         const auto decision = Oblivion::ModuleTrustPolicy::Evaluate(
             evidence, allowAnyValidSigner, !publisherName.empty());
         if (decision == Oblivion::ModuleTrustPolicy::Decision::Inconclusive) {
@@ -487,14 +555,15 @@ namespace Oblivion {
         }
 
         const bool isTrusted = decision == Oblivion::ModuleTrustPolicy::Decision::Trusted;
-        if (hasAttributes) {
-            const ULARGE_INTEGER size = {
-                attributes.nFileSizeLow, attributes.nFileSizeHigh
-            };
-            m_moduleTrustCache[cacheKey] = {
-                size.QuadPart, attributes.ftLastWriteTime, isTrusted
-            };
-        }
+        m_moduleTrustCache[cacheKey] = {
+            initialStamp.size,
+            initialStamp.lastWriteTime,
+            initialStamp.volumeSerial,
+            initialStamp.fileIndexHigh,
+            initialStamp.fileIndexLow,
+            initialStamp.changeTime,
+            isTrusted
+        };
 
         return isTrusted ? ModuleTrustResult::Trusted : ModuleTrustResult::Untrusted;
     }
