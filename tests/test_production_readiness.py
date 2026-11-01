@@ -60,6 +60,7 @@ class ProductionReadinessTests(unittest.TestCase):
             "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_EN_GRF) "
             "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI)\n"
             "GetFileInformationByHandleEx FILE_ATTRIBUTE_REPARSE_POINT "
+            "FILE_FLAG_OPEN_REPARSE_POINT totalBytesHashed == initialFileSize "
             "initialBasicInfo.ChangeTime.QuadPart == finalBasicInfo.ChangeTime.QuadPart "
             "unsigned long long totalBytesHashed ERROR_FILE_TOO_LARGE\n",
             encoding="utf-8",

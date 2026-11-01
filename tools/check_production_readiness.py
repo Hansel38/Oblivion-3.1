@@ -138,6 +138,8 @@ def release_limits(project_path: Path, runtime_source_path: Path) -> int:
         "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI)",
         "GetFileInformationByHandleEx",
         "FILE_ATTRIBUTE_REPARSE_POINT",
+        "FILE_FLAG_OPEN_REPARSE_POINT",
+        "totalBytesHashed == initialFileSize",
         "initialBasicInfo.ChangeTime.QuadPart == finalBasicInfo.ChangeTime.QuadPart",
         "unsigned long long totalBytesHashed",
         "ERROR_FILE_TOO_LARGE",

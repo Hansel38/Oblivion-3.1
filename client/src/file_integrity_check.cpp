@@ -353,7 +353,7 @@ namespace Oblivion {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, // Penting: allow sharing untuk file yang sedang dieksekusi
             NULL,
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, // Optimize untuk sequential read
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, // Open the final path component itself so reparse-point targets can be rejected
             NULL
         );
         
@@ -508,6 +508,7 @@ namespace Oblivion {
             GetFileInformationByHandleEx(
                 hFile, FileBasicInfo, &finalBasicInfo, sizeof(finalBasicInfo)) != FALSE;
         const bool fileStable = metadataReadable &&
+            totalBytesHashed == initialFileSize &&
             initialFileInfo.dwVolumeSerialNumber == finalFileInfo.dwVolumeSerialNumber &&
             initialFileInfo.nFileIndexHigh == finalFileInfo.nFileIndexHigh &&
             initialFileInfo.nFileIndexLow == finalFileInfo.nFileIndexLow &&
