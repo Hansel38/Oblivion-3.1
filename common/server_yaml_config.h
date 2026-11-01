@@ -147,7 +147,7 @@ inline bool ReadUint(
 
     try {
         const unsigned long long parsed = value.as<unsigned long long>();
-        if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        if (parsed > (std::numeric_limits<std::uint32_t>::max)()) {
             error = context + "." + key + " is out of range";
             return false;
         }
