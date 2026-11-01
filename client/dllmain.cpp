@@ -331,6 +331,13 @@ void InitializeSecuritySystem() {
     try {
         // Ambil secret yang di-obfuscate (bukan string literal langsung).
         const std::string kClientSecret = Oblivion::GetClientSecret();
+        if (kClientSecret.size() < 32 || kClientSecret.size() > 128 ||
+            kClientSecret.find_first_of(":;") != std::string::npos) {
+            std::cerr << "[FATAL] OBLIVION_SECRET is missing or invalid; configure the same 32-128 character secret on client and server." << std::endl;
+            MessageBoxW(NULL, L"Secret anti-cheat belum dikonfigurasi dengan benar. Client akan ditutup.",
+                        L"Oblivion Hack Shield - Configuration Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            ExitProcess(1);
+        }
         // localhost adalah fallback khusus development. Endpoint produksi dibaca
         // dari oblivion.yaml; TLS pin tetap berasal dari header yang dikompilasi.
         Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
