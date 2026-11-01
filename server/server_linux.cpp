@@ -113,7 +113,7 @@ std::string GetExecutableDirectory() {
     while (exePath.size() <= kMaxPathCapacity) {
         const ssize_t count = readlink("/proc/self/exe", exePath.data(), exePath.size());
         if (count < 0) {
-            return "./";
+            return "";
         }
         if (static_cast<size_t>(count) < exePath.size()) {
             const std::string path(exePath.data(), static_cast<size_t>(count));
@@ -127,12 +127,16 @@ std::string GetExecutableDirectory() {
         }
         exePath.resize((std::min)(exePath.size() * 2, kMaxPathCapacity), '\0');
     }
-    return "./";
+    return "";
 #endif
 }
 
 std::string GetFilePath(const std::string& filename) {
-    std::string exeDir = GetExecutableDirectory();
+    const std::string exeDir = GetExecutableDirectory();
+    // An unresolved executable path must never fall back to the process working directory.
+    if (exeDir.empty()) {
+        return "";
+    }
     return exeDir + filename;
 }
 
@@ -246,6 +250,10 @@ static std::mutex g_banListMutex;
 
 static BanLookupResult LookupHWIDBanStatusUnlocked(const std::string& hwid) {
     const std::string banFilePath = GetFilePath(BAN_LIST_FILE);
+    if (banFilePath.empty()) {
+        std::cerr << "[ERROR] Cannot resolve executable directory; refusing ban-list lookup." << std::endl;
+        return BanLookupResult::Error;
+    }
     std::ifstream banFile(banFilePath);
     if (!banFile.is_open()) {
         std::cerr << "[ERROR] Ban list is missing or unreadable: " << banFilePath << std::endl;
@@ -514,6 +522,10 @@ void LogViolation(const std::string& type, const std::string& details, const std
     const std::string safeDetails = SanitizeInput(details, MAX_DETAILS_LEN);
     const std::string safeHwid = SanitizeInput(hwid, MAX_HWID_LEN);
     std::string logFilePath = GetFilePath(VIOLATION_LOG_FILE);
+    if (logFilePath.empty()) {
+        std::cerr << "[ERROR] Cannot resolve executable directory; violation log was not written." << std::endl;
+        return;
+    }
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
         // Extract only from sanitized details so log records cannot be forged.
@@ -1183,6 +1195,11 @@ int main() {
                   << "dengan panjang secret antara 32 dan " << MAX_SECRET_LEN
                   << " byte; secret tidak boleh mengandung ':' atau ';'. Server menolak secret kosong, "
                   << "development, terlalu pendek, atau melebihi batas protokol." << std::endl;
+        return 1;
+    }
+
+    if (GetExecutableDirectory().empty()) {
+        std::cerr << "[FATAL] Cannot resolve executable directory; refusing to start because file paths cannot be secured." << std::endl;
         return 1;
     }
 
