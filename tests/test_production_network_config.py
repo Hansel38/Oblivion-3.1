@@ -102,6 +102,9 @@ class ProductionNetworkConfigTests(unittest.TestCase):
             "127.0.0.1:54321",
             "0.0.0.0:54321",
             "192.0.2.10:54321",
+            "198.51.100.7:54321",
+            "203.0.113.19:54321",
+            "[2001:db8::17]:54321",
         ):
             with self.subTest(endpoint=endpoint):
                 parsed = parse_endpoint_list(endpoint)
@@ -109,10 +112,11 @@ class ProductionNetworkConfigTests(unittest.TestCase):
                     validate_deployable_endpoints(parsed)
 
     def test_reserved_test_endpoints_require_explicit_ci_override(self) -> None:
-        validate_deployable_endpoints(
-            parse_endpoint_list("ci.invalid:54321"),
-            allow_test_endpoints=True,
-        )
+        for endpoint in ("ci.invalid:54321", "192.0.2.10:54321", "[2001:db8::17]:54321"):
+            validate_deployable_endpoints(
+                parse_endpoint_list(endpoint),
+                allow_test_endpoints=True,
+            )
 
     def test_network_config_reader_rejects_reserved_endpoint(self) -> None:
         header = render_header(

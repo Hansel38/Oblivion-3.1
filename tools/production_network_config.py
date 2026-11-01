@@ -121,6 +121,18 @@ def validate_deployable_endpoints(
         "localhost",
         "example.com", "example.net", "example.org",
     }
+    # Python's ipaddress.is_reserved does not mark all RFC 5737 documentation
+    # prefixes as reserved on every supported Python version. Deny them
+    # explicitly so sample addresses cannot pass production preflight.
+    reserved_ip_networks = tuple(
+        ipaddress.ip_network(network)
+        for network in (
+            "192.0.2.0/24",       # TEST-NET-1
+            "198.51.100.0/24",    # TEST-NET-2
+            "203.0.113.0/24",     # TEST-NET-3
+            "2001:db8::/32",      # IPv6 documentation prefix
+        )
+    )
 
     for endpoint in endpoints:
         host = str(endpoint["host"]).lower().rstrip(".")
@@ -145,6 +157,8 @@ def validate_deployable_endpoints(
             or address.is_link_local
             or address.is_multicast
             or address.is_reserved
+            or any(address.version == network.version and address in network
+                   for network in reserved_ip_networks)
         ):
             raise NetworkConfigError(
                 f"reserved/test IP address {host!r} cannot be used in a production network policy"
