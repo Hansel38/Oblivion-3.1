@@ -2,6 +2,7 @@
 #include "advanced_process_heuristics.h"
 #include "win_path_utils.h"
 #include "digital_signature_validator.h"
+#include "../../common/windows_path_policy.h"
 #include <tlhelp32.h>
 #include <vector>
 #include <algorithm>
@@ -62,10 +63,24 @@ typedef struct _OBLIVION_OBJECT_TYPE_INFORMATION {
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
 
 namespace {
-    // Cache untuk signature verification - menghindari re-verify proses yang sama
-    // Key: Process Path (lowercase), Value: Is Verified (true/false)
-    std::map<std::wstring, bool> g_signatureCache;
-    
+    struct FileTrustStamp {
+        ULONGLONG size = 0;
+        FILETIME lastWriteTime{};
+        DWORD volumeSerialNumber = 0;
+        DWORD fileIndexHigh = 0;
+        DWORD fileIndexLow = 0;
+    };
+
+    struct FileTrustCacheEntry {
+        FileTrustStamp stamp;
+        bool trusted = false;
+    };
+
+    using FileTrustCache = std::map<std::wstring, FileTrustCacheEntry>;
+    constexpr size_t kMaximumCachedFileTrustEntries = 4096;
+    FileTrustCache g_signatureCache;
+    FileTrustCache g_trustedFileCache;
+
     DWORD GetProtectedProcessId() {
         return GetCurrentProcessId();
     }
@@ -78,31 +93,114 @@ namespace {
         return lowered;
     }
 
-    // Cache hasil verifikasi publisher per path (lowercase) -> trusted.
-    // WinVerifyTrust relatif mahal, sedangkan PerformScan berjalan pada satu thread
-    // (loop ProcessWatcher), sehingga map biasa sudah cukup dan aman.
-    std::map<std::wstring, bool> g_trustedFileCache;
+    std::wstring GetWindowsDirectoryPath() {
+        std::wstring path(32768, L'\\0');
+        const UINT written = GetWindowsDirectoryW(path.data(), static_cast<UINT>(path.size()));
+        if (written == 0 || written >= path.size()) {
+            return L"";
+        }
+        path.resize(written);
+        return path;
+    }
 
-    // True hanya jika file ditandatangani oleh publisher yang ada di daftar tepercaya.
-    // Dipakai sebagai penyaring false positive: tool/launcher resmi (yang ditandatangani)
-    // tidak lagi ditandai oleh heuristik nama window, nama DLL, atau isi memory.
-    bool IsFileTrustedPublisher(const std::wstring& filePath) {
+    bool GetFileTrustStamp(const std::wstring& filePath, FileTrustStamp& stamp) {
         if (filePath.empty()) {
             return false;
         }
+        HANDLE file = CreateFileW(
+            filePath.c_str(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            return false;
+        }
 
-        const std::wstring key = ToLowerCopy(filePath);
-        auto cached = g_trustedFileCache.find(key);
-        if (cached != g_trustedFileCache.end()) {
-            return cached->second;
+        BY_HANDLE_FILE_INFORMATION info{};
+        const BOOL ok = GetFileInformationByHandle(file, &info);
+        CloseHandle(file);
+        if (!ok || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            return false;
+        }
+
+        stamp.size = (static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        stamp.lastWriteTime = info.ftLastWriteTime;
+        stamp.volumeSerialNumber = info.dwVolumeSerialNumber;
+        stamp.fileIndexHigh = info.nFileIndexHigh;
+        stamp.fileIndexLow = info.nFileIndexLow;
+        return true;
+    }
+
+    bool SameFileTrustStamp(const FileTrustStamp& left, const FileTrustStamp& right) {
+        return left.size == right.size &&
+            CompareFileTime(&left.lastWriteTime, &right.lastWriteTime) == 0 &&
+            left.volumeSerialNumber == right.volumeSerialNumber &&
+            left.fileIndexHigh == right.fileIndexHigh &&
+            left.fileIndexLow == right.fileIndexLow;
+    }
+
+    bool TryGetCachedTrust(
+        FileTrustCache& cache,
+        const std::wstring& key,
+        const FileTrustStamp& currentStamp,
+        bool& trusted) {
+        const auto found = cache.find(key);
+        if (found == cache.end()) {
+            return false;
+        }
+        if (!SameFileTrustStamp(found->second.stamp, currentStamp)) {
+            cache.erase(found);
+            return false;
+        }
+        trusted = found->second.trusted;
+        return true;
+    }
+
+    bool StoreTrustIfUnchanged(
+        FileTrustCache& cache,
+        const std::wstring& key,
+        const std::wstring& filePath,
+        const FileTrustStamp& initialStamp,
+        bool trusted) {
+        FileTrustStamp currentStamp;
+        if (!GetFileTrustStamp(filePath, currentStamp) ||
+            !SameFileTrustStamp(initialStamp, currentStamp)) {
+            cache.erase(key);
+            return false;
+        }
+        if (cache.find(key) == cache.end() && cache.size() >= kMaximumCachedFileTrustEntries) {
+            cache.clear();
+        }
+        cache[key] = FileTrustCacheEntry{ currentStamp, trusted };
+        return true;
+    }
+
+    bool IsFileTrustedPublisher(const std::wstring& filePath) {
+        FileTrustStamp initialStamp;
+        if (!GetFileTrustStamp(filePath, initialStamp)) {
+            return false;
+        }
+        const std::wstring key = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
+        bool cachedTrust = false;
+        if (TryGetCachedTrust(g_trustedFileCache, key, initialStamp, cachedTrust)) {
+            return cachedTrust;
         }
 
         std::wstring publisher;
+        const auto verdict =
+            Oblivion::DigitalSignatureValidator::GetSignatureVerdict(filePath, publisher);
         const bool trusted =
-            Oblivion::DigitalSignatureValidator::GetSignatureVerdict(filePath, publisher) ==
-            Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher;
-
-        g_trustedFileCache[key] = trusted;
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher;
+        if (verdict ==
+            Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
+            return false;
+        }
+        if (!StoreTrustIfUnchanged(g_trustedFileCache, key, filePath, initialStamp, trusted)) {
+            return false;
+        }
         return trusted;
     }
 
@@ -344,7 +442,23 @@ namespace {
         L"procmon_window_class"
     };
 
-    // Whitelist: Process sistem Windows yang tidak boleh di-scan untuk menghindari false positive
+    // Windows system executable names require the real Windows path and a trusted signature.
+    const std::vector<std::wstring> kWindowsSystemProcessWhitelist = {
+        L"explorer.exe", L"svchost.exe", L"services.exe", L"lsass.exe",
+        L"csrss.exe", L"smss.exe", L"wininit.exe", L"winlogon.exe",
+        L"dwm.exe", L"taskhostw.exe", L"taskhost.exe", L"sihost.exe",
+        L"ctfmon.exe", L"conhost.exe", L"fontdrvhost.exe", L"runtimebroker.exe",
+        L"dllhost.exe", L"searchhost.exe", L"searchindexer.exe",
+        L"searchprotocolhost.exe", L"searchfilterhost.exe", L"msmpeng.exe",
+        L"mssense.exe", L"securityhealthservice.exe", L"securityhealthsystray.exe",
+        L"smartscreen.exe", L"sgrmbroker.exe", L"wuauclt.exe",
+        L"trustedinstaller.exe", L"tiworker.exe", L"usocoreworker.exe",
+        L"shellexperiencehost.exe", L"startmenuexperiencehost.exe",
+        L"textinputhost.exe", L"applicationframehost.exe", L"systemsettings.exe",
+        L"audiodg.exe"
+    };
+
+    // Other process names are accepted only after explicit signature verification.
     const std::vector<std::wstring> kSystemProcessWhitelist = {
         // Windows Core Processes
         L"explorer.exe",
@@ -398,15 +512,8 @@ namespace {
         // Windows Audio Services
         L"audiodg.exe",  // Audio Device Graph Isolation (Windows audio service)
         
-        // Open-source utilities (no signature verification - often unsigned)
-        L"notepad++.exe",
-        L"7zfm.exe",
-        L"7zg.exe",
-        L"vlc.exe",
-        L"winrar.exe",
-        
-        // Development tools (no signature verification - often unsigned during development)
-        L"vcpkgsrv.exe",  // Visual Studio Package Server
+        // Unsigned utilities are deliberately not name-whitelisted.
+        // VLC is listed below but requires signature/publisher verification.
         
         // Common legitimate software (REQUIRES SIGNATURE VERIFICATION)
         // These processes MUST be verified with digital signature to prevent spoofing
@@ -414,6 +521,7 @@ namespace {
         L"firefox.exe",
         L"msedge.exe",
         L"msedgewebview2.exe",  // Microsoft Edge WebView2 Runtime
+        L"vlc.exe",
         L"discord.exe",
         L"steam.exe",
         L"steamwebhelper.exe",
@@ -444,6 +552,7 @@ namespace {
         L"firefox.exe",
         L"msedge.exe",
         L"msedgewebview2.exe",  // Microsoft Edge WebView2 Runtime
+        L"vlc.exe",
         L"discord.exe",
         L"steam.exe",
         L"steamwebhelper.exe",
@@ -518,185 +627,107 @@ namespace {
     }
 
     bool IsProcessWhitelisted(const std::wstring& processName, DWORD processId = 0) {
-        std::wstring lowerName = ToLowerCopy(processName);
-        
-        // Cek apakah process ada di whitelist
-        bool isInWhitelist = false;
-        for (const auto& whitelisted : kSystemProcessWhitelist) {
-            if (lowerName == whitelisted) {
-                isInWhitelist = true;
-                break;
-            }
-        }
-        
+        const std::wstring lowerName = ToLowerCopy(processName);
+        const bool isInWhitelist = std::find(
+            kSystemProcessWhitelist.begin(), kSystemProcessWhitelist.end(), lowerName) !=
+            kSystemProcessWhitelist.end();
         if (!isInWhitelist) {
-            return false; // Tidak ada di whitelist
+            return false;
         }
-        
-        // Cek apakah proses ini memerlukan verifikasi signature
-        bool needsSignatureVerification = false;
-        for (const auto& requiresVerification : kSignatureVerificationRequired) {
-            if (lowerName == requiresVerification) {
-                needsSignatureVerification = true;
-                break;
-            }
+
+        // PID 0 and 4 are reserved identities; callers normally skip them explicitly.
+        if (processId == 0 || processId == 4) {
+            return false;
         }
-        
-        // Jika tidak perlu verifikasi signature (proses Windows system), langsung return true
-        if (!needsSignatureVerification) {
-            return true;
-        }
-        
-        // Proses memerlukan verifikasi signature - cegah spoofing!
-        if (processId == 0) {
-            // PID tidak tersedia sehingga verifikasi tidak mungkin dilakukan.
-            // Ini bukan bukti spoofing (PID 0 = System Idle Process), jadi proses
-            // tidak ditandai agar tidak memicu false positive.
-            return true;
-        }
-        
-        // Dapatkan full path dari process
-        std::wstring processPath = GetProcessPath(processId);
+
+        const std::wstring processPath = GetProcessPath(processId);
         if (processPath.empty()) {
-            // Path proses tidak bisa dibaca (proses protected/elevated, akses ditolak,
-            // race saat proses baru dibuat). Ini BUKAN bukti spoofing - cukup lewati
-            // proses ini supaya tidak ditandai heuristik lain (false positive).
-            std::wcout << L"[AdvHeuristics] WARNING: Cannot get path for whitelisted process, skipping: "
-                       << processName << L" (PID: " << processId << L")" << std::endl;
-            return true;
-        }
-        
-        // Normalize path untuk cache (lowercase)
-        std::wstring cacheKey = processPath;
-        std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
-        
-        // Cek cache terlebih dahulu untuk menghindari re-verification
-        auto cacheIt = g_signatureCache.find(cacheKey);
-        if (cacheIt != g_signatureCache.end()) {
-            // Cache hit! Return hasil yang sudah pernah diverifikasi (SILENT - no log spam)
-            bool cachedResult = cacheIt->second;
-            
-            // Hanya log jika SPOOFING terdeteksi (penting!)
-            if (!cachedResult) {
-                std::wcout << L"[AdvHeuristics] SPOOFING DETECTED (cached): " << processName 
-                           << L" (PID: " << processId << L")" << std::endl;
-            }
-            // Jika valid, tidak perlu log (sudah di-log saat pertama kali verify)
-            
-            return cachedResult;
-        }
-        
-        // Dapatkan expected publisher dari DigitalSignatureValidator
-        const auto& publisherMap = Oblivion::DigitalSignatureValidator::m_expectedPublishers;
-        auto it = publisherMap.find(lowerName);
-        
-        if (it == publisherMap.end()) {
-            // Nama proses ada di whitelist tetapi belum terdaftar di m_expectedPublishers.
-            // Karena tidak ada publisher yang bisa dibandingkan, proses diperlakukan
-            // sebagai aman (jangan dorong ke lapisan heuristik lain = sumber false positive).
-            std::wcout << L"[AdvHeuristics] WARNING: No expected publisher for: " << processName
-                       << L" - treated as whitelisted" << std::endl;
-            return true;
-        }
-        
-        const std::wstring& expectedPublisher = it->second;
-        
-        // Verifikasi digital signature dengan expected publisher, lalu kategorikan hasilnya.
-        // Penting: hasil tri-state supaya pemain sah tidak di-kick hanya karena
-        // verifikasi tidak bisa dilakukan (offline / revocation check gagal).
-        std::wstring verifiedPublisher;
-        const auto verdict = Oblivion::DigitalSignatureValidator::GetSignatureVerdict(processPath, verifiedPublisher);
-
-        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher) {
-            // Signature valid dan publisher tepercaya -> proses memang sah.
-            g_signatureCache[cacheKey] = true;
-            return true;
-        }
-
-        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
-            // File punya signature tetapi tidak dapat divalidasi (client offline,
-            // revocation/chain error, root cert belum di-update). Ini BUKAN spoofing.
-            // Tidak di-cache supaya bisa diverifikasi ulang saat kondisi membaik.
-            std::wcout << L"[AdvHeuristics] WARNING: Signature verification unavailable for: "
+            // An unreadable path is not proof of cheating, but cannot grant a bypass.
+            std::wcout << L"[AdvHeuristics] WARNING: Cannot resolve whitelisted process image: "
                        << processName << L" (PID: " << processId
-                       << L") - skipping (bukan spoofing)" << std::endl;
-            return true;
+                       << L"); continuing inspection" << std::endl;
+            return false;
         }
 
-        // A publisher-name fallback is valid only after WinVerifyTrust succeeded
-        // and classified the file as signed but outside the global publisher list.
-        // Never let an extracted certificate override an invalid/broken signature.
-        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher &&
+        const bool isWindowsSystemProcess = std::find(
+            kWindowsSystemProcessWhitelist.begin(),
+            kWindowsSystemProcessWhitelist.end(),
+            lowerName) != kWindowsSystemProcessWhitelist.end();
+        if (isWindowsSystemProcess) {
+            const std::wstring windowsDirectory = GetWindowsDirectoryPath();
+            const bool insideWindowsDirectory = !windowsDirectory.empty() &&
+                Oblivion::PathPolicy::IsPathWithinDirectory(processPath, windowsDirectory);
+            const bool trustedSignature = insideWindowsDirectory &&
+                IsFileTrustedPublisher(processPath);
+            const bool accepted = Oblivion::PathPolicy::ShouldWhitelistWindowsSystemProcess(
+                true, true, insideWindowsDirectory, trustedSignature);
+            if (!accepted) {
+                std::wcout << L"[AdvHeuristics] WARNING: Windows process failed identity validation: "
+                           << processName << L" (PID: " << processId << L", path: "
+                           << processPath << L"); continuing inspection" << std::endl;
+            }
+            return accepted;
+        }
+
+        const bool needsSignatureVerification = std::find(
+            kSignatureVerificationRequired.begin(),
+            kSignatureVerificationRequired.end(),
+            lowerName) != kSignatureVerificationRequired.end();
+        if (!needsSignatureVerification) {
+            return false; // No unsigned third-party process is accepted by name alone.
+        }
+
+        FileTrustStamp initialStamp;
+        if (!GetFileTrustStamp(processPath, initialStamp)) {
+            return false;
+        }
+        const std::wstring cacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(processPath);
+        bool cachedVerdict = false;
+        if (TryGetCachedTrust(g_signatureCache, cacheKey, initialStamp, cachedVerdict)) {
+            return cachedVerdict;
+        }
+
+        const auto& publisherMap = Oblivion::DigitalSignatureValidator::m_expectedPublishers;
+        const auto publisherEntry = publisherMap.find(lowerName);
+        if (publisherEntry == publisherMap.end()) {
+            return false;
+        }
+
+        std::wstring verifiedPublisher;
+        const auto verdict =
+            Oblivion::DigitalSignatureValidator::GetSignatureVerdict(processPath, verifiedPublisher);
+
+        bool accepted = verdict ==
+            Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher;
+        if (verdict ==
+            Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
+            // Inconclusive signature infrastructure is not cheating evidence. Do not
+            // cache it or grant a whitelist bypass; continue normal heuristic inspection.
+            std::wcout << L"[AdvHeuristics] WARNING: Inconclusive signature result for: "
+                       << processName << L" (PID: " << processId
+                       << L"); continuing inspection" << std::endl;
+            return false;
+        }
+
+        if (!accepted &&
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher &&
             !verifiedPublisher.empty()) {
-            const std::wstring lowerActual = ToLowerCopy(verifiedPublisher);
-            const std::wstring lowerExpected = ToLowerCopy(expectedPublisher);
-            if (lowerActual.find(lowerExpected) != std::wstring::npos) {
-                g_signatureCache[cacheKey] = true;
-                return true;
-            }
+            const std::wstring actual = ToLowerCopy(verifiedPublisher);
+            const std::wstring expected = ToLowerCopy(publisherEntry->second);
+            accepted = !expected.empty() && actual.find(expected) != std::wstring::npos;
         }
 
-        // Sisa kemungkinan: file TIDAK ditandatangani (Unsigned) atau signature valid
-        // tetapi publisher berbeda (UntrustedPublisher) => indikasi spoofing nyata.
-        const bool isVerified = false;
-
-        
-        // Simpan hasil ke cache
-        g_signatureCache[cacheKey] = isVerified;
-        
-        if (!isVerified) {
-            // SPOOFING DETECTED!
-            std::wcout << L"[AdvHeuristics] SPOOFING DETECTED: Process \"" << processName 
-                       << L"\" (PID: " << processId << L") failed signature verification!" << std::endl;
-            std::wcout << L"[AdvHeuristics] Path: " << processPath << std::endl;
-            std::wcout << L"[AdvHeuristics] Expected publisher: " << expectedPublisher << std::endl;
-            
-            // Log detail untuk debugging
-            std::wstring actualPublisher;
-            std::wstring actualPublisherInfo = L"No signature";
-            if (Oblivion::DigitalSignatureValidator::GetFilePublisher(processPath, actualPublisher)) {
-                std::wcout << L"[AdvHeuristics] Actual publisher: " << actualPublisher << std::endl;
-                actualPublisherInfo = actualPublisher;
-            } else {
-                std::wcout << L"[AdvHeuristics] No valid signature found!" << std::endl;
-            }
-            
-            // Build details untuk report ke server
-            std::wstringstream detailsStream;
-            detailsStream << L"Process: " << processName 
-                         << L" (PID: " << processId << L")"
-                         << L" | Path: " << processPath
-                         << L" | Expected: " << expectedPublisher
-                         << L" | Actual: " << actualPublisherInfo;
-            
-            std::wstring detailsWide = detailsStream.str();
-            
-            // Convert ke UTF-8 untuk server
-            int size_needed = WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), NULL, 0, NULL, NULL);
-            std::string details_utf8;
-            if (size_needed > 0) {
-                details_utf8.resize(size_needed);
-                WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), &details_utf8[0], size_needed, NULL, NULL);
-            }
-            
-            // REPORT KE SERVER DAN EXIT
-            std::wcout << L"[AdvHeuristics] Reporting spoofing to server..." << std::endl;
-            ReportViolationAndExit(L"", "SIGNATURE_SPOOFING", details_utf8);
-            
-            return false; // Tidak akan tercapai karena ReportViolationAndExit memanggil ExitProcess
+        if (!StoreTrustIfUnchanged(g_signatureCache, cacheKey, processPath, initialStamp, accepted)) {
+            return false;
         }
-        
-        // Catatan: semua cabang sah (TrustedPublisher, VerificationError, atau publisher
-        // yang mengandung expected publisher) sudah return lebih awal. Karena
-        // isVerified selalu false di titik ini, blok di bawah ini hanya jaring pengaman
-        // (unreachable) supaya fungsi selalu punya jalur keluar.
-        // Signature verified successfully
-        std::wcout << L"[AdvHeuristics] Signature verified: " << processName 
-               << L" (PID: " << processId << L") - Publisher: " << expectedPublisher << std::endl;
-        return true;
+        if (!accepted) {
+            std::wcout << L"[AdvHeuristics] Process whitelist signature/publisher mismatch: "
+                       << processName << L" (PID: " << processId << L", path: "
+                       << processPath << L")" << std::endl;
+        }
+        return accepted;
     }
 
-    // Enable SeDebugPrivilege untuk akses system-wide handles
     bool EnableDebugPrivilege() {
         HANDLE hToken = NULL;
         TOKEN_PRIVILEGES tokenPrivileges;
