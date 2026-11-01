@@ -32,7 +32,6 @@
 #define BCRYPT_ALG_HANDLE_HMAC 0x00000008
 #endif
 
-#define DEFAULT_PORT "54321"
 #define BUFFER_LEN 8192
 #define MAX_TYPE_LEN 64
 #define MAX_DETAILS_LEN 2048
@@ -1296,7 +1295,6 @@ void RunClientWorker(SOCKET clientSocket) noexcept {
 
 int main() {
     if (SERVER_SECRET.empty() ||
-        SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
         SERVER_SECRET.size() < 32 ||
         SERVER_SECRET.size() > MAX_SECRET_LEN ||
         SERVER_SECRET.find_first_of(":;") != std::string::npos) {
