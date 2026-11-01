@@ -119,7 +119,7 @@ std::string GetExecutableDirectory() {
             const std::string path(exePath.data(), static_cast<size_t>(count));
             const size_t lastSlash = path.find_last_of("/");
             return lastSlash == std::string::npos
-                ? std::string("./")
+                ? std::string()
                 : path.substr(0, lastSlash + 1);
         }
         if (exePath.size() == kMaxPathCapacity) {
