@@ -1406,7 +1406,6 @@ void RunClientWorker(SocketType clientSocket) noexcept {
 
 int main() {
     if (SERVER_SECRET.empty() ||
-        SERVER_SECRET == "DEV_SECRET_NOT_SET" ||
         SERVER_SECRET.size() < 32 ||
         SERVER_SECRET.size() > MAX_SECRET_LEN ||
         SERVER_SECRET.find_first_of(":;") != std::string::npos) {
