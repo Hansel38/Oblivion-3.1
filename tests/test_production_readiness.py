@@ -77,7 +77,7 @@ class ProductionReadinessTests(unittest.TestCase):
             "_stricmp(entry.sha256, actualHash.c_str()) == 0 "
             "CanTrustUnsignedModuleByName UnsignedModuleManifest::kReady "
             "CalculateUnsignedModuleSha256 "
-            'm_allowedUnsignedDlls = { L"client.dll", L"granny2.dll" }\\n',
+            'm_allowedUnsignedDlls = { L"client.dll", L"granny2.dll" };\\n',
             encoding="utf-8",
         )
         self.unsigned_module_manifest.write_text(
@@ -218,6 +218,19 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PRODUCTION PREFLIGHT PASSED", result.stdout)
         self.assertIn("compile-time endpoint", result.stdout)
+
+    def test_rejects_unsigned_module_manifest_when_package_hash_differs(self) -> None:
+        (self.game_dir / "client.dll").write_bytes(b"production client module")
+        self.unsigned_module_manifest.write_text(
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\\n"
+            "namespace Oblivion::UnsignedModuleManifest { "
+            "inline constexpr Entry kEntries[] = {{L\\"client.dll\\", \\"0000000000000000000000000000000000000000000000000000000000000000\\"}}; "
+            "inline constexpr std::size_t kEntryCount = 1; }\\n",
+            encoding="utf-8",
+        )
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsigned-module manifest does not match the exact package", result.stderr)
 
     def test_rejects_unsigned_module_manifest_not_ready(self) -> None:
         self.unsigned_module_manifest.write_text(

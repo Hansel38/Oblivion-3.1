@@ -37,6 +37,7 @@ test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICO
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
+	python3 ../tests/test_unsigned_module_manifest.py
 
 production-check:
 	@test -n "$(OBLIVION_PRODUCTION_GAME_DIR)" || (echo "[ERROR] Set OBLIVION_PRODUCTION_GAME_DIR to the exact package distributed to players." >&2; exit 2)
