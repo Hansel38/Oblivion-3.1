@@ -7,8 +7,10 @@ import argparse
 import base64
 import hashlib
 import ipaddress
+import os
 import re
 import ssl
+import stat
 import subprocess
 import sys
 import time
@@ -219,6 +221,18 @@ def _dns_san_matches(host: str, pattern: str) -> bool:
 
 
 def validate_tls_key_pair(cert_path: Path, key_path: Path) -> None:
+    # Private keys must not be readable by group/other users on POSIX servers.
+    # Windows ACLs have different semantics, so this mode-bit check is POSIX-only.
+    if os.name != "nt":
+        try:
+            key_mode = stat.S_IMODE(key_path.stat().st_mode)
+        except OSError as exc:
+            raise ReadinessError(f"cannot inspect TLS private key permissions {key_path}: {exc}") from exc
+        if key_mode & 0o077:
+            raise ReadinessError(
+                "TLS private key permissions expose the key to group/other users; use chmod 600"
+            )
+
     # Use the same TLS library family as the client/server toolchain to verify that
     # the supplied private key matches the certificate, without exposing key data.
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
