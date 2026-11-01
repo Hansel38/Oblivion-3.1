@@ -142,9 +142,25 @@ inline bool ParseClientYaml(
 
         const YAML::Node tls = root["tls"];
         if (tls) {
-            if (!Detail::HasOnlyKeys(tls, {"pin_sha256"}, "tls", error) ||
-                !Detail::ReadString(tls, "pin_sha256", settings.tlsPinSha256, "tls", error)) {
+            if (!Detail::HasOnlyKeys(tls, {"pin_sha256"}, "tls", error)) {
                 return false;
+            }
+            const YAML::Node pin = tls["pin_sha256"];
+            if (pin) {
+                if (!pin.IsScalar()) {
+                    error = "tls.pin_sha256 must be a string";
+                    return false;
+                }
+                try {
+                    settings.tlsPinSha256 = pin.as<std::string>();
+                } catch (const YAML::Exception&) {
+                    error = "tls.pin_sha256 must be a string";
+                    return false;
+                }
+                if (settings.tlsPinSha256.size() > 4096) {
+                    error = "tls.pin_sha256 exceeds 4096 characters";
+                    return false;
+                }
             }
         }
 
@@ -176,11 +192,6 @@ inline bool ParseClientYaml(
             error = "connection.handshake_timeout_ms must be in the range 500..30000";
             return false;
         }
-        if (settings.tlsPinSha256.size() > 4096) {
-            error = "tls.pin_sha256 exceeds 4096 characters";
-            return false;
-        }
-
         const YAML::Node policy = root["policy"];
         if (policy) {
             if (!Detail::HasOnlyKeys(policy, {"fail_closed"}, "policy", error) ||
