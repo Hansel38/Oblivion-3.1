@@ -311,11 +311,12 @@ LONG VerifyCatalogSignatureStatus(
     bool usedSha256 = false;
     BOOL acquired = FALSE;
     if (acquireContext2 != nullptr && calcHash2 != nullptr) {
+        // If the modern API exists but fails to initialize, preserve that error.
+        // Fall back to SHA-1 only when the modern exports are unavailable.
         acquired = acquireContext2(
             &catalogAdmin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
         usedSha256 = acquired != FALSE;
-    }
-    if (!acquired && acquireContext != nullptr && calcHash != nullptr) {
+    } else if (acquireContext != nullptr && calcHash != nullptr) {
         acquired = acquireContext(&catalogAdmin, nullptr, 0);
         usedSha256 = false;
     }
@@ -1082,7 +1083,7 @@ namespace Oblivion {
         // Keep the trust-provider status so known integrity failures are distinct
         // from chain/network/provider failures.
         std::wstring actualPublisher;
-        bool hasEmbeddedSignature = GetFilePublisher(filePath, actualPublisher);
+        GetFilePublisher(filePath, actualPublisher);
         LONG verificationStatus = VerifyFileSignatureStatus(filePath);
 
         // Windows system modules may be signed by a system catalog instead of
@@ -1098,7 +1099,6 @@ namespace Oblivion {
                     return SignatureVerdict::VerificationError;
                 }
                 actualPublisher = std::move(catalogPublisher);
-                hasEmbeddedSignature = true;
                 verificationStatus = ERROR_SUCCESS;
             } else {
                 const auto catalogClass = Oblivion::SignaturePolicy::ClassifyWinTrustResult(
@@ -1107,8 +1107,6 @@ namespace Oblivion {
                     return SignatureVerdict::Unsigned;
                 }
                 verificationStatus = catalogStatus;
-                hasEmbeddedSignature =
-                    catalogClass == Oblivion::SignaturePolicy::WinTrustResultClass::Rejected;
             }
         }
 
@@ -1143,7 +1141,6 @@ namespace Oblivion {
         case Oblivion::SignaturePolicy::WinTrustResultClass::Inconclusive:
             // Provider/network errors are not proof that a module is unsigned.
             // Keep them inconclusive so the scanner reports softly instead of kicking.
-            (void)hasEmbeddedSignature;
             return SignatureVerdict::VerificationError;
         }
 
