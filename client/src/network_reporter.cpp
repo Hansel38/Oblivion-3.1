@@ -238,7 +238,13 @@ namespace {
 
         // ---- 1) File oblivion.cfg (dua pass supaya urutan baris tidak penting) ----
         std::vector<std::pair<std::string, std::string>> fileEntries;
-        std::ifstream configFile(GetExecutableDirectory() + L"oblivion.cfg");
+        const std::wstring executableDirectory = GetExecutableDirectory();
+        std::ifstream configFile;
+        // Never let an unresolved executable path turn into a current-working-
+        // directory lookup for endpoint or TLS pin configuration.
+        if (!executableDirectory.empty()) {
+            configFile.open(executableDirectory + L"oblivion.cfg");
+        }
         if (configFile.is_open()) {
             std::string line;
             while (std::getline(configFile, line)) {
