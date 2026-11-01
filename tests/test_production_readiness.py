@@ -42,6 +42,10 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn('const std::string secretPath = executableDir + "secret.dat";', source)
         self.assertNotIn('std::string executableDir = "./";', source)
         self.assertNotIn('std::fopen("secret.dat", "rb")', source)
+        self.assertIn('open(secretPath.c_str(), flags)', source)
+        self.assertIn('S_ISREG(metadata.st_mode)', source)
+        self.assertIn('metadata.st_uid == geteuid()', source)
+        self.assertIn('(metadata.st_mode & (S_IRWXG | S_IRWXO)) == 0', source)
 
     def test_secret_loaders_have_no_embedded_development_secret(self) -> None:
         client_source = (ROOT / "client" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
