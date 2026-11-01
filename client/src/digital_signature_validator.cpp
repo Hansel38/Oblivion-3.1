@@ -906,6 +906,20 @@ namespace Oblivion {
             if (initialResult != ModuleFileStampResult::Success) {
                 return ModuleTrustResult::Inconclusive;
             }
+            const std::wstring unsignedCacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
+            const auto unsignedCached = m_moduleTrustCache.find(unsignedCacheKey);
+            if (unsignedCached != m_moduleTrustCache.end() &&
+                unsignedCached->second.fileSize == initialStamp.size &&
+                CompareFileTime(&unsignedCached->second.lastWriteTime, &initialStamp.lastWriteTime) == 0 &&
+                unsignedCached->second.volumeSerial == initialStamp.volumeSerial &&
+                unsignedCached->second.fileIndexHigh == initialStamp.fileIndexHigh &&
+                unsignedCached->second.fileIndexLow == initialStamp.fileIndexLow &&
+                unsignedCached->second.changeTime == initialStamp.changeTime) {
+                return unsignedCached->second.isTrusted
+                    ? ModuleTrustResult::Trusted
+                    : ModuleTrustResult::Untrusted;
+            }
+
             constexpr ULONGLONG kMaxUnsignedModuleHashBytes = 512ULL * 1024ULL * 1024ULL;
             if (initialStamp.size > kMaxUnsignedModuleHashBytes) {
                 return ModuleTrustResult::Untrusted;
@@ -926,9 +940,27 @@ namespace Oblivion {
                 if (_wcsicmp(entry.moduleName, moduleNameLower.c_str()) == 0 &&
                     entry.sha256 != nullptr &&
                     _stricmp(entry.sha256, actualHash.c_str()) == 0) {
+                    m_moduleTrustCache[unsignedCacheKey] = {
+                        finalStamp.size,
+                        finalStamp.lastWriteTime,
+                        finalStamp.volumeSerial,
+                        finalStamp.fileIndexHigh,
+                        finalStamp.fileIndexLow,
+                        finalStamp.changeTime,
+                        true
+                    };
                     return ModuleTrustResult::Trusted;
                 }
             }
+            m_moduleTrustCache[unsignedCacheKey] = {
+                finalStamp.size,
+                finalStamp.lastWriteTime,
+                finalStamp.volumeSerial,
+                finalStamp.fileIndexHigh,
+                finalStamp.fileIndexLow,
+                finalStamp.changeTime,
+                false
+            };
             return ModuleTrustResult::Untrusted;
 #else
             // Development builds retain legacy compatibility while the exact

@@ -83,7 +83,7 @@ class ProductionReadinessTests(unittest.TestCase):
         self.unsigned_module_manifest.write_text(
             "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\n"
             "namespace Oblivion::UnsignedModuleManifest { "
-            "inline constexpr Entry kEntries[] = {{L\"client.dll\", \"0000000000000000000000000000000000000000000000000000000000000000\"}}; "
+            'inline constexpr Entry kEntries[] = {{L"client.dll", "0000000000000000000000000000000000000000000000000000000000000000"}}; ',
             "inline constexpr std::size_t kEntryCount = 0; }\n",
             encoding="utf-8",
         )
@@ -222,9 +222,9 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_rejects_unsigned_module_manifest_when_package_hash_differs(self) -> None:
         (self.game_dir / "client.dll").write_bytes(b"production client module")
         self.unsigned_module_manifest.write_text(
-            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\\n"
+            "#define OBLIVION_UNSIGNED_MODULE_MANIFEST_READY 1\n"
             "namespace Oblivion::UnsignedModuleManifest { "
-            "inline constexpr Entry kEntries[] = {{L\\"client.dll\\", \\"0000000000000000000000000000000000000000000000000000000000000000\\"}}; "
+            'inline constexpr Entry kEntries[] = {{L"client.dll", "0000000000000000000000000000000000000000000000000000000000000000"}}; ',
             "inline constexpr std::size_t kEntryCount = 1; }\n",
             encoding="utf-8",
         )
