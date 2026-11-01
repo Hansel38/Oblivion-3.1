@@ -123,8 +123,8 @@ Copy `client/oblivion.yaml.example` to `oblivion.yaml` in the directory containi
 version: 1
 server:
   default_port: 54321
-  endpoints:
-    - "anticheat.your-domain.example:54321"
+  # Configure real DNS/IP endpoints for the deployment.
+  endpoints: []
 connection:
   connect_timeout_ms: 3000
   retry_count: 3
@@ -137,7 +137,7 @@ The client can read multiple entries in `server.endpoints` and tries them in ord
 
 **Release trust boundary:** `oblivion.yaml` can select the hostname and port, but it cannot change the TLS certificate pin. Release builds always use the pin compiled into the client and verify the certificate validity, server-auth purpose, and hostname/IP SAN. An endpoint that does not present the pinned leaf certificate with a matching SAN is rejected. The `tls.pin_sha256` field is for Debug/development builds only; Release ignores it. When rotating the server certificate, provision the new pin into the client build before removing the old pin.
 
-If no YAML file exists, the client retains the legacy INI/development fallback behavior; Release falls back to its compiled endpoint. A malformed YAML file is logged and does not weaken TLS verification.
+If no YAML file exists, development builds may use the legacy INI/environment configuration. Release uses the provisioned compiled endpoint only when no valid runtime YAML endpoint is configured; every runtime endpoint still must match the compiled certificate pin and certificate SAN. A malformed YAML file is logged and does not weaken TLS verification. There is no implicit localhost/public-IP fallback in the client.
 
 ### Environment Variables
 You can configure heartbeat settings via environment variables:
@@ -185,9 +185,11 @@ In the client Release build, configure the reachable public DNS name (recommende
 
 ```bash
 openssl x509 -in server/server-cert.pem -outform DER | sha256sum
+: "${OBLIVION_PRODUCTION_SERVER_ENDPOINTS:?set real DNS/IP endpoints before building Release}"
+: "${OBLIVION_TLS_PIN_SHA256:?set real SHA-256 leaf-certificate pin(s) before building Release}"
 python3 tools/generate_production_network_config.py \
-  --server-endpoints "shield.your-domain.example:54321" \
-  --tls-pin-sha256 "PASTE_THE_REAL_64_HEX_LEAF_CERTIFICATE_PIN"
+  --server-endpoints "$OBLIVION_PRODUCTION_SERVER_ENDPOINTS" \
+  --tls-pin-sha256 "$OBLIVION_TLS_PIN_SHA256"
 ```
 
 Replace the example hostname and pin with your real values; never ship the example values. The certificate SAN must match the host in the endpoint. Rebuild the Windows client after generating this header. Release clients intentionally ignore endpoint and pin overrides in `oblivion.cfg`; that file remains a development convenience, not the production trust policy.
@@ -345,9 +347,11 @@ To change a Release endpoint or pin, regenerate the network header and rebuild/d
 
 ```ini
 # oblivion.cfg
-server=your-vps.example.com:54321
-server=103.150.1.10:54321     # endpoint cadangan (opsional, dicoba berurutan)
-port=54321                    # port default bila spec tidak memuat port
+# Put your actual DNS/IP endpoints here (one per line).
+server=your-real-hostname.example:54321
+# Optional additional endpoint:
+# server=your-real-backup-hostname.example:54321
+port=54321                    # default port when an endpoint omits the port
 fail_mode=closed              # build produksi selalu fail-closed
 connect_timeout_ms=3000
 retry_count=3
