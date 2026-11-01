@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "file_integrity_check.h"
+#include "win_path_utils.h"
 #include <windows.h>
 #include <bcrypt.h> // Header untuk CNG API
 #include <fstream>
@@ -87,18 +88,18 @@ static std::string ToUtf8(const std::wstring& text) {
 static void LogFileIntegrityIssue(const std::string& type, const std::string& details) {
     std::cerr << "[FileIntegrity] " << type << " - " << details << std::endl;
 
-    wchar_t exePath[MAX_PATH] = { 0 };
-    const DWORD pathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
-    if (pathLength == 0 || pathLength >= MAX_PATH) {
+    const std::wstring executablePath = Oblivion::WinPath::GetModulePath(nullptr);
+    if (executablePath.empty()) {
         return;
     }
-    wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-    if (!lastSlash) {
+    const size_t lastSlash = executablePath.find_last_of(L"\\/");
+    if (lastSlash == std::wstring::npos) {
         return;
     }
-    *(lastSlash + 1) = L'\0';
 
-    std::ofstream logFile(std::wstring(exePath) + L"oblivion_client_errors.log", std::ios::app);
+    const std::wstring logPath =
+        executablePath.substr(0, lastSlash + 1) + L"oblivion_client_errors.log";
+    std::ofstream logFile(logPath, std::ios::app);
     if (!logFile.is_open()) {
         return;
     }
@@ -132,18 +133,17 @@ namespace Oblivion {
     }
 
     void FileIntegrityChecker::PerformCheck() {
-        // Resolve the executable directory without reading an uninitialized or
-        // potentially unterminated MAX_PATH buffer.
-        wchar_t exePath[MAX_PATH] = { 0 };
-        const DWORD exePathLength = GetModuleFileNameW(NULL, exePath, MAX_PATH);
-        if (exePathLength == 0 || exePathLength >= MAX_PATH) {
+        // Resolve the complete executable path without MAX_PATH truncation.
+        const std::wstring executablePath = Oblivion::WinPath::GetModulePath(nullptr);
+        const size_t lastSlash = executablePath.find_last_of(L"\\/");
+        if (executablePath.empty() || lastSlash == std::wstring::npos) {
             LogFileIntegrityIssue(
                 "FILE_INTEGRITY_CONFIG",
-                "Unable to resolve a complete executable path (GetModuleFileNameW failed or path exceeded MAX_PATH)");
+                "Unable to resolve a complete executable path");
             if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
                 MessageBoxW(
                     nullptr,
-                    L"File-integrity enforcement could not resolve the game executable path. Use a supported path length and restart the client.",
+                    L"File-integrity enforcement could not resolve the game executable path. Verify the installation path and restart the client.",
                     L"Oblivion Hack Shield - Configuration Error",
                     MB_OK | MB_ICONERROR | MB_TOPMOST);
                 ExitProcess(ERROR_INSUFFICIENT_BUFFER);
@@ -151,11 +151,7 @@ namespace Oblivion {
             }
             return;
         }
-        std::wstring exeDir(exePath, exePathLength);
-        size_t lastSlash = exeDir.find_last_of(L"\\/");
-        if (lastSlash != std::wstring::npos) {
-            exeDir = exeDir.substr(0, lastSlash + 1);
-        }
+        const std::wstring exeDir = executablePath.substr(0, lastSlash + 1);
 
         // Report missing/invalid hashes once per check, and fail closed only when
         // enforcement is explicitly enabled. Never misclassify this as player cheating.
