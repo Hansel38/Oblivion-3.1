@@ -63,23 +63,9 @@ namespace Oblivion {
             CloseHandle(hFile);
         }
 
-        // 3) Fallback development: gunakan nilai dummy agar terlihat jelas di log
-        //    Disarankan untuk produksi set via ENV atau file secret.dat
-        const char* devDefault = "DEV_SECRET_NOT_SET";
-        size_t len = strlen(devDefault);
-        std::vector<unsigned char> encoded(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            encoded[i] = (unsigned char)(devDefault[i] ^ key);
-        }
-        std::string secret;
-        secret.reserve(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            secret += (char)(encoded[i] ^ key);
-        }
-
-        cached = secret;
+        // No embedded development secret. An unconfigured client remains
+        // unauthenticated and cannot establish an authenticated session.
+        cached.clear();
         return cached;
     }
 }
