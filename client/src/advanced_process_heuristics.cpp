@@ -81,6 +81,7 @@ namespace {
     constexpr size_t kMaximumCachedFileTrustEntries = 4096;
     FileTrustCache g_signatureCache;
     FileTrustCache g_trustedFileCache;
+    FileTrustCache g_trustedWindowsFileCache;
 
     DWORD GetProtectedProcessId() {
         return GetCurrentProcessId();
@@ -200,6 +201,53 @@ namespace {
             return false;
         }
         if (!StoreTrustIfUnchanged(g_trustedFileCache, key, filePath, initialStamp, trusted)) {
+            return false;
+        }
+        return trusted;
+    }
+
+    bool IsFileTrustedWindowsPublisher(const std::wstring& filePath) {
+        // Windows core processes must be signed by a Microsoft publisher, not merely
+        // by any globally trusted vendor such as NVIDIA, Intel, or AMD.
+        static const std::vector<std::wstring> kWindowsTrustedPublishers = {
+            L"Microsoft Corporation",
+            L"Microsoft Windows",
+            L"Microsoft Windows Publisher"
+        };
+
+        FileTrustStamp initialStamp;
+        if (!GetFileTrustStamp(filePath, initialStamp)) {
+            return false;
+        }
+        const std::wstring key = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
+        bool cachedTrust = false;
+        if (TryGetCachedTrust(g_trustedWindowsFileCache, key, initialStamp, cachedTrust)) {
+            return cachedTrust;
+        }
+
+        std::wstring publisher;
+        const auto verdict =
+            Oblivion::DigitalSignatureValidator::GetSignatureVerdict(filePath, publisher);
+        if (verdict ==
+            Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
+            return false; // Retry when the trust provider/chain can be checked again.
+        }
+
+        const bool signatureVerified =
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher ||
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher;
+        bool trusted = false;
+        if (signatureVerified && !publisher.empty()) {
+            for (const auto& expectedPublisher : kWindowsTrustedPublishers) {
+                if (Oblivion::SignaturePolicy::IsExactPublisherMatch(publisher, expectedPublisher)) {
+                    trusted = true;
+                    break;
+                }
+            }
+        }
+
+        if (!StoreTrustIfUnchanged(
+                g_trustedWindowsFileCache, key, filePath, initialStamp, trusted)) {
             return false;
         }
         return trusted;
@@ -661,7 +709,7 @@ namespace {
             const bool insideWindowsDirectory = !windowsDirectory.empty() &&
                 Oblivion::PathPolicy::IsPathWithinDirectory(processPath, windowsDirectory);
             const bool trustedSignature = insideWindowsDirectory &&
-                IsFileTrustedPublisher(processPath);
+                IsFileTrustedWindowsPublisher(processPath);
             const bool accepted = Oblivion::PathPolicy::ShouldWhitelistWindowsSystemProcess(
                 true, true, insideWindowsDirectory, trustedSignature);
             if (!accepted) {
@@ -700,8 +748,6 @@ namespace {
         const auto verdict =
             Oblivion::DigitalSignatureValidator::GetSignatureVerdict(processPath, verifiedPublisher);
 
-        bool accepted = verdict ==
-            Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher;
         if (verdict ==
             Oblivion::DigitalSignatureValidator::SignatureVerdict::VerificationError) {
             // Inconclusive signature infrastructure is not cheating evidence. Do not
@@ -712,15 +758,16 @@ namespace {
             return false;
         }
 
-        if (!accepted &&
-            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher &&
-            !verifiedPublisher.empty()) {
-            // Publisher strings originate in a certificate subject and can be
-            // attacker-controlled. Do not accept a signer merely because its name
-            // contains a trusted publisher's name as a substring.
-            accepted = Oblivion::SignaturePolicy::IsExactPublisherMatch(
+        // Both TrustedPublisher and UntrustedPublisher mean WinVerifyTrust succeeded.
+        // A globally trusted signer is still not sufficient for a given process name:
+        // Chrome must be signed by Google, Steam by Valve, etc. Always bind signer
+        // identity to the expected publisher for this exact executable.
+        const bool signatureVerified =
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::TrustedPublisher ||
+            verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher;
+        const bool accepted = signatureVerified && !verifiedPublisher.empty() &&
+            Oblivion::SignaturePolicy::IsExactPublisherMatch(
                 verifiedPublisher, publisherEntry->second);
-        }
 
         if (!StoreTrustIfUnchanged(g_signatureCache, cacheKey, processPath, initialStamp, accepted)) {
             return false;
