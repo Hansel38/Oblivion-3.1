@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import os
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -278,10 +279,17 @@ def run_integration(server_binary: Path) -> None:
     env["OBLV_HB_MAX_MISS"] = "2"
     env["OBLV_HB_RTT_WARN_MS"] = "60000"
 
+    # Start outside the executable directory and place a decoy ban list in the
+    # working directory. The server must always use the executable-adjacent file.
+    working_directory = Path(tempfile.mkdtemp(prefix="oblivion-working-dir-"))
+    (working_directory / "bans.txt").write_text(
+        "# decoy: must never be used as the server ban list\n", encoding="ascii"
+    )
+
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as server_log:
         process = subprocess.Popen(
             [str(server_binary)],
-            cwd=str(server_binary.parent),
+            cwd=str(working_directory),
             env=env,
             stdout=server_log,
             stderr=subprocess.STDOUT,
@@ -374,6 +382,7 @@ def run_integration(server_binary: Path) -> None:
                     pass
             else:
                 ban_list_path.write_bytes(original_ban_list)
+            shutil.rmtree(working_directory, ignore_errors=True)
 
         if process.returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
             server_log.seek(0)
