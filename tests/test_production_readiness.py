@@ -36,6 +36,13 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn(r"std::wstring path(32768, L'\0');", source)
         self.assertNotIn(r"std::wstring path(32768, L'\\0');", source)
 
+    def test_server_secret_loader_never_falls_back_to_current_directory(self) -> None:
+        source = (ROOT / "server" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
+        self.assertIn('readlink("/proc/self/exe"', source)
+        self.assertIn('const std::string secretPath = executableDir + "secret.dat";', source)
+        self.assertNotIn('std::string executableDir = "./";', source)
+        self.assertNotIn('std::fopen("secret.dat", "rb")', source)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)
