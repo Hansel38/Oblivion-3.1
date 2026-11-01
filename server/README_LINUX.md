@@ -26,17 +26,17 @@ sudo apt-get install -y build-essential libssl-dev libyaml-cpp-dev
 
 ### Windows client/server TLS dependency
 
-The Windows Visual Studio projects now link OpenSSL through vcpkg. Install vcpkg and OpenSSL using the same triplet used by the project, then set the VCPKG_ROOT environment variable before opening/building the solution:
+The Windows Visual Studio projects link OpenSSL and yaml-cpp through vcpkg. Install both packages using the same triplet used by the project, then set the VCPKG_ROOT environment variable before opening/building the solution:
 
 ~~~powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
 C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg.exe install openssl:x64-windows-static-md
+C:\vcpkg\vcpkg.exe install openssl:x64-windows-static-md yaml-cpp:x64-windows-static-md
 $env:VCPKG_ROOT = 'C:\vcpkg'
 msbuild Oblivion.sln /m /p:Configuration=Release /p:Platform=x64
 ~~~
 
-The current CI builds Release x64 and installs this OpenSSL triplet automatically. Production clients must also be provisioned with the matching certificate pin described below; successfully compiling TLS support does not establish trust by itself.
+The current CI builds Release x86 and x64 and installs the OpenSSL and yaml-cpp triplets automatically. Production clients must also be provisioned with the matching certificate pin described below; successfully compiling TLS support does not establish trust by itself.
 ## Build Instructions
 
 ### 1. Navigate to server directory
