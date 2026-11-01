@@ -195,8 +195,11 @@ inline bool VerifyPeerCertificate(
              }));
         const int hostMatch = looksLikeIp
             ? X509_check_ip_asc(certificate, expectedHost.c_str(), 0)
-            : X509_check_host(certificate, expectedHost.c_str(), expectedHost.size(),
-                              X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS, nullptr);
+            : X509_check_host(
+                  certificate, expectedHost.c_str(), expectedHost.size(),
+                  X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS |
+                      X509_CHECK_FLAG_NEVER_CHECK_SUBJECT,
+                  nullptr);
         if (hostMatch != 1) {
             error = "TLS peer certificate hostname/IP SAN does not match configured endpoint";
             goto cleanup;

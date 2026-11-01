@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -325,7 +326,9 @@ def verify_tls_handshake_deadline() -> None:
         sock.close()
 
 
-def verify_tls_client_pin_checks(probe_binary: Path, server_certificate: Path) -> None:
+def verify_tls_client_pin_checks(
+    probe_binary: Path, server_certificate: Path, tls_directory: Path
+) -> None:
     certificate_der = subprocess.run(
         ["openssl", "x509", "-in", str(server_certificate), "-outform", "DER"],
         check=True, capture_output=True,
@@ -347,6 +350,71 @@ def verify_tls_client_pin_checks(probe_binary: Path, server_certificate: Path) -
                 f"TLS client verification case failed ({description}): "
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
             )
+
+    # X509_check_host() otherwise accepts the legacy Subject CN when the
+    # certificate has no subjectAltName. Require DNS SAN explicitly.
+    cn_key = tls_directory / "cn-only.key"
+    cn_cert = tls_directory / "cn-only.pem"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(cn_key), "-out", str(cn_cert),
+        "-subj", "/CN=localhost",
+        "-addext", "basicConstraints=critical,CA:FALSE",
+        "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+        "-addext", "extendedKeyUsage=serverAuth",
+    ], check=True, capture_output=True, text=True)
+    cn_der = subprocess.run(
+        ["openssl", "x509", "-in", str(cn_cert), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    cn_pin = hashlib.sha256(cn_der).hexdigest()
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(certfile=str(cn_cert), keyfile=str(cn_key))
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((HOST, 0))
+    listener.listen(1)
+    cn_only_port = listener.getsockname()[1]
+    server_errors: list[str] = []
+
+    def serve_cn_only_certificate() -> None:
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                try:
+                    with server_context.wrap_socket(connection, server_side=True) as tls_socket:
+                        tls_socket.settimeout(2)
+                        try:
+                            tls_socket.recv(1)
+                        except (ssl.SSLError, OSError, socket.timeout):
+                            pass
+                except (ssl.SSLError, OSError):
+                    pass
+        except OSError as exc:
+            server_errors.append(str(exc))
+        finally:
+            listener.close()
+
+    server_thread = threading.Thread(target=serve_cn_only_certificate, daemon=True)
+    server_thread.start()
+    try:
+        result = subprocess.run(
+            [str(probe_binary), HOST, "localhost", str(cn_only_port), cn_pin, "reject"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "TLS client accepted or failed to test a CN-only certificate without DNS SAN: "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+    finally:
+        listener.close()
+        server_thread.join(timeout=3)
+    if server_thread.is_alive():
+        raise RuntimeError("CN-only TLS test server thread did not stop")
+    if server_errors:
+        raise RuntimeError("CN-only TLS test server failed: " + "; ".join(server_errors))
 
 
 def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
@@ -470,7 +538,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             verify_trailing_data_is_rejected()
             verify_plaintext_protocol_is_rejected()
             verify_tls_handshake_deadline()
-            verify_tls_client_pin_checks(tls_probe_binary, server_cert)
+            verify_tls_client_pin_checks(tls_probe_binary, server_cert, tls_directory)
             verify_malformed_request_does_not_log_secret(server_binary)
             verify_short_hwid_is_rejected()
             verify_missing_ban_list_is_rejected(ban_list_path)
