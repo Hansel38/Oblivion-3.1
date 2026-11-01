@@ -682,7 +682,7 @@ namespace Oblivion {
         errorOut.clear();
 
         const std::string checkin = "CHECKIN::" + m_hwid + ":" + m_secretKey + ";";
-        if (!SendAllBytes(s, checkin, tls))
+        if (!SendAllBytes(s, checkin, tls)) {
             errorOut = "gagal mengirim check-in";
             return false;
         }
@@ -780,6 +780,21 @@ namespace Oblivion {
             return true;
         }
 
+        if (m_tlsContext == nullptr || m_tlsPins.empty()) {
+            const std::string reason = m_tlsContext == nullptr
+                ? "TLS client context is unavailable"
+                : (m_tlsPinError.empty() ? "TLS certificate pin is missing" : m_tlsPinError);
+            LogClientIssue("TLS_CONFIG_INVALID", reason);
+            if (m_failClosed) {
+                MessageBoxW(nullptr,
+                    L"Konfigurasi TLS Oblivion tidak lengkap atau tidak valid.\\n\\nClient akan ditutup untuk mencegah koneksi tidak terenkripsi.",
+                    L"Oblivion Hack Shield - TLS Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(1);
+            }
+            return true;
+        }
+
         // Check-in ke server: memastikan sesi sah dan HWID tidak sedang diban.
         std::string activeHost;
         int activePort = 0;
@@ -798,15 +813,48 @@ namespace Oblivion {
             return true;
         }
 
-        std::cout << "[NET] Check-in ke " << activeHost << ":" << activePort << std::endl;
+        std::cout << "[NET] TLS check-in ke " << activeHost << ":" << activePort << std::endl;
 
-        // Handshake: kirim check-in lalu baca keputusan server (OK / KICK).
+        // Bound TLS handshake time so an endpoint that accepts TCP but never
+        // completes TLS cannot stall client initialization indefinitely.
+        const DWORD tlsTimeout = static_cast<DWORD>(m_handshakeTimeoutMs);
+        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+
+        std::string tlsError;
+        SSL* tls = Oblivion::Tls::Connect(
+            m_tlsContext, static_cast<int>(connectSocket), activeHost, m_tlsPins, tlsError);
+
+        const DWORD noTimeout = 0;
+        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
+        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
+
+        if (tls == nullptr) {
+            closesocket(connectSocket);
+            LogClientIssue("TLS_HANDSHAKE_FAILED", tlsError);
+            if (m_failClosed) {
+                MessageBoxW(nullptr,
+                    L"Identitas server keamanan tidak dapat diverifikasi melalui TLS.\\n\\nClient akan ditutup.",
+                    L"Oblivion Hack Shield - TLS Verification Failed",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(1);
+            }
+            return true;
+        }
+
+        // Handshake: send the first protocol frame only after the server
+        // certificate pin, expiry and hostname/IP SAN have been validated.
         bool isBanned = false;
         std::string handshakeError;
-        const bool handshakeOk = PerformCheckin(connectSocket, isBanned, handshakeError);
+        const bool handshakeOk = PerformCheckin(connectSocket, tls, isBanned, handshakeError);
 
         if (!handshakeOk) {
             // Handshake gagal = kegagalan infrastruktur, bukan bukti cheat.
+            SSL_free(tls);
             closesocket(connectSocket);
             LogClientIssue("CHECKIN_FAILED", handshakeError);
             if (m_failClosed) {
@@ -818,7 +866,8 @@ namespace Oblivion {
         }
 
         if (isBanned) {
-            // HWID di-ban: tutup socket lalu akhiri sesi pemain.
+            // HWID di-ban: tutup TLS lalu akhiri sesi pemain.
+            SSL_free(tls);
             closesocket(connectSocket);
             MessageBoxW(NULL, L"HWID Anda telah di-ban dari server.\n\nClient akan ditutup.", L"Oblivion Hack Shield - Banned", MB_OK | MB_ICONERROR | MB_TOPMOST);
 
@@ -833,7 +882,8 @@ namespace Oblivion {
             return false;
         }
 
-        // Sesi sah (server menjawab OK): pakai socket yang sama untuk heartbeat.
+        // Sesi sah: keep the authenticated TLS session for all heartbeats.
+        m_hbTls = tls;
         m_hbSocket = connectSocket;
         StartHeartbeat();
         return true; // Jangan close socket, akan digunakan untuk heartbeat
@@ -906,7 +956,7 @@ namespace Oblivion {
         std::string initialData = std::move(m_pendingHeartbeatData);
 
         try {
-        m_hbThread = std::thread([this, receiveBuffer = std::move(initialData)]() mutable {
+        m_hbThread = std::thread([this, receiveBuffer = std::move(initialData), tls = m_hbTls]() mutable {
             const SOCKET socket = m_hbSocket;
             const std::string sessionKey =
                 HmacSha256(m_secretKey, m_hwid + ":" + std::to_string(m_sessionNonce));
@@ -961,7 +1011,7 @@ namespace Oblivion {
             };
 
             while (m_hbRunning.load()) {
-                if (!ReceiveSemicolonCount(socket, receiveBuffer, 1, 512, receiveTimeoutMs)) {
+                if (!ReceiveSemicolonCount(socket, receiveBuffer, 1, 512, receiveTimeoutMs, tls)) {
                     failHeartbeat("timeout atau koneksi terputus saat menunggu PING");
                     break;
                 }
@@ -1030,7 +1080,7 @@ namespace Oblivion {
                     "PONG:" + std::to_string(sequence) + ":" + std::to_string(clientTimestamp) +
                     ":" + std::to_string(nonce) + ":" + statusText + ":" + m_hwid + ":" + hmac + ";";
 
-                if (!SendAllBytes(socket, pong)) {
+                if (!SendAllBytes(socket, pong, tls)) {
                     failHeartbeat("gagal mengirim PONG ke server");
                     break;
                 }
@@ -1080,13 +1130,37 @@ namespace Oblivion {
             return;
         }
 
-        std::cout << "[NET] Melaporkan " << type << " ke " << activeHost << ":" << activePort << std::endl;
+        const DWORD tlsTimeout = static_cast<DWORD>(m_handshakeTimeoutMs);
+        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+
+        std::string tlsError;
+        SSL* rawTls = Oblivion::Tls::Connect(
+            m_tlsContext, static_cast<int>(connectSocket), activeHost, m_tlsPins, tlsError);
+
+        const DWORD noTimeout = 0;
+        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
+        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
+
+        if (rawTls == nullptr) {
+            closesocket(connectSocket);
+            QueuePendingViolation(type, details);
+            LogClientIssue("TLS_REPORT_FAILED", tlsError);
+            return;
+        }
+        std::unique_ptr<SSL, decltype(&SSL_free)> tls(rawTls, &SSL_free);
+
+        std::cout << "[NET] TLS melaporkan " << type << " ke " << activeHost << ":" << activePort << std::endl;
 
         // Escape protocol delimiters reversibly so paths and detection metadata
         // retain their original ':' / ';' characters in server logs.
         const std::string encodedDetails = EncodeProtocolDetails(details);
         std::string report = type + ":" + encodedDetails + ":" + m_hwid + ":" + m_secretKey + ";";
-        if (!SendAllBytes(connectSocket, report)) {
+        if (!SendAllBytes(connectSocket, report, tls.get())) {
             // Gagal kirim = kegagalan jaringan, bukan bukti cheat -> antrikan saja.
             closesocket(connectSocket);
             QueuePendingViolation(type, details);
@@ -1098,7 +1172,7 @@ namespace Oblivion {
         // Baca satu frame ACK utuh; TCP dapat memecah "KICK;" menjadi beberapa recv().
         std::string response;
         const bool receivedAck = ReceiveSemicolonCount(
-            connectSocket, response, 1, 512, m_handshakeTimeoutMs);
+            connectSocket, response, 1, 512, m_handshakeTimeoutMs, tls.get());
         closesocket(connectSocket);
 
         if (!receivedAck) {
