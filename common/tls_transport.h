@@ -6,9 +6,17 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/select.h>
+#include <sys/time.h>
+#endif
 
 namespace Oblivion {
 namespace Tls {
@@ -211,6 +219,59 @@ cleanup:
     return valid;
 }
 
+
+inline bool WaitForHandshakeIo(
+    int socketDescriptor,
+    int sslError,
+    std::chrono::steady_clock::time_point deadline) {
+    if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+
+    fd_set readSet;
+    fd_set writeSet;
+    FD_ZERO(&readSet);
+    FD_ZERO(&writeSet);
+    if (sslError == SSL_ERROR_WANT_READ) FD_SET(socketDescriptor, &readSet);
+    else FD_SET(socketDescriptor, &writeSet);
+
+    timeval timeout{};
+    timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
+    timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
+#ifdef _WIN32
+    const int ready = select(0, &readSet, &writeSet, nullptr, &timeout);
+#else
+    const int ready = select(socketDescriptor + 1, &readSet, &writeSet, nullptr, &timeout);
+#endif
+    return ready > 0;
+}
+
+inline bool PerformHandshake(
+    SSL* session,
+    int socketDescriptor,
+    bool serverSide,
+    std::string& error) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (true) {
+        const int result = serverSide ? SSL_accept(session) : SSL_connect(session);
+        if (result == 1) {
+            return true;
+        }
+
+        const int sslError = SSL_get_error(session, result);
+        if (!WaitForHandshakeIo(socketDescriptor, sslError, deadline)) {
+            error = (std::chrono::steady_clock::now() >= deadline)
+                ? "TLS handshake exceeded its 5-second deadline"
+                : "TLS handshake failed";
+            return false;
+        }
+    }
+}
+
 inline SSL* Connect(
     SSL_CTX* context,
     int socketDescriptor,
@@ -246,8 +307,7 @@ inline SSL* Connect(
         return nullptr;
     }
 
-    if (SSL_connect(session) != 1) {
-        error = "TLS handshake failed";
+    if (!PerformHandshake(session, socketDescriptor, false, error)) {
         SSL_free(session);
         return nullptr;
     }
@@ -277,8 +337,7 @@ inline SSL* Accept(SSL_CTX* context, int socketDescriptor, std::string& error) {
         SSL_free(session);
         return nullptr;
     }
-    if (SSL_accept(session) != 1) {
-        error = "TLS handshake failed";
+    if (!PerformHandshake(session, socketDescriptor, true, error)) {
         SSL_free(session);
         return nullptr;
     }
