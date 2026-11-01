@@ -68,11 +68,19 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::Start() {
+        std::lock_guard<std::mutex> lifecycleGuard(m_lifecycleMutex);
         if (m_isRunning) {
             std::cout << "[ProcessWatcher] Already running, ignoring Start() call" << std::endl;
             return;
         }
         
+        // A monitoring loop can clear m_isRunning itself before the owning
+        // std::thread object has been joined. Join that completed worker before
+        // assigning a new std::thread; assigning over a joinable thread terminates.
+        if (m_watcherThread.joinable()) {
+            m_watcherThread.join();
+        }
+
         std::cout << "[ProcessWatcher] Starting monitoring system..." << std::endl;
         m_isRunning = true;
         try {
@@ -91,6 +99,7 @@ namespace Oblivion {
     }
 
     void ProcessWatcher::Stop() {
+        std::lock_guard<std::mutex> lifecycleGuard(m_lifecycleMutex);
         // KRITIS: tidak boleh early-return berdasar m_isRunning. Flag itu juga
         // dipatok `false` oleh thread pemantau saat mendeteksi pelanggaran, sehingga
         // early-return akan melewati join() dan std::thread yang masih joinable
