@@ -796,23 +796,56 @@ namespace Oblivion {
     static std::string HmacSha256(const std::string& key, const std::string& data) {
         BCRYPT_ALG_HANDLE hAlg = NULL;
         BCRYPT_HASH_HANDLE hHash = NULL;
-        NTSTATUS status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC);
-        if (status != 0) return std::string();
-        DWORD objLen = 0, dataLen = 0;
-        (void)BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objLen, sizeof(DWORD), &dataLen, 0);
+        NTSTATUS status = BCryptOpenAlgorithmProvider(
+            &hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC);
+        if (status != 0 || hAlg == NULL) {
+            if (hAlg != NULL) BCryptCloseAlgorithmProvider(hAlg, 0);
+            return std::string();
+        }
+
+        DWORD objLen = 0;
+        DWORD dataLen = 0;
+        status = BCryptGetProperty(
+            hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objLen),
+            sizeof(objLen), &dataLen, 0);
+        if (status != 0 || objLen == 0 || dataLen < sizeof(objLen)) {
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            return std::string();
+        }
+
         std::vector<UCHAR> obj(objLen);
-        status = BCryptCreateHash(hAlg, &hHash, obj.data(), objLen, (PUCHAR)key.data(), (ULONG)key.size(), 0);
-        if (status != 0) { BCryptCloseAlgorithmProvider(hAlg,0); return std::string(); }
-        status = BCryptHashData(hHash, (PUCHAR)data.data(), (ULONG)data.size(), 0);
-        if (status != 0) { BCryptDestroyHash(hHash); BCryptCloseAlgorithmProvider(hAlg,0); return std::string(); }
-        UCHAR hash[32];
+        status = BCryptCreateHash(
+            hAlg, &hHash, obj.data(), objLen,
+            reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())),
+            static_cast<ULONG>(key.size()), 0);
+        if (status != 0 || hHash == NULL) {
+            if (hHash != NULL) BCryptDestroyHash(hHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            return std::string();
+        }
+
+        status = BCryptHashData(
+            hHash, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+            static_cast<ULONG>(data.size()), 0);
+        if (status != 0) {
+            BCryptDestroyHash(hHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            return std::string();
+        }
+
+        UCHAR hash[32] = {};
         status = BCryptFinishHash(hHash, hash, sizeof(hash), 0);
         BCryptDestroyHash(hHash);
         BCryptCloseAlgorithmProvider(hAlg, 0);
         if (status != 0) return std::string();
+
         static const char* hex = "0123456789abcdef";
-        std::string out; out.reserve(64);
-        for (int i = 0; i < 32; ++i) { out.push_back(hex[(hash[i]>>4)&0xF]); out.push_back(hex[hash[i]&0xF]); }
+        std::string out;
+        out.reserve(64);
+        for (int i = 0; i < 32; ++i) {
+            out.push_back(hex[(hash[i] >> 4) & 0xF]);
+            out.push_back(hex[hash[i] & 0xF]);
+        }
         return out;
     }
 

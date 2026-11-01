@@ -188,24 +188,44 @@ std::string hmacSha256(const std::string& key, const std::string& data) {
 #ifdef _WIN32
     BCRYPT_ALG_HANDLE hAlg = NULL;
     BCRYPT_HASH_HANDLE hHash = NULL;
-    NTSTATUS st = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC);
-    if (st != 0) return std::string();
-    
-    DWORD objLen = 0, dlen = 0;
-    (void)BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objLen, sizeof(DWORD), &dlen, 0);
-    std::vector<UCHAR> obj(objLen);
-    st = BCryptCreateHash(hAlg, &hHash, obj.data(), objLen, (PUCHAR)key.data(), (ULONG)key.size(), 0);
-    if (st != 0) {
+    NTSTATUS st = BCryptOpenAlgorithmProvider(
+        &hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC);
+    if (st != 0 || hAlg == NULL) {
+        if (hAlg != NULL) BCryptCloseAlgorithmProvider(hAlg, 0);
+        return std::string();
+    }
+
+    DWORD objLen = 0;
+    DWORD resultLength = 0;
+    st = BCryptGetProperty(
+        hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objLen),
+        sizeof(objLen), &resultLength, 0);
+    if (st != 0 || objLen == 0 || resultLength < sizeof(objLen)) {
         BCryptCloseAlgorithmProvider(hAlg, 0);
         return std::string();
     }
-    st = BCryptHashData(hHash, (PUCHAR)data.data(), (ULONG)data.size(), 0);
+
+    std::vector<UCHAR> obj(objLen);
+    st = BCryptCreateHash(
+        hAlg, &hHash, obj.data(), objLen,
+        reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())),
+        static_cast<ULONG>(key.size()), 0);
+    if (st != 0 || hHash == NULL) {
+        if (hHash != NULL) BCryptDestroyHash(hHash);
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return std::string();
+    }
+
+    st = BCryptHashData(
+        hHash, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+        static_cast<ULONG>(data.size()), 0);
     if (st != 0) {
         BCryptDestroyHash(hHash);
         BCryptCloseAlgorithmProvider(hAlg, 0);
         return std::string();
     }
-    UCHAR hash[32];
+
+    UCHAR hash[32] = {};
     st = BCryptFinishHash(hHash, hash, sizeof(hash), 0);
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
