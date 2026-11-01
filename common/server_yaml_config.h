@@ -4,12 +4,14 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <istream>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -71,12 +73,17 @@ inline bool HasOnlyKeys(
         return false;
     }
 
+    std::set<std::string> seenKeys;
     for (const auto& item : node) {
         if (!item.first.IsScalar()) {
             error = context + " contains a non-scalar key";
             return false;
         }
         const std::string key = item.first.as<std::string>();
+        if (!seenKeys.insert(key).second) {
+            error = context + " contains duplicate key '" + key + "'";
+            return false;
+        }
         bool found = false;
         for (const auto& candidate : allowed) {
             if (key == candidate) {
@@ -114,8 +121,10 @@ inline bool ReadString(
         return false;
     }
     if (target.empty() || target.size() > 4096 ||
-        target.find('\0') != std::string::npos) {
-        error = context + "." + key + " must contain 1 to 4096 valid characters";
+        std::any_of(target.begin(), target.end(), [](unsigned char ch) {
+            return ch < 0x20 || ch == 0x7f;
+        })) {
+        error = context + "." + key + " must contain 1 to 4096 printable characters";
         return false;
     }
     return true;
