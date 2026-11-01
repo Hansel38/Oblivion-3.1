@@ -5,6 +5,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <istream>
 #include <iterator>
 #include <limits>
@@ -295,6 +297,34 @@ inline bool ParseServerYaml(
         return false;
     }
 
+    return true;
+}
+
+
+inline bool LoadServerYamlFileIfPresent(
+    const std::string& path,
+    ServerSettings& settings,
+    bool& found,
+    std::string& error) {
+    found = false;
+    error.clear();
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        std::error_code filesystemError;
+        const bool exists = std::filesystem::exists(path, filesystemError);
+        if (filesystemError || exists) {
+            error = "cannot open server YAML configuration: " + path;
+            return false;
+        }
+        return true; // Missing optional config preserves compiled defaults.
+    }
+
+    if (!ParseServerYaml(input, settings, error)) {
+        error = path + ": " + error;
+        return false;
+    }
+    found = true;
     return true;
 }
 
