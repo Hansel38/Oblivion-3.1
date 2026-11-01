@@ -56,6 +56,13 @@ jobs:
           & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install openssl:x64-windows-static-md openssl:x86-windows-static-md --disable-metrics
           "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Generate disposable network policy for compile-only CI
+        shell: pwsh
+        run: |
+          # CI validates compilation only; this host/pin must never be shipped.
+          python tools/generate_production_network_config.py --server-endpoints "ci.invalid:54321" --tls-pin-sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build Release x64 solution
         run: msbuild Oblivion.sln /m /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 

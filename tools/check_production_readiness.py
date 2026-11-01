@@ -17,10 +17,19 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from production_network_config import (
+    NetworkConfigError,
+    parse_endpoint_list as parse_policy_endpoints,
+    parse_pin_list as parse_policy_pins,
+    read_network_config,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "client" / "include" / "file_integrity_manifest.generated.h"
 DEFAULT_CLIENT_PROJECT = ROOT / "client" / "client.vcxproj"
 DEFAULT_RUNTIME_SOURCE = ROOT / "client" / "src" / "file_integrity_check.cpp"
+DEFAULT_NETWORK_SOURCE = ROOT / "client" / "src" / "network_reporter.cpp"
+DEFAULT_NETWORK_CONFIG = ROOT / "client" / "include" / "production_network_config.generated.h"
 
 REQUIRED_FILES = {
     "RRO.exe": "OBLIVION_FILE_HASH_RRO_EXE",
@@ -174,17 +183,10 @@ def hash_package(game_directory: Path, expected: dict[str, str], max_size: int) 
 
 
 def parse_pin_list(setting: str) -> list[str]:
-    tokens = [token for token in re.split(r"[,;\s]+", setting.strip()) if token]
-    if not tokens:
-        raise ReadinessError("TLS SHA-256 pin list is empty")
-    pins: list[str] = []
-    for pin in tokens:
-        if not SHA256_RE.fullmatch(pin):
-            raise ReadinessError("each TLS SHA-256 pin must be exactly 64 hexadecimal characters")
-        lowered = pin.lower()
-        if lowered not in pins:
-            pins.append(lowered)
-    return pins
+    try:
+        return parse_policy_pins(setting)
+    except NetworkConfigError as exc:
+        raise ReadinessError(str(exc)) from exc
 
 
 def read_leaf_certificate(cert_path: Path) -> tuple[bytes, dict]:
@@ -221,8 +223,6 @@ def _dns_san_matches(host: str, pattern: str) -> bool:
 
 
 def validate_tls_key_pair(cert_path: Path, key_path: Path) -> None:
-    # Private keys must not be readable by group/other users on POSIX servers.
-    # Windows ACLs have different semantics, so this mode-bit check is POSIX-only.
     if os.name != "nt":
         try:
             key_mode = stat.S_IMODE(key_path.stat().st_mode)
@@ -233,8 +233,6 @@ def validate_tls_key_pair(cert_path: Path, key_path: Path) -> None:
                 "TLS private key permissions expose the key to group/other users; use chmod 600"
             )
 
-    # Use the same TLS library family as the client/server toolchain to verify that
-    # the supplied private key matches the certificate, without exposing key data.
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     try:
         context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
@@ -242,59 +240,64 @@ def validate_tls_key_pair(cert_path: Path, key_path: Path) -> None:
         raise ReadinessError(f"TLS certificate/private key pair is invalid or mismatched: {exc}") from exc
 
 
-def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> str:
+def validate_tls_certificate(cert_path: Path, hosts: list[str], pins_setting: str) -> str:
     pins = parse_pin_list(pins_setting)
     der, decoded = read_leaf_certificate(cert_path)
     actual_pin = hashlib.sha256(der).hexdigest()
     if actual_pin not in pins:
         raise ReadinessError(
-            f"TLS leaf-certificate SHA-256 {actual_pin} is absent from the configured pin list"
+            f"TLS leaf-certificate SHA-256 {actual_pin} is absent from the compiled pin list"
         )
 
-    eku_result = subprocess.run(
-        ["openssl", "x509", "-in", str(cert_path), "-noout", "-ext", "extendedKeyUsage"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if eku_result.returncode != 0:
-        raise ReadinessError(
-            "cannot inspect TLS certificate Extended Key Usage with the OpenSSL CLI; "
-            "install openssl and retry"
+    # The stdlib certificate decoder does not expose Extended Key Usage on all
+    # supported Python versions; query this extension explicitly through OpenSSL.
+    try:
+        eku_result = subprocess.run(
+            ["openssl", "x509", "-in", str(cert_path), "-noout", "-ext", "extendedKeyUsage"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
         )
-    if "TLS Web Server Authentication" not in eku_result.stdout:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise ReadinessError(
-            "TLS certificate Extended Key Usage must include serverAuth"
-        )
+            "cannot inspect TLS certificate Extended Key Usage; install the OpenSSL CLI"
+        ) from exc
+    if eku_result.returncode != 0 or "TLS Web Server Authentication" not in eku_result.stdout:
+        raise ReadinessError("TLS certificate Extended Key Usage must include serverAuth")
 
     san = decoded.get("subjectAltName", ())
     if not san:
         raise ReadinessError("TLS certificate has no Subject Alternative Name (SAN); CN fallback is forbidden")
 
-    try:
-        ip_host = ipaddress.ip_address(host)
-    except ValueError:
-        ip_host = None
-    if ip_host is not None:
-        matched = any(
-            kind == "IP Address"
-            and _same_ip(value, ip_host)
-            for kind, value in san
-        )
-    else:
+    if not hosts:
+        raise ReadinessError("compiled production network policy contains no endpoint hosts")
+    for host in hosts:
         try:
-            host_ascii = host.rstrip(".").encode("idna").decode("ascii").lower()
-        except UnicodeError as exc:
-            raise ReadinessError("configured DNS hostname cannot be normalized with IDNA") from exc
-        matched = any(
-            kind == "DNS" and _dns_san_matches(host_ascii, value)
-            for kind, value in san
-        )
-    if not matched:
-        raise ReadinessError(
-            "TLS certificate SAN does not match the configured server DNS name/IP"
-        )
+            ip_host = ipaddress.ip_address(host)
+        except ValueError:
+            ip_host = None
+
+        if ip_host is not None:
+            matched = any(
+                kind == "IP Address" and _same_ip(value, ip_host)
+                for kind, value in san
+            )
+        else:
+            try:
+                host_ascii = host.rstrip(".").encode("idna").decode("ascii").lower()
+            except UnicodeError as exc:
+                raise ReadinessError(
+                    f"configured DNS hostname cannot be normalized with IDNA: {host!r}"
+                ) from exc
+            matched = any(
+                kind == "DNS" and _dns_san_matches(host_ascii, value)
+                for kind, value in san
+            )
+        if not matched:
+            raise ReadinessError(
+                f"TLS certificate SAN does not match compiled endpoint {host!r}"
+            )
 
     now = time.time()
     not_before = ssl.cert_time_to_seconds(decoded["notBefore"])
@@ -303,6 +306,70 @@ def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> s
         raise ReadinessError("TLS certificate is not currently valid")
     return actual_pin
 
+
+def validate_network_policy_source(source_path: Path) -> None:
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReadinessError(f"cannot read network policy source {source_path}: {exc}") from exc
+
+    required_tokens = (
+        '#include "../include/production_network_config.generated.h"',
+        "#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD",
+        "OBLIVION_PRODUCTION_NETWORK_CONFIG_READY != 1",
+        "#if OBLIVION_ALLOW_NETWORK_FAIL_OPEN",
+        "AppendEndpointList(cfg, OBLIVION_PRODUCTION_SERVER_ENDPOINTS)",
+        "cfg.tlsPinSpec = OBLIVION_PRODUCTION_TLS_PIN_SHA256",
+        "cfg.endpointsFromLocalConfig = false",
+        "cfg.failClosed = true",
+    )
+    for token in required_tokens:
+        if token not in source:
+            raise ReadinessError(
+                f"network policy source is missing production enforcement token {token!r}"
+            )
+
+
+def validate_compiled_network_policy(
+    config_path: Path,
+    primary_host: str,
+    expected_pins_setting: str,
+) -> tuple[list[str], str]:
+    try:
+        policy = read_network_config(config_path)
+    except NetworkConfigError as exc:
+        raise ReadinessError(str(exc)) from exc
+
+    endpoints = policy["endpoints"]
+    compiled_pins = policy["pins"]
+    compiled_host_list = [str(endpoint["host"]) for endpoint in endpoints]
+
+    primary = primary_host.strip()
+    if primary.startswith("[") and primary.endswith("]"):
+        primary = primary[1:-1]
+    try:
+        primary_ip = ipaddress.ip_address(primary)
+    except ValueError:
+        try:
+            primary = primary.rstrip(".").encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ReadinessError("configured primary DNS hostname cannot be normalized with IDNA") from exc
+        primary_ip = None
+    if primary_ip is not None:
+        primary = str(primary_ip)
+
+    if primary not in compiled_host_list:
+        raise ReadinessError(
+            "OBLIVION_SERVER_HOST must match an endpoint in the compiled production network policy"
+        )
+
+    requested_pins = parse_pin_list(expected_pins_setting)
+    if requested_pins != compiled_pins:
+        raise ReadinessError(
+            "OBLIVION_TLS_PIN_SHA256 does not match the certificate pins compiled into the Release client"
+        )
+
+    return compiled_host_list, ",".join(compiled_pins)
 
 def _same_ip(value: str, expected: ipaddress._BaseAddress) -> bool:
     try:
@@ -316,6 +383,8 @@ def run_preflight(
     manifest_path: Path,
     project_path: Path,
     runtime_source_path: Path,
+    network_source_path: Path,
+    network_config_path: Path,
     tls_cert_path: Path,
     tls_key_path: Path,
     server_host: str,
@@ -323,11 +392,22 @@ def run_preflight(
 ) -> list[str]:
     manifest = parse_manifest(manifest_path)
     max_size = release_limits(project_path, runtime_source_path)
+    validate_network_policy_source(network_source_path)
+    endpoint_hosts, compiled_pins = validate_compiled_network_policy(
+        network_config_path, server_host, tls_pins
+    )
     checks = hash_package(game_directory, manifest, max_size)
     validate_tls_key_pair(tls_cert_path, tls_key_path)
     checks.append("TLS certificate/private key pair: matched")
-    pin = validate_tls_certificate(tls_cert_path, server_host, tls_pins)
-    checks.append(f"TLS certificate: serverAuth EKU, SAN, validity window, and pin verified ({pin})")
+    pin = validate_tls_certificate(tls_cert_path, endpoint_hosts, compiled_pins)
+    checks.append(
+        f"TLS certificate: serverAuth EKU, SAN for all {len(endpoint_hosts)} endpoint(s), "
+        f"validity window, and compiled pin verified ({pin})"
+    )
+    checks.append(
+        f"Production network policy: {len(endpoint_hosts)} compile-time endpoint(s); "
+        "editable config/environment overrides are ignored"
+    )
     checks.append(f"Release enforcement: x86/x64 enabled; maximum hashed file size {max_size} bytes")
     return checks
 
@@ -340,9 +420,11 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--client-project", type=Path, default=DEFAULT_CLIENT_PROJECT)
     parser.add_argument("--runtime-source", type=Path, default=DEFAULT_RUNTIME_SOURCE)
+    parser.add_argument("--network-source", type=Path, default=DEFAULT_NETWORK_SOURCE)
+    parser.add_argument("--network-config", type=Path, default=DEFAULT_NETWORK_CONFIG)
     parser.add_argument("--tls-cert", type=Path, required=True, help="PEM leaf certificate deployed by the server")
     parser.add_argument("--tls-key", type=Path, required=True, help="matching PEM private key deployed by the server")
-    parser.add_argument("--server-host", required=True, help="DNS name or IP address configured for clients")
+    parser.add_argument("--server-host", required=True, help="primary DNS name or IP address in the compiled endpoint list")
     parser.add_argument("--tls-pin-sha256", required=True, help="real leaf certificate SHA-256 pin list")
     args = parser.parse_args()
 
@@ -352,6 +434,8 @@ def main() -> int:
             args.manifest,
             args.client_project,
             args.runtime_source,
+            args.network_source,
+            args.network_config,
             args.tls_cert,
             args.tls_key,
             args.server_host,

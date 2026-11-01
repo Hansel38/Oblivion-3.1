@@ -164,41 +164,62 @@ openssl rand -hex 32
 
 ### Production release preflight (required)
 
-The Visual Studio Release configurations for both Win32/x86 and x64 now define
+The Visual Studio Release configurations for both Win32/x86 and x64 define
 `OBLIVION_PRODUCTION_BUILD=1` and `OBLIVION_ENFORCE_FILE_INTEGRITY=1`.
-They will fail closed at startup when any integrity hash is a placeholder. Debug
-builds remain report-only for development. Do not distribute a Release client
-until its manifest is generated from the exact package and the preflight below
-passes.
+Release builds now also require a provisioned compile-time network policy. They
+fail to compile while `client/include/production_network_config.generated.h`
+contains `OBLIVION_PRODUCTION_NETWORK_CONFIG_READY 0`. This template is deliberately
+unprovisioned in source control. Never ship it or the disposable `ci.invalid`
+endpoint used by compile-only CI.
 
-1. Generate the manifest from the exact folder that will be shipped. Run from the repository root:
+1. Generate the production endpoint/pin header from the real deployment. Include every
+   endpoint the client will be allowed to contact; each endpoint must have a valid TLS
+   certificate SAN and the corresponding leaf-certificate pin must be in the pin list.
+   Run from the repository root:
+
+   ```powershell
+   python tools/generate_production_network_config.py \\
+     --server-endpoints "shield.example.com:54321,shield-backup.example.com:54321" \\
+     --tls-pin-sha256 "paste-real-primary-leaf-pin,paste-real-backup-leaf-pin"
+   ```
+
+   The example values are placeholders, not deployable settings. Replace them with the
+   actual DNS names/IPs and SHA-256 leaf-certificate fingerprints from your infrastructure.
+   Changes to production endpoints or pins require regenerating the header and rebuilding
+   Release x86/x64. Release ignores endpoint and TLS-pin overrides in `oblivion.cfg` and
+   environment variables; Debug builds retain these overrides for development.
+
+2. Generate the integrity manifest from the exact folder that will be distributed:
 
    ```powershell
    python tools/generate_integrity_manifest.py "D:\\Builds\\Ragnarok-Package"
    ```
 
-2. If `RRO.exe`, `en.grf`, or `DATA.ini` is larger than 512 MiB, review performance and raise
-   `OBLIVION_MAX_HASH_FILE_SIZE_BYTES` in both Release configurations to a measured, acceptable
-   value. The runtime refuses to enforce files over that limit.
+   Do not edit the generated SHA-256 values manually. If `RRO.exe`, `en.grf`, or `DATA.ini`
+   is larger than 512 MiB, review startup performance and raise
+   `OBLIVION_MAX_HASH_FILE_SIZE_BYTES` in both Release configurations only after measuring
+   a suitable cap. The runtime refuses to enforce a monitored file over that limit.
 
-3. Run the release preflight. The certificate must be a PEM leaf certificate whose SAN matches
-   the configured DNS name/IP, is currently valid, and whose SHA-256 fingerprint appears in the
-   pin list distributed to the client:
+3. Run the release preflight with the same endpoint, TLS pin, and certificate/private-key pair
+   that will be deployed. The certificate must have serverAuth EKU, a SAN matching every compiled
+   endpoint, a current validity window, and a leaf fingerprint present in the compiled pin list.
+   On POSIX, the private key must not be readable by group/other users (`chmod 600`).
 
    ```bash
    make -C server production-check \\
      OBLIVION_PRODUCTION_GAME_DIR="/absolute/path/to/the/exact/game-package" \\
      OBLIVION_SERVER_HOST="shield.example.com" \\
-     OBLIVION_TLS_PIN_SHA256="paste-the-real-64-hex-leaf-pin" \\
+     OBLIVION_TLS_PIN_SHA256="the-same-real-compiled-pin-list" \\
      TLS_CERT_FILE="/absolute/path/to/server-cert.pem" \\
      TLS_KEY_FILE="/absolute/path/to/server-key.pem"
    ```
 
-The preflight refuses placeholders, malformed digests, package/hash mismatches, file sizes above
-the configured runtime cap, missing Release enforcement flags, invalid or mismatched TLS certificate/key
-pairs, missing serverAuth EKU, invalid TLS pins, expired/not-yet-valid certificates, and missing or
-mismatched hostname/IP SANs. It does not
-replace a live Windows smoke test, production server load test, or Authenticode code signing.
+The preflight rejects placeholder/malformed hashes, package/hash mismatches, missing or
+unprovisioned network policy, endpoints not in the compiled list, mismatched pins, oversized
+files, missing Release enforcement, an invalid/mismatched or overly permissive TLS private key,
+a certificate without serverAuth EKU, expired/not-yet-valid certificates, or missing/mismatched
+DNS/IP SANs. A passing preflight still does not replace a live Windows smoke test, packet-loss/
+reconnect tests, a production server load test, or Authenticode code signing.
 
 ## Client Protection Status (Heartbeat PONG)
 
@@ -223,8 +244,11 @@ Pelanggaran yang benar-benar terdeteksi tetap diverifikasi server dan dijawab `K
 
 ### Client-side configuration (oblivion.cfg / environment)
 
-Client Oblivion dapat diarahkan ke VPS tanpa recompile. Urutan prioritas:
-environment variable → `oblivion.cfg` (folder executable) → default di kode.
+Debug/development clients can be pointed at a test VPS without recompiling. Release builds
+use the compile-time endpoint and TLS-pin policy generated above; `server`, `servers`,
+`host`, `OBLIVION_SERVER`, `OBLIVION_SERVERS`, `OBLIVION_PORT`, and
+`OBLIVION_TLS_PIN_SHA256` cannot redirect production check-in or replace the production pin.
+To change a Release endpoint or pin, regenerate the network header and rebuild/distribute a new client.
 
 ```ini
 # oblivion.cfg
@@ -245,7 +269,7 @@ handshake_timeout_ms=4000
 | `OBLIVION_CONNECT_TIMEOUT_MS` | timeout connect per endpoint (500–30000 ms) |
 | `OBLIVION_RETRY_COUNT` | jumlah putaran percobaan seluruh endpoint (1–10) |
 | `OBLIVION_HANDSHAKE_TIMEOUT_MS` | timeout menunggu respons check-in (500–30000 ms) |
-| `OBLIVION_TLS_PIN_SHA256` | daftar pin SHA-256 sertifikat server (wajib pada client produksi) |
+| `OBLIVION_TLS_PIN_SHA256` | Debug/dev override; Release memakai pin yang dikompilasi dari generated header |
 
 Catatan kebijakan produksi:
 - Build Release memaksa `fail_mode=closed`; konfigurasi `open` tidak dapat menonaktifkan pemeriksaan ban.

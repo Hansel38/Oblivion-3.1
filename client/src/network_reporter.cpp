@@ -5,6 +5,7 @@
 #include "hwid_generator.h"
 #include "win_path_utils.h"
 #include "../../common/tls_transport.h"
+#include "../include/production_network_config.generated.h"
 #include <memory>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -74,6 +75,15 @@ namespace {
     // eksplisit mendefinisikan macro ini ke 1 yang boleh memakai fail_mode=open.
 #ifndef OBLIVION_ALLOW_NETWORK_FAIL_OPEN
 #define OBLIVION_ALLOW_NETWORK_FAIL_OPEN 0
+#endif
+
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
+#if OBLIVION_PRODUCTION_NETWORK_CONFIG_READY != 1
+#error Production Release requires a generated, pinned endpoint/TLS policy header
+#endif
+#if OBLIVION_ALLOW_NETWORK_FAIL_OPEN
+#error Production Release must never permit OBLIVION_ALLOW_NETWORK_FAIL_OPEN
+#endif
 #endif
 
     std::string TrimCopy(const std::string& input) {
@@ -342,10 +352,25 @@ namespace {
         if (cfg.handshakeTimeoutMs < 500) cfg.handshakeTimeoutMs = 500;
         if (cfg.handshakeTimeoutMs > 30000) cfg.handshakeTimeoutMs = 30000;
 
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_PRODUCTION_BUILD
+        // Release builds trust only the generated, reviewed endpoint/pin policy.
+        // Editable oblivion.cfg and environment variables remain available to
+        // development builds, but cannot redirect production check-in to another server.
+        cfg.endpoints.clear();
+        AppendEndpointList(cfg, OBLIVION_PRODUCTION_SERVER_ENDPOINTS);
+        cfg.tlsPinSpec = OBLIVION_PRODUCTION_TLS_PIN_SHA256;
+        cfg.endpointsFromLocalConfig = false;
+        cfg.failClosed = true;
+        if (cfg.endpoints.empty()) {
+            // Never fall back to the constructor's development endpoint in Release.
+            cfg.tlsPinSpec.clear();
+        }
+#else
         // ---- 3) Default dari kode (fallback terakhir) ----
         if (cfg.endpoints.empty()) {
             AppendEndpointList(cfg, fallbackHost + ":" + std::to_string(cfg.defaultPort));
         }
+#endif
 
         return cfg;
     }
