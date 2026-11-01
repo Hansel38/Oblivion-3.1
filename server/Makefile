@@ -24,9 +24,12 @@ TEST_TARGET := $(BUILD_DIR)/heartbeat_auth_test
 HWID_TEST_TARGET := $(BUILD_DIR)/hwid_identifier_validation_test
 TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 
-test: $(TEST_TARGET) $(HWID_TEST_TARGET)
+PATH_POLICY_TEST_TARGET := $(BUILD_DIR)/windows_path_policy_test
+
+test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HWID_TEST_TARGET)
+	./$(PATH_POLICY_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
 
 integration-test: $(TARGET) $(TLS_PROBE_TARGET)
@@ -37,6 +40,9 @@ $(TEST_TARGET): ../tests/heartbeat_auth_test.cpp ../common/heartbeat_auth.h | $(
 
 $(HWID_TEST_TARGET): ../tests/hwid_identifier_validation_test.cpp ../client/include/hwid_identifier_validation.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../client/include -o $@ $<
+
+$(PATH_POLICY_TEST_TARGET): ../tests/windows_path_policy_test.cpp ../common/windows_path_policy.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(TLS_PROBE_TARGET): ../tests/tls_client_probe.cpp ../common/tls_transport.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< -lssl -lcrypto

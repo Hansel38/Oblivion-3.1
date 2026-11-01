@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "digital_signature_validator.h"
 #include "win_path_utils.h"
+#include "../../common/windows_path_policy.h"
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
@@ -14,6 +15,35 @@
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+
+namespace {
+std::wstring ReadEnvironmentDirectory(const wchar_t* variableName) {
+    const DWORD required = GetEnvironmentVariableW(variableName, nullptr, 0);
+    if (required == 0) {
+        return L"";
+    }
+
+    std::wstring value(required, L'\0');
+    const DWORD written = GetEnvironmentVariableW(variableName, value.data(), required);
+    if (written == 0 || written >= required) {
+        return L"";
+    }
+    value.resize(written);
+    return value;
+}
+
+std::wstring ResolveWindowsDirectory() {
+    // Use the actual Windows directory instead of searching for a "\\windows\\"
+    // substring anywhere in the path (which also matches unrelated game folders).
+    std::wstring value(32768, L'\0');
+    const UINT written = GetWindowsDirectoryW(value.data(), static_cast<UINT>(value.size()));
+    if (written == 0 || written >= value.size()) {
+        return L"";
+    }
+    value.resize(written);
+    return value;
+}
+} // namespace
 
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
@@ -218,6 +248,12 @@ namespace Oblivion {
         }
         std::transform(gameDir.begin(), gameDir.end(), gameDir.begin(), ::towlower);
 
+        // Resolve exempt roots once per scan. The game directory itself is never
+        // exempted by location alone, even when installed below Program Files.
+        const std::wstring windowsDirectory = ResolveWindowsDirectory();
+        const std::wstring programFiles = ReadEnvironmentDirectory(L"ProgramFiles");
+        const std::wstring programFilesX86 = ReadEnvironmentDirectory(L"ProgramFiles(x86)");
+
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
         if (hSnapshot == INVALID_HANDLE_VALUE) {
             return;
@@ -242,17 +278,26 @@ namespace Oblivion {
                 std::wstring modulePathStr = modulePath;
                 std::transform(modulePathStr.begin(), modulePathStr.end(), modulePathStr.begin(), ::towlower);
 
-                // Skip modul dari Windows system folders (System32, SysWOW64, Windows)
-                if (modulePathStr.find(L"\\windows\\system32\\") != std::wstring::npos ||
-                    modulePathStr.find(L"\\windows\\syswow64\\") != std::wstring::npos ||
-                    modulePathStr.find(L"\\windows\\") != std::wstring::npos) {
-                    continue; // Skip DLL Windows system
+                // Never skip a game-local module based only on its parent directory:
+                // Ragnarok is commonly installed under Program Files, and the old substring
+                // checks also skipped unrelated paths such as C:\\Games\\Windows\\Injected.dll.
+                const bool isGameModule =
+                    Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, gameDir);
+
+                if (!isGameModule && !windowsDirectory.empty() &&
+                    Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, windowsDirectory)) {
+                    continue; // Actual Windows directory, not any path containing "\\windows\\"
                 }
 
-                // Skip modul dari Program Files (aplikasi legitimate seperti antivirus)
-                if (modulePathStr.find(L"\\program files\\") != std::wstring::npos ||
-                    modulePathStr.find(L"\\program files (x86)\\") != std::wstring::npos) {
-                    continue; // Skip DLL dari Program Files
+                // Keep the compatibility exemption for third-party Program Files modules,
+                // but never let it suppress modules loaded from the game directory.
+                const bool isUnderProgramFiles =
+                    (!programFiles.empty() &&
+                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFiles)) ||
+                    (!programFilesX86.empty() &&
+                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFilesX86));
+                if (!isGameModule && isUnderProgramFiles) {
+                    continue;
                 }
 
                 // Hanya periksa modul yang berasal dari folder game atau folder lain yang mencurigakan
