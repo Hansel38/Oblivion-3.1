@@ -13,7 +13,7 @@ inline std::wstring GetModulePath(HMODULE module) {
     constexpr size_t kInitialPathCapacity = MAX_PATH;
     constexpr size_t kMaxPathCapacity = 32768;
 
-    std::vector<wchar_t> pathBuffer(kInitialPathCapacity, L'\\0');
+    std::vector<wchar_t> pathBuffer(kInitialPathCapacity, L'\0');
     while (pathBuffer.size() <= kMaxPathCapacity) {
         const DWORD pathLength = GetModuleFileNameW(
             module, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
@@ -33,7 +33,7 @@ inline std::wstring GetModulePath(HMODULE module) {
         const size_t doubledCapacity = pathBuffer.size() * 2;
         const size_t nextCapacity =
             doubledCapacity > kMaxPathCapacity ? kMaxPathCapacity : doubledCapacity;
-        pathBuffer.resize(nextCapacity, L'\\0');
+        pathBuffer.resize(nextCapacity, L'\0');
     }
 
     return L"";
