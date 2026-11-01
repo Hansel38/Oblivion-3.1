@@ -329,14 +329,11 @@ void InitializeSecuritySystem() {
     // --- LANGKAH KEDUA: BUAT NETWORK REPORTER ---
     std::cout << "[INIT] Creating network reporter..." << std::endl;
     try {
-        // Ambil secret yang di-obfuscate (bukan string literal langsung)
+        // Ambil secret yang di-obfuscate (bukan string literal langsung).
         const std::string kClientSecret = Oblivion::GetClientSecret();
-        // 127.0.0.1:54321 hanya FALLBACK (dev). Untuk produksi arahkan client ke VPS
-        // lewat "oblivion.cfg" di folder executable, atau environment variable:
-        //   oblivion.cfg       -> server=your-vps.example.com:54321
-        //   OBLIVION_SERVER    -> your-vps.example.com:54321
-        //   OBLIVION_FAIL_MODE -> open | closed
-        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("45.66.153.148", 54321, kClientSecret);
+        // localhost adalah fallback khusus development. Endpoint produksi dibaca
+        // dari oblivion.yaml; TLS pin tetap berasal dari header yang dikompilasi.
+        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
         g_pNetworkReporter.store(reporter);
         std::cout << "[INIT] Network reporter created" << std::endl;
 
