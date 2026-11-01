@@ -96,7 +96,7 @@ namespace {
     }
 
     std::wstring GetWindowsDirectoryPath() {
-        std::wstring path(32768, L'\\0');
+        std::wstring path(32768, L'\0');
         const UINT written = GetWindowsDirectoryW(path.data(), static_cast<UINT>(path.size()));
         if (written == 0 || written >= path.size()) {
             return L"";
