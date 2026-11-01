@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "file_integrity_check.h"
+#include "file_integrity_manifest.generated.h"
 #include "win_path_utils.h"
 #include <windows.h>
 #include <bcrypt.h> // Header untuk CNG API
@@ -120,11 +121,9 @@ static void LogFileIntegrityIssue(const std::string& type, const std::string& de
 //
 // Entri dengan hash placeholder akan DILEWATI (tidak dibandingkan).
 const std::vector<Oblivion::FileIntegrityChecker::FileHashPair> Oblivion::FileIntegrityChecker::m_filesToCheck = {
-    { L"RRO.exe", "23ab4a0c677da6c529f885d51ca0af8ae1693bd0975e3c03ba59e7693573c715" },
-    // TODO(produksi): jalankan Get-FileHash lalu ganti nilai placeholder di bawah.
-    // Selama masih placeholder, entri ini dilewati (tidak ada kick palsu).
-    { L"en.grf", "PLACEHOLDER" },
-    { L"DATA.ini", "PLACEHOLDER" }
+    { L"RRO.exe", OBLIVION_FILE_HASH_RRO_EXE },
+    { L"en.grf", OBLIVION_FILE_HASH_EN_GRF },
+    { L"DATA.ini", OBLIVION_FILE_HASH_DATA_INI }
 };
 
 namespace Oblivion {
@@ -342,18 +341,27 @@ namespace Oblivion {
         }
 
         // Hitung ukuran buffer yang diperlukan
-        status = BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PBYTE)&cbHashObject, sizeof(DWORD), &cbData, 0);
-        if (!BCRYPT_SUCCESS(status)) { 
+        cbData = 0;
+        status = BCryptGetProperty(
+            hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PBYTE>(&cbHashObject),
+            sizeof(cbHashObject), &cbData, 0);
+        if (!BCRYPT_SUCCESS(status) || cbData != sizeof(cbHashObject) ||
+            cbHashObject == 0) {
             BCryptCloseAlgorithmProvider(hAlg, 0);
             CloseHandle(hFile);
-            return ""; 
+            return "";
         }
 
-        status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0);
-        if (!BCRYPT_SUCCESS(status)) { 
+        cbData = 0;
+        status = BCryptGetProperty(
+            hAlg, BCRYPT_HASH_LENGTH, reinterpret_cast<PBYTE>(&cbHash),
+            sizeof(cbHash), &cbData, 0);
+        // SHA-256 must always produce exactly 32 bytes; reject inconsistent
+        // provider metadata instead of trusting an unexpected digest length.
+        if (!BCRYPT_SUCCESS(status) || cbData != sizeof(cbHash) || cbHash != 32) {
             BCryptCloseAlgorithmProvider(hAlg, 0);
             CloseHandle(hFile);
-            return ""; 
+            return "";
         }
 
         // Alokasikan buffer

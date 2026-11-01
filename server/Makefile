@@ -27,6 +27,7 @@ TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 test: $(TEST_TARGET) $(HWID_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HWID_TEST_TARGET)
+	python3 ../tests/test_integrity_manifest_generator.py
 
 integration-test: $(TARGET) $(TLS_PROBE_TARGET)
 	python3 ../tests/heartbeat_integration.py ./$(TARGET) ./$(TLS_PROBE_TARGET)
