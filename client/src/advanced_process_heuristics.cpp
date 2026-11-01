@@ -450,7 +450,7 @@ namespace {
         L"ctfmon.exe", L"conhost.exe", L"fontdrvhost.exe", L"runtimebroker.exe",
         L"dllhost.exe", L"searchhost.exe", L"searchindexer.exe",
         L"searchprotocolhost.exe", L"searchfilterhost.exe", L"msmpeng.exe",
-        L"mssense.exe", L"securityhealthservice.exe", L"securityhealthsystray.exe",
+        L"securityhealthservice.exe", L"securityhealthsystray.exe",
         L"smartscreen.exe", L"sgrmbroker.exe", L"wuauclt.exe",
         L"trustedinstaller.exe", L"tiworker.exe", L"usocoreworker.exe",
         L"shellexperiencehost.exe", L"startmenuexperiencehost.exe",
@@ -552,6 +552,8 @@ namespace {
         L"firefox.exe",
         L"msedge.exe",
         L"msedgewebview2.exe",  // Microsoft Edge WebView2 Runtime
+        L"msmpeng.exe",          // Windows Defender antimalware; must pass signer validation
+        L"mssense.exe",          // Microsoft Defender for Endpoint; must pass signer validation
         L"vlc.exe",
         L"discord.exe",
         L"steam.exe",
