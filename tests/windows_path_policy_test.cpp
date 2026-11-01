@@ -24,6 +24,16 @@ int main() {
     Expect(!IsPathWithinDirectory(
         L"C:\\WindowsBackup\\Injected.dll", L"C:\\Windows"),
         "a sibling with a shared textual prefix is not a child directory");
+    Expect(!IsPathWithinDirectory(
+        L"C:\\Games\\Ragnarok\\..\\Injected.dll", L"C:\\Games\\Ragnarok"),
+        "parent-directory traversal cannot remain inside the game directory");
+    Expect(IsPathWithinDirectory(
+        L"C:\\Games\\Ragnarok\\plugins\\..\\client.dll", L"C:\\Games\\Ragnarok"),
+        "parent traversal that resolves within the game directory is normalized safely");
+    Expect(!IsPathWithinDirectory(
+        L"\\\\server\\share\\Ragnarok\\..\\outside.dll",
+        L"\\\\server\\share\\Ragnarok"),
+        "UNC paths are normalized without permitting escape from the target directory");
     Expect(IsPathWithinDirectory(
         L"c:/program files/Ragnarok/client.dll",
         L"C:\\Program Files\\Ragnarok\\"),
