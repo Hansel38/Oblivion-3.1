@@ -1431,14 +1431,11 @@ namespace Oblivion {
             return false;
         }
 
-        wchar_t processPath[MAX_PATH * 2] = { 0 };
-        DWORD pathSize = sizeof(processPath) / sizeof(processPath[0]);
-
+        const std::wstring fullPath = Oblivion::WinPath::GetProcessImagePath(hProcess);
         bool detected = false;
 
-        // Get full executable path
-        if (QueryFullProcessImageNameW(hProcess, 0, processPath, &pathSize)) {
-            std::wstring fullPath(processPath);
+        // Get full executable path; do not analyze a truncated path.
+        if (!fullPath.empty()) {
             std::wstring lowerPath = ToLowerCopy(fullPath);
 
 #ifdef _DEBUG
