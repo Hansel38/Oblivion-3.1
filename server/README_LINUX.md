@@ -22,6 +22,7 @@ sudo apt-get install -y build-essential libssl-dev libyaml-cpp-dev
 ### Dependencies
 - g++ (C++17 compiler)
 - OpenSSL development libraries (libssl-dev)
+- yaml-cpp YAML parser (libyaml-cpp-dev)
 - pthread (usually included with g++)
 
 ### Windows client/server TLS dependency
