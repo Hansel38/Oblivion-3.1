@@ -166,11 +166,14 @@ openssl rand -hex 32
 
 The Visual Studio Release configurations for both Win32/x86 and x64 define
 `OBLIVION_PRODUCTION_BUILD=1` and `OBLIVION_ENFORCE_FILE_INTEGRITY=1`.
-Release builds now also require a provisioned compile-time network policy. They
-fail to compile while `client/include/production_network_config.generated.h`
-contains `OBLIVION_PRODUCTION_NETWORK_CONFIG_READY 0`. This template is deliberately
-unprovisioned in source control. Never ship it or the disposable `ci.invalid`
-endpoint used by compile-only CI.
+Release builds require both a provisioned compile-time network policy and a
+real compile-time integrity manifest. The client fails to compile when
+`production_network_config.generated.h` has `OBLIVION_PRODUCTION_NETWORK_CONFIG_READY 0`
+or any integrity hash is not exactly 64 hexadecimal digits. The unprovisioned templates
+are deliberate. Never ship them or the disposable `ci.invalid` endpoint/hash manifest
+used by compile-only CI. Validly formatted hashes can still refer to a different package;
+the production preflight compares them with the exact shipped files, and the runtime
+enforcement detects mismatches after launch.
 
 1. Generate the production endpoint/pin header from the real deployment. Include every
    endpoint the client will be allowed to contact; each endpoint must have a valid TLS
@@ -195,10 +198,13 @@ endpoint used by compile-only CI.
    python tools/generate_integrity_manifest.py "D:\\Builds\\Ragnarok-Package"
    ```
 
-   Do not edit the generated SHA-256 values manually. If `RRO.exe`, `en.grf`, or `DATA.ini`
-   is larger than 512 MiB, review startup performance and raise
+   Do not edit the generated SHA-256 values manually. A Release build with a placeholder,
+   malformed, or missing digest fails at compile time. The release preflight additionally
+   hashes the exact packaged files and refuses any mismatch. If `RRO.exe`, `en.grf`, or
+   `DATA.ini` is larger than 512 MiB, review startup performance and raise
    `OBLIVION_MAX_HASH_FILE_SIZE_BYTES` in both Release configurations only after measuring
-   a suitable cap. The runtime refuses to enforce a monitored file over that limit.
+   a suitable cap. The runtime refuses to enforce a monitored file over that limit and
+   checks that the file stayed stable while it was hashed.
 
 3. Run the release preflight with the same endpoint, TLS pin, and certificate/private-key pair
    that will be deployed. The certificate must have serverAuth EKU, a SAN matching every compiled
