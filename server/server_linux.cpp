@@ -152,9 +152,13 @@ std::string GetFilePath(const std::string& filename) {
 }
 
 static std::string ResolveTlsFilePath(const char* environmentName, const char* defaultName) {
-    const char* configured = std::getenv(environmentName);
-    if (configured == nullptr || *configured == '\0') {
-        return GetFilePath(defaultName);
+    const char* environmentValue = std::getenv(environmentName);
+    const std::string configured =
+        environmentValue != nullptr && *environmentValue != '\0'
+            ? std::string(environmentValue)
+            : (defaultName != nullptr ? std::string(defaultName) : std::string());
+    if (configured.empty()) {
+        return "";
     }
 
     const std::filesystem::path configuredPath(configured);
