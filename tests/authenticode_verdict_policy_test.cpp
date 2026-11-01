@@ -6,7 +6,7 @@
 namespace {
 void Expect(bool condition, const char* description) {
     if (!condition) {
-        std::cerr << "FAIL: " << description << '\\n';
+        std::cerr << "FAIL: " << description << '\n';
         std::exit(1);
     }
 }
