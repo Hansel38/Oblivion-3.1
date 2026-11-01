@@ -133,6 +133,7 @@ def release_limits(project_path: Path, runtime_source_path: Path) -> int:
         "OBLIVION_MAX_HASH_FILE_SIZE_BYTES",
         "kMaxHashFileSizeBytes",
         "IsSha256HexLiteral",
+        "return value[64] == '\\0';",
         "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_RRO_EXE)",
         "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_EN_GRF)",
         "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI)",

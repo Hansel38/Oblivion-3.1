@@ -57,6 +57,7 @@ class ProductionReadinessTests(unittest.TestCase):
             "#define OBLIVION_MAX_HASH_FILE_SIZE_BYTES 16777216\n"
             "static constexpr unsigned long long kMaxHashFileSizeBytes = OBLIVION_MAX_HASH_FILE_SIZE_BYTES;\n"
             "IsSha256HexLiteral static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_RRO_EXE) "
+            "return value[64] == '\\0';\\n"
             "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_EN_GRF) "
             "static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_DATA_INI)\n"
             "GetFileInformationByHandleEx FILE_ATTRIBUTE_REPARSE_POINT "

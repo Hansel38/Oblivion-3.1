@@ -64,7 +64,7 @@ constexpr bool IsSha256HexLiteral(const char* value) noexcept {
             return false;
         }
     }
-    return value[64] == '\\0';
+    return value[64] == '\0';
 }
 
 static_assert(IsSha256HexLiteral(OBLIVION_FILE_HASH_RRO_EXE),
