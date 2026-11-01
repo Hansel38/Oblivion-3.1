@@ -1328,8 +1328,9 @@ int main() {
 
     std::string listenPort;
     std::string listenPortError;
+    const std::string configuredListenPort = ReadEnvironmentValue("OBLIVION_LISTEN_PORT");
     if (!Oblivion::ServerConfig::ResolveListenPort(
-            std::getenv("OBLIVION_LISTEN_PORT"),
+            configuredListenPort.c_str(),
             g_serverSettings.listenPort.c_str(), listenPort, listenPortError)) {
         std::cerr << "[FATAL] Invalid listen port: " << listenPortError << std::endl;
         return 1;
