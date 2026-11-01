@@ -1,0 +1,30 @@
+# Copy this file to oblivion.yaml beside the Ragnarok executable / client DLL.
+# Schema version 1.
+#
+# SECURITY:
+# - Release clients always use the certificate pin compiled into the DLL.
+# - tls.pin_sha256 is for Debug/development builds only; Release ignores it.
+# - Every endpoint must present the configured pinned certificate and a matching
+#   hostname/IP SAN. Do not disable TLS verification to make a connection work.
+# - OBLIVION_SECRET must match the server; use the supported environment or
+#   secret.dat mechanism instead of placing secrets in this file.
+
+version: 1
+
+server:
+  default_port: 54321
+  endpoints:
+    - "shield.your-domain.example:54321"
+
+tls:
+  # Development only. Do not rely on this value in Release.
+  pin_sha256: ""
+
+connection:
+  connect_timeout_ms: 3000
+  retry_count: 3
+  handshake_timeout_ms: 4000
+
+policy:
+  # Release builds always fail closed regardless of this value.
+  fail_closed: true
