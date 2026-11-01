@@ -341,18 +341,27 @@ namespace Oblivion {
         }
 
         // Hitung ukuran buffer yang diperlukan
-        status = BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PBYTE)&cbHashObject, sizeof(DWORD), &cbData, 0);
-        if (!BCRYPT_SUCCESS(status)) { 
+        cbData = 0;
+        status = BCryptGetProperty(
+            hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PBYTE>(&cbHashObject),
+            sizeof(cbHashObject), &cbData, 0);
+        if (!BCRYPT_SUCCESS(status) || cbData != sizeof(cbHashObject) ||
+            cbHashObject == 0) {
             BCryptCloseAlgorithmProvider(hAlg, 0);
             CloseHandle(hFile);
-            return ""; 
+            return "";
         }
 
-        status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0);
-        if (!BCRYPT_SUCCESS(status)) { 
+        cbData = 0;
+        status = BCryptGetProperty(
+            hAlg, BCRYPT_HASH_LENGTH, reinterpret_cast<PBYTE>(&cbHash),
+            sizeof(cbHash), &cbData, 0);
+        // SHA-256 must always produce exactly 32 bytes; reject inconsistent
+        // provider metadata instead of trusting an unexpected digest length.
+        if (!BCRYPT_SUCCESS(status) || cbData != sizeof(cbHash) || cbHash != 32) {
             BCryptCloseAlgorithmProvider(hAlg, 0);
             CloseHandle(hFile);
-            return ""; 
+            return "";
         }
 
         // Alokasikan buffer
