@@ -52,6 +52,7 @@ int main() {
 
     for (const std::string invalidYaml : {
             "version: 2\n",
+            "version: 1\nversion: 1\n",
             "version: 1\nserver:\n  listen_port: 65536\n",
             "version: 1\nserver:\n  listen_port: 0\n",
             "version: 1\nheartbeat:\n  interval_ms: 200\n",
