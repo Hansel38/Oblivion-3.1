@@ -571,8 +571,8 @@ namespace {
         L"dropbox.exe",
         L"onedrive.exe",
         L"googledrivesync.exe"
-        // NOTE: notepad++, 7zip, vlc, winrar tidak require signature verification
-        // karena sering unsigned (open-source/freeware)
+        // VLC is verified against its expected publisher. Unsigned utilities such as
+        // Notepad++, 7-Zip and WinRAR are intentionally not exempted by name alone.
     };
 
     // Proses sah yang secara normal membuka handle ke proses game lain (game capture,
