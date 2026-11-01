@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "digital_signature_validator.h"
+#include "win_path_utils.h"
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
@@ -206,9 +207,9 @@ namespace Oblivion {
 
     void DigitalSignatureValidator::PerformScan() {
         // Dapatkan path folder game untuk membandingkan dengan path modul
-        WCHAR gameExePath[MAX_PATH];
-        if (GetModuleFileNameW(NULL, gameExePath, MAX_PATH) == 0) {
-            return; // Tidak bisa dapatkan path game, skip scan
+        const std::wstring gameExePath = Oblivion::WinPath::GetModulePath(nullptr);
+        if (gameExePath.empty()) {
+            return; // Tidak bisa mendapatkan path game secara lengkap
         }
         std::wstring gameDir = gameExePath;
         size_t lastSlash = gameDir.find_last_of(L"\\/");
@@ -233,12 +234,12 @@ namespace Oblivion {
                 }
 
                 // Dapatkan path lengkap modul
-                WCHAR modulePath[MAX_PATH];
-                if (GetModuleFileNameExW(GetCurrentProcess(), me32.hModule, modulePath, MAX_PATH) == 0) {
-                    continue; // Skip jika tidak bisa dapatkan path
+                const std::wstring modulePath = Oblivion::WinPath::GetModulePath(me32.hModule);
+                if (modulePath.empty()) {
+                    continue; // Skip jika path modul tidak dapat diselesaikan lengkap
                 }
 
-                std::wstring modulePathStr(modulePath);
+                std::wstring modulePathStr = modulePath;
                 std::transform(modulePathStr.begin(), modulePathStr.end(), modulePathStr.begin(), ::towlower);
 
                 // Skip modul dari Windows system folders (System32, SysWOW64, Windows)
@@ -302,17 +303,17 @@ namespace Oblivion {
             }
         }
 
-        WCHAR filePath[MAX_PATH];
-        if (GetModuleFileNameExW(GetCurrentProcess(), hModule, filePath, MAX_PATH) == 0) {
-            return false; // Tidak bisa dapatkan path, anggap tidak tepercaya
+        const std::wstring filePath = Oblivion::WinPath::GetModulePath(hModule);
+        if (filePath.empty()) {
+            return false; // Tidak bisa mendapatkan path lengkap, anggap tidak tepercaya
         }
 
-        std::wstring cacheKey(filePath);
+        std::wstring cacheKey = filePath;
         std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
 
         WIN32_FILE_ATTRIBUTE_DATA attributes{};
         const bool hasAttributes = GetFileAttributesExW(
-            filePath, GetFileExInfoStandard, &attributes) != FALSE;
+            filePath.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
         if (hasAttributes) {
             const ULARGE_INTEGER size = {
                 attributes.nFileSizeLow, attributes.nFileSizeHigh
@@ -331,7 +332,7 @@ namespace Oblivion {
         // Struktur untuk WinVerifyTrust
         WINTRUST_FILE_INFO fileInfo = { 0 };
         fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
-        fileInfo.pcwszFilePath = filePath;
+        fileInfo.pcwszFilePath = filePath.c_str();
         fileInfo.hFile = NULL;
         fileInfo.pgKnownSubject = NULL;
 
@@ -396,8 +397,8 @@ namespace Oblivion {
     }
 
     bool DigitalSignatureValidator::GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName) {
-        WCHAR filePath[MAX_PATH];
-        if (GetModuleFileNameExW(GetCurrentProcess(), hModule, filePath, MAX_PATH) == 0) {
+        const std::wstring filePath = Oblivion::WinPath::GetModulePath(hModule);
+        if (filePath.empty()) {
             return false;
         }
 
@@ -407,7 +408,7 @@ namespace Oblivion {
         bool result = false;
 
         DWORD encoding, contentType, formatType;
-        if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filePath,
+        if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filePath.c_str(),
             CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
             CERT_QUERY_FORMAT_FLAG_BINARY,
             0, &encoding, &contentType, &formatType,
