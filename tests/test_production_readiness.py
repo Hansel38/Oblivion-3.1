@@ -26,7 +26,7 @@ REQUIRED = {
     "DATA.ini": "OBLIVION_FILE_HASH_DATA_INI",
 }
 MAX_SIZE = 16 * 1024 * 1024
-DEFAULT_HOST = "shield.example.test"
+DEFAULT_HOST = "192.168.56.20"
 
 
 @unittest.skipUnless(shutil.which("openssl"), "OpenSSL CLI required to create local test certificates")
@@ -66,7 +66,7 @@ class ProductionReadinessTests(unittest.TestCase):
         )
         self.generate_certificate(
             common_name=DEFAULT_HOST,
-            san=f"DNS:{DEFAULT_HOST}",
+            san=f"IP:{DEFAULT_HOST}",
             eku="serverAuth",
         )
         self.pin = self.leaf_pin()
@@ -224,7 +224,7 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn("must match an endpoint in the compiled production network policy", result.stderr)
 
     def test_rejects_certificate_san_mismatch_for_compiled_endpoint(self) -> None:
-        result = self.run_checker(host="wrong.example.test", compiled_host="wrong.example.test")
+        result = self.run_checker(host="192.168.56.21", compiled_host="192.168.56.21")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("SAN does not match compiled endpoint", result.stderr)
 
@@ -262,7 +262,7 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_rejects_certificate_without_server_auth_eku(self) -> None:
         self.generate_certificate(
             common_name=DEFAULT_HOST,
-            san=f"DNS:{DEFAULT_HOST}",
+            san=f"IP:{DEFAULT_HOST}",
             eku="clientAuth",
         )
         self.pin = self.leaf_pin()
@@ -275,7 +275,7 @@ class ProductionReadinessTests(unittest.TestCase):
         other_key = self.root / "other-key.pem"
         self.generate_certificate(
             common_name=DEFAULT_HOST,
-            san=f"DNS:{DEFAULT_HOST}",
+            san=f"IP:{DEFAULT_HOST}",
             eku="serverAuth",
             destination_cert=other_cert,
             destination_key=other_key,
