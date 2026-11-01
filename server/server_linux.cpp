@@ -193,6 +193,8 @@ static SSL_CTX* InitializeTlsServerContext() {
     return context;
 }
 
+static bool SetSocketNonBlocking(SocketType socket);
+
 static SSL* AcceptTlsConnection(SocketType clientSocket) {
     if (!SetSocketNonBlocking(clientSocket)) {
         std::cerr << "[TLS] Cannot set accepted socket nonblocking; closing connection." << std::endl;
