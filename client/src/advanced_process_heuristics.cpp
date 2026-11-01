@@ -449,7 +449,7 @@ namespace {
         L"dwm.exe", L"taskhostw.exe", L"taskhost.exe", L"sihost.exe",
         L"ctfmon.exe", L"conhost.exe", L"fontdrvhost.exe", L"runtimebroker.exe",
         L"dllhost.exe", L"searchhost.exe", L"searchindexer.exe",
-        L"searchprotocolhost.exe", L"searchfilterhost.exe", L"msmpeng.exe",
+        L"searchprotocolhost.exe", L"searchfilterhost.exe",
         L"securityhealthservice.exe", L"securityhealthsystray.exe",
         L"smartscreen.exe", L"sgrmbroker.exe", L"wuauclt.exe",
         L"trustedinstaller.exe", L"tiworker.exe", L"usocoreworker.exe",
