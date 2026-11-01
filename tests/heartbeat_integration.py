@@ -348,11 +348,37 @@ def verify_tls_client_pin_checks(probe_binary: Path, server_certificate: Path) -
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
             )
 
+
+def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
+    # Startup must fail before listening if no server certificate/key can be loaded.
+    with tempfile.TemporaryDirectory(prefix="oblivion-no-tls-cert-") as directory:
+        env = os.environ.copy()
+        env["OBLIVION_SECRET"] = TEST_SECRET
+        env["OBLIVION_TLS_CERT_FILE"] = str(Path(directory) / "missing-cert.pem")
+        env["OBLIVION_TLS_KEY_FILE"] = str(Path(directory) / "missing-key.pem")
+        result = subprocess.run(
+            [str(server_binary)],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            raise RuntimeError("server started successfully without a TLS certificate/key pair")
+        if "TLS initialization failed" not in output and "Cannot resolve TLS certificate/key paths" not in output:
+            raise RuntimeError(
+                "server failed without a TLS certificate/key pair for an unexpected reason: "
+                f"exit={result.returncode}, output={output!r}"
+            )
+
 def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     global TLS_CONTEXT
     verify_weak_secret_is_rejected(server_binary)
     verify_overlong_secret_is_rejected(server_binary)
     verify_secret_delimiters_are_rejected(server_binary)
+    verify_missing_tls_certificate_is_rejected(server_binary)
 
     tls_temporary = tempfile.TemporaryDirectory(prefix="oblivion-tls-test-")
     tls_directory = Path(tls_temporary.name)
