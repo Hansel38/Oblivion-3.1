@@ -167,6 +167,18 @@ class ProductionReadinessTests(unittest.TestCase):
             timeout=15,
         )
 
+    def test_catalog_signature_fallback_is_present(self) -> None:
+        source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")
+        for token in (
+            "VerifyCatalogSignatureStatus",
+            "CryptCATAdminEnumCatalogFromHash",
+            "CryptCATAdminCalcHashFromFileHandle2",
+            "WTD_CHOICE_CATALOG",
+            "CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, source)
+
     def test_accepts_exact_package_release_policy_and_matching_tls_identity(self) -> None:
         result = self.run_checker()
         self.assertEqual(result.returncode, 0, result.stderr)
