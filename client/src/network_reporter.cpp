@@ -60,6 +60,7 @@ namespace {
         int retryCount = 3;
         int handshakeTimeoutMs = 4000;
         std::string tlsPinSpec;
+        bool tlsPinSettingInvalid = false;
     };
 
     // Fail-open dapat melewati pemeriksaan ban ketika server tidak tersedia.
@@ -222,16 +223,31 @@ namespace {
     }
 
     int ReadEnvInt(const char* name, int currentValue) {
-        char buf[64] = {0};
-        const DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
-        if (n == 0 || n >= sizeof(buf)) {
+        const DWORD requiredChars = GetEnvironmentVariableA(name, nullptr, 0);
+        if (requiredChars == 0) {
             return currentValue;
         }
-        try {
-            return std::stoi(TrimCopy(std::string(buf, n)));
-        } catch (...) {
+
+        std::vector<char> buffer(static_cast<size_t>(requiredChars), '\\0');
+        const DWORD valueLength =
+            GetEnvironmentVariableA(name, buffer.data(), requiredChars);
+        if (valueLength == 0 || valueLength >= requiredChars) {
+            std::cerr << "[CONFIG] Ignoring invalid " << name
+                      << ": unable to read the complete environment value" << std::endl;
             return currentValue;
         }
+
+        std::uint32_t parsed = 0;
+        std::string error;
+        if (!Oblivion::ServerConfig::ParseUint32Decimal(
+                std::string(buffer.data(), valueLength), parsed, error) ||
+            parsed > static_cast<std::uint32_t>((std::numeric_limits<int>::max)())) {
+            std::cerr << "[CONFIG] Ignoring invalid " << name << ": "
+                      << (error.empty() ? "value exceeds the supported integer range" : error)
+                      << std::endl;
+            return currentValue;
+        }
+        return static_cast<int>(parsed);
     }
 
     NetworkConfiguration LoadNetworkConfiguration() {
@@ -394,9 +410,11 @@ namespace {
         const DWORD tlsPinLength =
             GetEnvironmentVariableA("OBLIVION_TLS_PIN_SHA256", tlsPinEnv, sizeof(tlsPinEnv));
         if (tlsPinLength > 0) {
-            cfg.tlsPinSpec = tlsPinLength < sizeof(tlsPinEnv)
-                ? std::string(tlsPinEnv, tlsPinLength)
-                : std::string("INVALID_TLS_PIN_SETTING_TOO_LONG");
+            if (tlsPinLength < sizeof(tlsPinEnv)) {
+                cfg.tlsPinSpec.assign(tlsPinEnv, tlsPinLength);
+            } else {
+                cfg.tlsPinSettingInvalid = true;
+            }
         }
 
         // Batas aman supaya nilai config yang salah tidak membuat client "hang"
@@ -418,6 +436,7 @@ namespace {
             AppendEndpointList(cfg, OBLIVION_PRODUCTION_SERVER_ENDPOINTS);
         }
         cfg.tlsPinSpec = OBLIVION_PRODUCTION_TLS_PIN_SHA256;
+        cfg.tlsPinSettingInvalid = false; // Release ignores runtime pin overrides entirely.
         cfg.endpointsFromLocalConfig = false;
         cfg.failClosed = true;
         if (cfg.endpoints.empty()) {
