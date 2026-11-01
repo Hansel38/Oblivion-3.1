@@ -55,8 +55,10 @@ namespace OblivionServer {
             size_t lastSlash = exeDir.find_last_of(L"\\/");
             if (lastSlash != std::wstring::npos) exeDir = exeDir.substr(0, lastSlash + 1);
         }
-        std::wstring secretPathW = exeDir + L"secret.dat";
-        HANDLE hFile = CreateFileW(secretPathW.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        const std::wstring secretPathW = exeDir.empty() ? std::wstring() : exeDir + L"secret.dat";
+        HANDLE hFile = secretPathW.empty()
+            ? INVALID_HANDLE_VALUE
+            : CreateFileW(secretPathW.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD fileSize = GetFileSize(hFile, NULL);
             if (fileSize > 0 && fileSize < 1024) {
@@ -78,7 +80,7 @@ namespace OblivionServer {
 #else
         // Resolve secret.dat beside the executable, not the current working directory.
         char executablePath[PATH_MAX] = {0};
-        std::string executableDir = "./";
+        std::string executableDir;
         const ssize_t pathLength = readlink("/proc/self/exe", executablePath, sizeof(executablePath) - 1);
         if (pathLength > 0) {
             executablePath[pathLength] = '\0';
@@ -89,8 +91,8 @@ namespace OblivionServer {
             }
         }
 
-        const std::string secretPath = executableDir + "secret.dat";
-        FILE* f = std::fopen(secretPath.c_str(), "rb");
+        const std::string secretPath = executableDir.empty() ? std::string() : executableDir + "secret.dat";
+        FILE* f = secretPath.empty() ? nullptr : std::fopen(secretPath.c_str(), "rb");
         if (f) {
             bool readOk = false;
             if (std::fseek(f, 0, SEEK_END) == 0) {
