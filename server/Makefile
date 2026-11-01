@@ -16,7 +16,7 @@ TLS_KEY_FILE ?= server-key.pem
 OBJECTS := $(BUILD_DIR)/server_linux.o $(BUILD_DIR)/secret_obf.o
 DEPS := $(OBJECTS:.o=.d)
 
-.PHONY: all test integration-test clean install uninstall
+.PHONY: all test integration-test production-check clean install uninstall
 
 all: $(TARGET)
 
@@ -33,6 +33,13 @@ test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICO
 	./$(PATH_POLICY_TEST_TARGET)
 	./$(AUTHENTICODE_POLICY_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
+	python3 ../tests/test_production_readiness.py
+
+production-check:
+	@test -n "$(OBLIVION_PRODUCTION_GAME_DIR)" || (echo "[ERROR] Set OBLIVION_PRODUCTION_GAME_DIR to the exact package distributed to players." >&2; exit 2)
+	@test -n "$(OBLIVION_SERVER_HOST)" || (echo "[ERROR] Set OBLIVION_SERVER_HOST to the configured DNS name or IP address." >&2; exit 2)
+	@test -n "$(OBLIVION_TLS_PIN_SHA256)" || (echo "[ERROR] Set OBLIVION_TLS_PIN_SHA256 to the deployed leaf-certificate pin list." >&2; exit 2)
+	python3 ../tools/check_production_readiness.py --game-dir "$(OBLIVION_PRODUCTION_GAME_DIR)" --tls-cert "$(TLS_CERT_FILE)" --server-host "$(OBLIVION_SERVER_HOST)" --tls-pin-sha256 "$(OBLIVION_TLS_PIN_SHA256)"
 
 integration-test: $(TARGET) $(TLS_PROBE_TARGET)
 	python3 ../tests/heartbeat_integration.py ./$(TARGET) ./$(TLS_PROBE_TARGET)
