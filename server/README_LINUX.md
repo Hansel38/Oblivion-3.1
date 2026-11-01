@@ -200,8 +200,6 @@ Create a self-signed certificate for the configured DNS hostname (for production
 
 ~~~bash
 : "${OBLIVION_SERVER_HOST:?set the actual DNS hostname used by clients}"
-
-~~~bash
 openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 365 \
   -keyout server-key.pem -out server-cert.pem \
   -subj "/CN=$OBLIVION_SERVER_HOST" \
@@ -216,10 +214,7 @@ openssl x509 -in server-cert.pem -outform DER | openssl dgst -sha256
 
 Configure the client to pin the SHA-256 fingerprint shown by the server / calculated above. The value is 64 hexadecimal characters (without the SHA2-256(stdin)= prefix). Copy the pin to the client through a trusted deployment channel.
 
-Example oblivion.cfg:
-
-~~~ini
-~~~
+In the local development-only `oblivion.cfg`, set `server=` entries to actual endpoint values. Do not commit deployment-specific endpoints or TLS pin values.
 
 Alternatively set **OBLIVION_TLS_PIN_SHA256**. It overrides the file setting. Multiple SHA-256 leaf pins may be listed, separated by comma, semicolon, or whitespace, to permit certificate rotation. Each pin must be exactly 64 hex characters; an invalid or missing pin prevents a production client from connecting.
 
