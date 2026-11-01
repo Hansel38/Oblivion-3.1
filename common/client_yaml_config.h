@@ -79,6 +79,7 @@ inline bool ParseClientYaml(
     std::istream& input,
     ClientSettings& settings,
     std::string& error) {
+    settings = ClientSettings{};
     error.clear();
     std::string text;
     if (!Detail::ReadYamlText(input, text, error)) {

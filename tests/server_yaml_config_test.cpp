@@ -43,12 +43,13 @@ int main() {
     Expect(settings.heartbeat.jitterMs == 100, "heartbeat jitter is loaded");
     Expect(settings.heartbeat.maxConsecutiveMisses == 4, "heartbeat miss limit is loaded");
 
-    settings = ServerSettings{};
     error.clear();
     std::istringstream defaults("version: 1\n");
     Expect(ParseServerYaml(defaults, settings, error), "minimal valid server YAML is accepted");
     Expect(settings.listenPort == "54321", "default port remains backwards-compatible");
     Expect(settings.bindAddress == "0.0.0.0", "default bind address listens on all IPv4 interfaces");
+    Expect(settings.tlsCertificateFile == "server-cert.pem", "reused settings restore default TLS certificate path");
+    Expect(settings.heartbeat.intervalMs == 3000, "reused settings restore default heartbeat timings");
 
     for (const std::string invalidYaml : {
             "version: 2\n",

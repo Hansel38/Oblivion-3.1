@@ -44,6 +44,14 @@ int main() {
     Expect(settings.failClosed, "fail-closed policy is loaded");
     Expect(settings.tlsPinSha256.size() == 64, "development pin is read from YAML");
 
+    ClientSettings reusedSettings = settings;
+    std::istringstream minimalClientYaml("version: 1\\n");
+    Expect(ParseClientYaml(minimalClientYaml, reusedSettings, error),
+           "minimal client YAML parses when the settings object has prior values");
+    Expect(reusedSettings.endpoints.empty() && reusedSettings.retryCount == 3 &&
+           reusedSettings.connectTimeoutMs == 3000 && reusedSettings.handshakeTimeoutMs == 4000,
+           "reparsing resets every omitted client option to its safe default");
+
     ClientSettings emptyEndpointSettings;
     std::istringstream emptyEndpoints(
         "version: 1\nserver:\n  default_port: 54321\n  endpoints: []\n");

@@ -179,6 +179,7 @@ inline bool ParseServerYaml(
     std::istream& input,
     ServerSettings& settings,
     std::string& error) {
+    settings = ServerSettings{};
     error.clear();
     std::string text;
     if (!Detail::ReadYamlText(input, text, error)) {
