@@ -47,6 +47,14 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn('metadata.st_uid == geteuid()', source)
         self.assertIn('(metadata.st_mode & (S_IRWXG | S_IRWXO)) == 0', source)
 
+    def test_client_environment_config_has_no_sentinel_or_partial_integer_parse(self) -> None:
+        reporter = (ROOT / "client" / "src" / "network_reporter.cpp").read_text(encoding="utf-8")
+        self.assertIn("ParseUint32Decimal", reporter)
+        self.assertIn("cfg.tlsPinSettingInvalid = true;", reporter)
+        self.assertIn("if (cfg.tlsPinSettingInvalid)", reporter)
+        self.assertNotIn("INVALID_TLS_PIN_SETTING_TOO_LONG", reporter)
+        self.assertNotIn("std::stoi(TrimCopy", reporter)
+
     def test_secret_loaders_have_no_embedded_development_secret(self) -> None:
         client_source = (ROOT / "client" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
         server_source = (ROOT / "server" / "src" / "secret_obf.cpp").read_text(encoding="utf-8")
