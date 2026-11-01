@@ -25,7 +25,7 @@
 static std::atomic<Oblivion::ProcessWatcher*> g_pProcessWatcher{ nullptr };
 
 // Buat instance global NetworkReporter agar bisa diakses
-// Ganti 127.0.0.1 dengan IP server Anda
+// Set the server endpoint in oblivion.yaml or OBLIVION_SERVER.
 static std::atomic<Oblivion::NetworkReporter*> g_pNetworkReporter{ nullptr };
 static std::atomic<Oblivion::SelfIntegrityGuard*> g_pSelfIntegrityGuard{ nullptr };
 static HMODULE g_hSelfModule = nullptr;
