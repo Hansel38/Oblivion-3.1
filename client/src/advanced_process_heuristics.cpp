@@ -3,6 +3,7 @@
 #include "win_path_utils.h"
 #include "digital_signature_validator.h"
 #include "../../common/windows_path_policy.h"
+#include "../../common/authenticode_verdict_policy.h"
 #include <tlhelp32.h>
 #include <vector>
 #include <algorithm>
@@ -714,9 +715,11 @@ namespace {
         if (!accepted &&
             verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher &&
             !verifiedPublisher.empty()) {
-            const std::wstring actual = ToLowerCopy(verifiedPublisher);
-            const std::wstring expected = ToLowerCopy(publisherEntry->second);
-            accepted = !expected.empty() && actual.find(expected) != std::wstring::npos;
+            // Publisher strings originate in a certificate subject and can be
+            // attacker-controlled. Do not accept a signer merely because its name
+            // contains a trusted publisher's name as a substring.
+            accepted = Oblivion::SignaturePolicy::IsExactPublisherMatch(
+                verifiedPublisher, publisherEntry->second);
         }
 
         if (!StoreTrustIfUnchanged(g_signatureCache, cacheKey, processPath, initialStamp, accepted)) {
