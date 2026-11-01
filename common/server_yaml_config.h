@@ -207,8 +207,9 @@ inline bool ParseServerYaml(
                 const std::size_t dot = settings.bindAddress.find('.', start);
                 const std::string part = settings.bindAddress.substr(
                     start, dot == std::string::npos ? std::string::npos : dot - start);
-                if (part.empty() || part.size() > 3) {
-                    error = "server.bind_address must be 0.0.0.0 or a valid IPv4 address";
+                if (part.empty() || part.size() > 3 ||
+                    (part.size() > 1 && part.front() == '0')) {
+                    error = "server.bind_address must use canonical dotted-decimal IPv4 octets";
                     return false;
                 }
                 unsigned int number = 0;
