@@ -14,6 +14,16 @@ void Expect(bool condition, const char* description) {
 
 int main() {
     using Oblivion::PathPolicy::IsPathWithinDirectory;
+    using Oblivion::PathPolicy::NormalizeWindowsPath;
+
+    Expect(NormalizeWindowsPath(
+        L"C:\\Games\\Ragnarok\\client.dll") ==
+        L"c:\\games\\ragnarok\\client.dll",
+        "drive-root normalization advances past the root instead of duplicating it");
+    Expect(NormalizeWindowsPath(
+        L"\\\\?\\C:\\Games\\Ragnarok\\client.dll") ==
+        L"\\\\?\\c:\\games\\ragnarok\\client.dll",
+        "extended-length drive-root normalization advances past the namespace prefix");
 
     Expect(IsPathWithinDirectory(
         L"C:\\Windows\\System32\\kernel32.dll", L"C:\\Windows"),

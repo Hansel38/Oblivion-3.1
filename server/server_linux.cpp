@@ -18,6 +18,7 @@
 #include <cstdlib>
 #ifndef _WIN32
 #include <fcntl.h>
+#include <sys/stat.h>
 #endif
 #include <filesystem>
 #include "../common/tls_transport.h"
@@ -165,6 +166,33 @@ static std::string ResolveTlsFilePath(const char* environmentName, const char* d
     return (std::filesystem::path(executableDirectory) / configuredPath).string();
 }
 
+// Match the production preflight policy at runtime: never start with a TLS
+// private key that is readable/writable/executable by group or other users.
+static bool ValidatePrivateKeyPermissions(const std::string& privateKeyPath) {
+#ifndef _WIN32
+    struct stat keyInfo {};
+    if (stat(privateKeyPath.c_str(), &keyInfo) != 0) {
+        std::cerr << "[FATAL] Cannot inspect TLS private key permissions: "
+                  << privateKeyPath << " (" << std::strerror(errno) << ")" << std::endl;
+        return false;
+    }
+    if (!S_ISREG(keyInfo.st_mode)) {
+        std::cerr << "[FATAL] TLS private key must be a regular file: "
+                  << privateKeyPath << std::endl;
+        return false;
+    }
+    if ((keyInfo.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        std::cerr << "[FATAL] TLS private key permissions expose the key to group/other users; "
+                     "use chmod 600: "
+                  << privateKeyPath << std::endl;
+        return false;
+    }
+#else
+    (void)privateKeyPath;
+#endif
+    return true;
+}
+
 static SSL_CTX* InitializeTlsServerContext() {
     const std::string certificatePath =
         ResolveTlsFilePath("OBLIVION_TLS_CERT_FILE", "server-cert.pem");
@@ -172,6 +200,10 @@ static SSL_CTX* InitializeTlsServerContext() {
         ResolveTlsFilePath("OBLIVION_TLS_KEY_FILE", "server-key.pem");
     if (certificatePath.empty() || privateKeyPath.empty()) {
         std::cerr << "[FATAL] Cannot resolve TLS certificate/key paths; refusing plaintext startup." << std::endl;
+        return nullptr;
+    }
+
+    if (!ValidatePrivateKeyPermissions(privateKeyPath)) {
         return nullptr;
     }
 

@@ -37,7 +37,7 @@ inline std::wstring NormalizeWindowsPath(std::wstring path) {
         if (path.size() >= cursor + 3 &&
             path[cursor + 1] == L':' &&
             path[cursor + 2] == L'\\') {
-            prefix.append(path, cursor, 3); // extended drive root: \\?\\c:\\
+            prefix.append(path, cursor, 3); // extended-length drive root.
             cursor += 3;
         } else {
             // For volume/device namespaces, the first component is the root.
@@ -55,7 +55,7 @@ inline std::wstring NormalizeWindowsPath(std::wstring path) {
         absolute = true;
     } else if (path.size() >= 3 &&
                path[1] == L':' && path[2] == L'\\') {
-        prefix.assign(path, 0, 3); // drive root: c:\\
+        prefix.assign(path, 0, 3); // drive root.
         cursor = 3;
         absolute = true;
     } else if (!path.empty() && path[0] == L'\\') {
