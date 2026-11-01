@@ -226,6 +226,12 @@ def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> s
             f"TLS leaf-certificate SHA-256 {actual_pin} is absent from the configured pin list"
         )
 
+    extended_usage = decoded.get("extendedKeyUsage", ())
+    if "TLS Web Server Authentication" not in extended_usage:
+        raise ReadinessError(
+            "TLS certificate Extended Key Usage must include serverAuth"
+        )
+
     san = decoded.get("subjectAltName", ())
     if not san:
         raise ReadinessError("TLS certificate has no Subject Alternative Name (SAN); CN fallback is forbidden")
