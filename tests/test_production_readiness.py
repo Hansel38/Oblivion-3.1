@@ -110,6 +110,7 @@ class ProductionReadinessTests(unittest.TestCase):
                 "--client-project", str(self.project),
                 "--runtime-source", str(self.runtime_source),
                 "--tls-cert", str(self.cert),
+                "--tls-key", str(self.key),
                 "--server-host", host,
                 "--tls-pin-sha256", pin or self.pin,
             ],
@@ -134,6 +135,30 @@ class ProductionReadinessTests(unittest.TestCase):
         result = self.run_checker()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DATA.ini: package SHA-256 does not match", result.stderr)
+
+    def test_rejects_mismatched_tls_private_key(self) -> None:
+        other_key = self.root / "other-key.pem"
+        other_cert = self.root / "other-cert.pem"
+        subprocess.run(
+            [
+                shutil.which("openssl") or "openssl",
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+                "-days", "2", "-keyout", str(other_key), "-out", str(other_cert),
+                "-subj", "/CN=other.example.test",
+                "-addext", "basicConstraints=critical,CA:FALSE",
+                "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+                "-addext", "extendedKeyUsage=serverAuth",
+                "-addext", "subjectAltName=DNS:shield.example.test",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.key.write_bytes(other_key.read_bytes())
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("certificate/private key pair is invalid or mismatched", result.stderr)
 
     def test_rejects_wrong_pin(self) -> None:
         wrong = ("0" if self.pin[0] != "0" else "1") + self.pin[1:]
