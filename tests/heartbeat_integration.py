@@ -444,6 +444,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             verify_trailing_data_is_rejected()
             verify_plaintext_protocol_is_rejected()
             verify_tls_handshake_deadline()
+            verify_tls_client_pin_checks(tls_probe_binary, server_cert)
             verify_malformed_request_does_not_log_secret(server_binary)
             verify_short_hwid_is_rejected()
             verify_missing_ban_list_is_rejected(ban_list_path)
@@ -525,15 +526,19 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: heartbeat_integration.py PATH_TO_SERVER", file=sys.stderr)
+    if len(sys.argv) != 3:
+        print("Usage: heartbeat_integration.py PATH_TO_SERVER PATH_TO_TLS_PROBE", file=sys.stderr)
         return 2
     server_binary = Path(sys.argv[1]).resolve()
+    tls_probe_binary = Path(sys.argv[2]).resolve()
     if not server_binary.is_file():
         print(f"Server binary not found: {server_binary}", file=sys.stderr)
         return 2
+    if not tls_probe_binary.is_file():
+        print(f"TLS probe binary not found: {tls_probe_binary}", file=sys.stderr)
+        return 2
     try:
-        run_integration(server_binary)
+        run_integration(server_binary, tls_probe_binary)
     except Exception as exc:
         print(f"Heartbeat TCP integration test: FAIL: {exc}", file=sys.stderr)
         return 1
