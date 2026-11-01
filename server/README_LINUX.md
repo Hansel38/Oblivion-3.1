@@ -272,9 +272,7 @@ enforcement detects mismatches after launch.
    $env:OBLIVION_TLS_PIN_SHA256 = Read-Host "Actual SHA-256 leaf-certificate pin(s), comma-separated"
    if ([string]::IsNullOrWhiteSpace($env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS) -or
        [string]::IsNullOrWhiteSpace($env:OBLIVION_TLS_PIN_SHA256)) { throw "Endpoint and TLS pin values are required" }
-   python tools/generate_production_network_config.py \\
-     --server-endpoints $env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS \\
-     --tls-pin-sha256 $env:OBLIVION_TLS_PIN_SHA256
+   python tools/generate_production_network_config.py --server-endpoints $env:OBLIVION_PRODUCTION_SERVER_ENDPOINTS --tls-pin-sha256 $env:OBLIVION_TLS_PIN_SHA256
    ```
 
    Enter actual DNS/IP endpoints and the certificate pin list for the deployed service.
@@ -285,7 +283,7 @@ enforcement detects mismatches after launch.
 2. Generate the integrity manifest from the exact folder that will be distributed:
 
    ```powershell
-   python tools/generate_integrity_manifest.py "D:\\Builds\\Ragnarok-Package"
+   python tools/generate_integrity_manifest.py "D:\Builds\Ragnarok-Package"
    ```
 
    Do not edit the generated SHA-256 values manually. A Release build with a placeholder,
