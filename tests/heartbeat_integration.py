@@ -325,7 +325,30 @@ def verify_tls_handshake_deadline() -> None:
         sock.close()
 
 
-def run_integration(server_binary: Path) -> None:
+def verify_tls_client_pin_checks(probe_binary: Path, server_certificate: Path) -> None:
+    certificate_der = subprocess.run(
+        ["openssl", "x509", "-in", str(server_certificate), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    certificate_pin = hashlib.sha256(certificate_der).hexdigest()
+    wrong_pin = ("0" if certificate_pin[0] != "0" else "1") + certificate_pin[1:]
+    cases = [
+        (HOST, certificate_pin, "accept", "valid certificate pin and IP SAN"),
+        (HOST, wrong_pin, "reject", "wrong certificate pin"),
+        ("wrong.invalid", certificate_pin, "reject", "hostname mismatch"),
+    ]
+    for expected_host, pin, expected_result, description in cases:
+        result = subprocess.run(
+            [str(probe_binary), HOST, expected_host, str(PORT), pin, expected_result],
+            capture_output=True, text=True, timeout=8,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"TLS client verification case failed ({description}): "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+
+def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     global TLS_CONTEXT
     verify_weak_secret_is_rejected(server_binary)
     verify_overlong_secret_is_rejected(server_binary)
