@@ -76,6 +76,8 @@ const std::map<std::wstring, std::wstring> Oblivion::DigitalSignatureValidator::
     {L"firefox.exe", L"Mozilla Corporation"},
     {L"msedge.exe", L"Microsoft Corporation"},
     {L"msedgewebview2.exe", L"Microsoft Corporation"},  // Microsoft Edge WebView2 Runtime
+    {L"msmpeng.exe", L"Microsoft Corporation"},   // Windows Defender antimalware
+    {L"mssense.exe", L"Microsoft Corporation"},    // Microsoft Defender for Endpoint
     
     // Communication apps
     {L"discord.exe", L"Discord Inc."},
