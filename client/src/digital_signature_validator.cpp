@@ -9,6 +9,8 @@
 #include <wincrypt.h>
 #include <psapi.h>
 #include <softpub.h>
+#include <shlobj.h>
+#include <knownfolders.h>
 #include <iostream>
 #include <algorithm>
 #include <cwctype>
@@ -20,18 +22,19 @@ extern void ReportViolationAndExit(const std::wstring& message, const std::strin
 extern void ReportViolationSoft(const std::string& type, const std::string& details);
 
 namespace {
-std::wstring ReadEnvironmentDirectory(const wchar_t* variableName) {
-    const DWORD required = GetEnvironmentVariableW(variableName, nullptr, 0);
-    if (required == 0) {
+std::wstring ResolveKnownFolderPath(const KNOWNFOLDERID& folderId) {
+    PWSTR rawPath = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(
+        folderId, KF_FLAG_DEFAULT, nullptr, &rawPath);
+    if (FAILED(result) || rawPath == nullptr) {
+        if (rawPath != nullptr) {
+            CoTaskMemFree(rawPath);
+        }
         return L"";
     }
 
-    std::wstring value(required, L'\0');
-    const DWORD written = GetEnvironmentVariableW(variableName, value.data(), required);
-    if (written == 0 || written >= required) {
-        return L"";
-    }
-    value.resize(written);
+    const std::wstring value(rawPath);
+    CoTaskMemFree(rawPath);
     return value;
 }
 
@@ -70,6 +73,8 @@ std::string WideToUtf8(const std::wstring& value) {
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 // Daftar nama penerbit yang diizinkan.
 // PERHATIAN: Daftar ini sangat penting. Jika terlalu ketat, akan menyebabkan false positive.
@@ -285,8 +290,21 @@ namespace Oblivion {
                 windowsDirectory + L"\\SysWOW64",
                 windowsDirectory + L"\\WinSxS"
             };
-        const std::wstring programFiles = ReadEnvironmentDirectory(L"ProgramFiles");
-        const std::wstring programFilesX86 = ReadEnvironmentDirectory(L"ProgramFiles(x86)");
+        // Resolve Program Files through the Windows Known Folder API, not
+        // environment variables controlled by the launching process. Otherwise
+        // a modified ProgramFiles variable could expand the "valid signer" trust
+        // boundary to an arbitrary directory.
+        std::vector<std::wstring> programFilesRoots;
+        const std::wstring programFiles = ResolveKnownFolderPath(FOLDERID_ProgramFiles);
+        const std::wstring programFilesX86 = ResolveKnownFolderPath(FOLDERID_ProgramFilesX86);
+        if (!programFiles.empty()) {
+            programFilesRoots.push_back(programFiles);
+        }
+        if (!programFilesX86.empty() &&
+            Oblivion::PathPolicy::NormalizeWindowsPath(programFilesX86) !=
+                Oblivion::PathPolicy::NormalizeWindowsPath(programFiles)) {
+            programFilesRoots.push_back(programFilesX86);
+        }
 
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
         if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -322,11 +340,13 @@ namespace Oblivion {
                     }
                 }
 
-                const bool isUnderProgramFiles =
-                    (!programFiles.empty() &&
-                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFiles)) ||
-                    (!programFilesX86.empty() &&
-                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFilesX86));
+                bool isUnderProgramFiles = false;
+                for (const auto& root : programFilesRoots) {
+                    if (Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, root)) {
+                        isUnderProgramFiles = true;
+                        break;
+                    }
+                }
 
                 // Modules are no longer exempted merely because they live under
                 // Windows or Program Files. A valid Authenticode signature is
