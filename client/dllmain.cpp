@@ -338,9 +338,9 @@ void InitializeSecuritySystem() {
                         L"Oblivion Hack Shield - Configuration Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
             ExitProcess(1);
         }
-        // localhost adalah fallback khusus development. Endpoint produksi dibaca
-        // dari oblivion.yaml; TLS pin tetap berasal dari header yang dikompilasi.
-        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("127.0.0.1", 54321, kClientSecret);
+        // Endpoint wajib dikonfigurasi lewat oblivion.yaml atau environment variable.
+        // Tidak ada alamat server bawaan di binary.
+        Oblivion::NetworkReporter* reporter = new Oblivion::NetworkReporter("", 54321, kClientSecret);
         g_pNetworkReporter.store(reporter);
         std::cout << "[INIT] Network reporter created" << std::endl;
 
