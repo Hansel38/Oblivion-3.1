@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local TCP integration test for the Oblivion heartbeat protocol.
+"""Local TLS socket integration test for the Oblivion heartbeat protocol.
 
 The test launches an isolated server process, verifies valid authenticated
 heartbeats, then proves a status-bit modification invalidates the PONG HMAC.
@@ -540,9 +540,9 @@ def main() -> int:
     try:
         run_integration(server_binary, tls_probe_binary)
     except Exception as exc:
-        print(f"Heartbeat TCP integration test: FAIL: {exc}", file=sys.stderr)
+        print(f"Heartbeat TLS integration test: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("Heartbeat TCP integration test: PASS")
+    print("Heartbeat TLS integration test: PASS")
     return 0
 
 
