@@ -119,21 +119,9 @@ namespace OblivionServer {
         }
 #endif
 
-        // 3) Fallback development value jika tidak ada konfigurasi
-        const char* devDefault = "DEV_SECRET_NOT_SET";
-        size_t len = strlen(devDefault);
-        std::vector<unsigned char> encoded(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            encoded[i] = (unsigned char)(devDefault[i] ^ key);
-        }
-        secret.reserve(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            secret += (char)(encoded[i] ^ key);
-        }
-
-        cached = secret;
+        // Never manufacture a default shared secret. Missing or unreadable
+        // secret configuration returns empty and the server refuses to start.
+        cached.clear();
         return cached;
     }
 }
