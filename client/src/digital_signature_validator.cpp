@@ -62,7 +62,8 @@ const std::vector<std::wstring> Oblivion::DigitalSignatureValidator::m_trustedPu
     L"Valve Corporation", // Untuk DLL Steam
     L"Discord Inc.",      // Untuk DLL Discord
     L"Google LLC",        // Untuk DLL Chrome/Gecko
-    L"Mozilla Corporation" // Untuk DLL Firefox
+    L"Mozilla Corporation", // Untuk DLL Firefox
+    L"VideoLAN"              // VLC (explicitly listed process publisher)
     // Tambahkan penerbit lain yang Anda percaya di sini
 };
 
@@ -662,13 +663,11 @@ namespace Oblivion {
             publisherName = actualPublisher;
 
             if (!actualPublisher.empty()) {
-                std::wstring lowerActual = actualPublisher;
-                std::transform(lowerActual.begin(), lowerActual.end(), lowerActual.begin(), ::towlower);
-
                 for (const auto& trustedPublisher : m_trustedPublishers) {
-                    std::wstring lowerTrusted = trustedPublisher;
-                    std::transform(lowerTrusted.begin(), lowerTrusted.end(), lowerTrusted.begin(), ::towlower);
-                    if (!lowerTrusted.empty() && lowerActual.find(lowerTrusted) != std::wstring::npos) {
+                    // A trusted brand appearing as a substring is not enough:
+                    // exact publisher identity avoids names such as "Microsoft Corporation Fake".
+                    if (Oblivion::SignaturePolicy::IsExactPublisherMatch(
+                            actualPublisher, trustedPublisher)) {
                         return SignatureVerdict::TrustedPublisher;
                     }
                 }

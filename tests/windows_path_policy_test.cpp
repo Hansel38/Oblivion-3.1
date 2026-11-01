@@ -61,6 +61,18 @@ int main() {
         L"C:\\Games\\Ragnarok"),
         "a sibling directory sharing a prefix is not trusted");
 
+    using Oblivion::PathPolicy::ShouldWhitelistWindowsSystemProcess;
+    Expect(ShouldWhitelistWindowsSystemProcess(true, true, true, true),
+        "known Windows processes require path and signature checks");
+    Expect(!ShouldWhitelistWindowsSystemProcess(true, true, false, true),
+        "a system process name outside the Windows directory is rejected");
+    Expect(!ShouldWhitelistWindowsSystemProcess(true, true, true, false),
+        "an untrusted signature cannot use the Windows process exemption");
+    Expect(!ShouldWhitelistWindowsSystemProcess(true, false, false, false),
+        "an unresolved process path is not exempted");
+    Expect(!ShouldWhitelistWindowsSystemProcess(false, true, true, true),
+        "a valid Microsoft signature does not make an unrelated name a system process");
+
     std::cout << "Windows path policy regression tests passed\n";
     return 0;
 }
