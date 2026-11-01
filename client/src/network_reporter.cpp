@@ -343,6 +343,23 @@ namespace {
 
         return cfg;
     }
+    bool WaitForTlsIo(SOCKET socket, SSL* tls, int sslResult, int timeoutMs) {
+        const int sslError = SSL_get_error(tls, sslResult);
+        if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE) {
+            return false;
+        }
+        fd_set readSet;
+        fd_set writeSet;
+        FD_ZERO(&readSet);
+        FD_ZERO(&writeSet);
+        if (sslError == SSL_ERROR_WANT_READ) FD_SET(socket, &readSet);
+        else FD_SET(socket, &writeSet);
+        timeval timeout{};
+        timeout.tv_sec = timeoutMs / 1000;
+        timeout.tv_usec = (timeoutMs % 1000) * 1000;
+        return select(0, &readSet, &writeSet, nullptr, &timeout) > 0;
+    }
+
     bool SendAllBytes(SOCKET socket, const std::string& payload, SSL* tls = nullptr) {
         size_t sent = 0;
         while (sent < payload.size()) {
@@ -351,9 +368,11 @@ namespace {
             const int result = tls
                 ? SSL_write(tls, payload.data() + sent, chunk)
                 : send(socket, payload.data() + sent, chunk, 0);
-            if (result <= 0 || (!tls && result == SOCKET_ERROR)) {
+            if (tls && result <= 0) {
+                if (WaitForTlsIo(socket, tls, result, 5000)) continue;
                 return false;
             }
+            if (result <= 0 || (!tls && result == SOCKET_ERROR)) return false;
             sent += static_cast<size_t>(result);
         }
         return true;
@@ -400,9 +419,11 @@ namespace {
             const int received = tls
                 ? SSL_read(tls, chunk, static_cast<int>(sizeof(chunk)))
                 : recv(socket, chunk, static_cast<int>(sizeof(chunk)), 0);
-            if (received <= 0 || (!tls && received == SOCKET_ERROR)) {
+            if (tls && received <= 0) {
+                if (WaitForTlsIo(socket, tls, received, remainingMs)) continue;
                 return false;
             }
+            if (received <= 0 || (!tls && received == SOCKET_ERROR)) return false;
 
             if (buffer.size() + static_cast<size_t>(received) > maxBytes) {
                 return false;
@@ -815,23 +836,18 @@ namespace Oblivion {
 
         std::cout << "[NET] TLS check-in ke " << activeHost << ":" << activePort << std::endl;
 
-        // Bound TLS handshake time so an endpoint that accepts TCP but never
-        // completes TLS cannot stall client initialization indefinitely.
-        const DWORD tlsTimeout = static_cast<DWORD>(m_handshakeTimeoutMs);
-        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
-        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+        // OpenSSL's handshake loop uses select against a total deadline.
+        u_long tlsNonBlocking = 1;
+        if (ioctlsocket(connectSocket, FIONBIO, &tlsNonBlocking) != 0) {
+            closesocket(connectSocket);
+            LogClientIssue("TLS_SOCKET_MODE_FAILED", "failed to set nonblocking mode before TLS handshake");
+            if (m_failClosed) ExitProcess(1);
+            return true;
+        }
 
         std::string tlsError;
         SSL* tls = Oblivion::Tls::Connect(
             m_tlsContext, static_cast<int>(connectSocket), activeHost, m_tlsPins, tlsError);
-
-        const DWORD noTimeout = 0;
-        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
 
         if (tls == nullptr) {
             closesocket(connectSocket);
@@ -1130,21 +1146,17 @@ namespace Oblivion {
             return;
         }
 
-        const DWORD tlsTimeout = static_cast<DWORD>(m_handshakeTimeoutMs);
-        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
-        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&tlsTimeout), sizeof(tlsTimeout));
+        u_long reportNonBlocking = 1;
+        if (ioctlsocket(connectSocket, FIONBIO, &reportNonBlocking) != 0) {
+            closesocket(connectSocket);
+            QueuePendingViolation(type, details);
+            LogClientIssue("TLS_SOCKET_MODE_FAILED", "failed to set nonblocking mode for violation report");
+            return;
+        }
 
         std::string tlsError;
         SSL* rawTls = Oblivion::Tls::Connect(
             m_tlsContext, static_cast<int>(connectSocket), activeHost, m_tlsPins, tlsError);
-
-        const DWORD noTimeout = 0;
-        setsockopt(connectSocket, SOL_SOCKET, SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-        setsockopt(connectSocket, SOL_SOCKET, SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
 
         if (rawTls == nullptr) {
             closesocket(connectSocket);
