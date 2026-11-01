@@ -45,7 +45,7 @@ int main() {
     Expect(settings.tlsPinSha256.size() == 64, "development pin is read from YAML");
 
     ClientSettings reusedSettings = settings;
-    std::istringstream minimalClientYaml("version: 1\\n");
+    std::istringstream minimalClientYaml("version: 1\n");
     Expect(ParseClientYaml(minimalClientYaml, reusedSettings, error),
            "minimal client YAML parses when the settings object has prior values");
     Expect(reusedSettings.endpoints.empty() && reusedSettings.retryCount == 3 &&
