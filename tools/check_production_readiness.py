@@ -7,8 +7,11 @@ import argparse
 import base64
 import hashlib
 import ipaddress
+import os
 import re
 import ssl
+import stat
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -217,6 +220,28 @@ def _dns_san_matches(host: str, pattern: str) -> bool:
     return bool(prefix) and "." not in prefix
 
 
+def validate_tls_key_pair(cert_path: Path, key_path: Path) -> None:
+    # Private keys must not be readable by group/other users on POSIX servers.
+    # Windows ACLs have different semantics, so this mode-bit check is POSIX-only.
+    if os.name != "nt":
+        try:
+            key_mode = stat.S_IMODE(key_path.stat().st_mode)
+        except OSError as exc:
+            raise ReadinessError(f"cannot inspect TLS private key permissions {key_path}: {exc}") from exc
+        if key_mode & 0o077:
+            raise ReadinessError(
+                "TLS private key permissions expose the key to group/other users; use chmod 600"
+            )
+
+    # Use the same TLS library family as the client/server toolchain to verify that
+    # the supplied private key matches the certificate, without exposing key data.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        raise ReadinessError(f"TLS certificate/private key pair is invalid or mismatched: {exc}") from exc
+
+
 def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> str:
     pins = parse_pin_list(pins_setting)
     der, decoded = read_leaf_certificate(cert_path)
@@ -226,8 +251,19 @@ def validate_tls_certificate(cert_path: Path, host: str, pins_setting: str) -> s
             f"TLS leaf-certificate SHA-256 {actual_pin} is absent from the configured pin list"
         )
 
-    extended_usage = decoded.get("extendedKeyUsage", ())
-    if "TLS Web Server Authentication" not in extended_usage:
+    eku_result = subprocess.run(
+        ["openssl", "x509", "-in", str(cert_path), "-noout", "-ext", "extendedKeyUsage"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if eku_result.returncode != 0:
+        raise ReadinessError(
+            "cannot inspect TLS certificate Extended Key Usage with the OpenSSL CLI; "
+            "install openssl and retry"
+        )
+    if "TLS Web Server Authentication" not in eku_result.stdout:
         raise ReadinessError(
             "TLS certificate Extended Key Usage must include serverAuth"
         )
@@ -281,14 +317,17 @@ def run_preflight(
     project_path: Path,
     runtime_source_path: Path,
     tls_cert_path: Path,
+    tls_key_path: Path,
     server_host: str,
     tls_pins: str,
 ) -> list[str]:
     manifest = parse_manifest(manifest_path)
     max_size = release_limits(project_path, runtime_source_path)
     checks = hash_package(game_directory, manifest, max_size)
+    validate_tls_key_pair(tls_cert_path, tls_key_path)
+    checks.append("TLS certificate/private key pair: matched")
     pin = validate_tls_certificate(tls_cert_path, server_host, tls_pins)
-    checks.append(f"TLS certificate: SAN, validity window, and pin verified ({pin})")
+    checks.append(f"TLS certificate: serverAuth EKU, SAN, validity window, and pin verified ({pin})")
     checks.append(f"Release enforcement: x86/x64 enabled; maximum hashed file size {max_size} bytes")
     return checks
 
@@ -302,6 +341,7 @@ def main() -> int:
     parser.add_argument("--client-project", type=Path, default=DEFAULT_CLIENT_PROJECT)
     parser.add_argument("--runtime-source", type=Path, default=DEFAULT_RUNTIME_SOURCE)
     parser.add_argument("--tls-cert", type=Path, required=True, help="PEM leaf certificate deployed by the server")
+    parser.add_argument("--tls-key", type=Path, required=True, help="matching PEM private key deployed by the server")
     parser.add_argument("--server-host", required=True, help="DNS name or IP address configured for clients")
     parser.add_argument("--tls-pin-sha256", required=True, help="real leaf certificate SHA-256 pin list")
     args = parser.parse_args()
@@ -313,6 +353,7 @@ def main() -> int:
             args.client_project,
             args.runtime_source,
             args.tls_cert,
+            args.tls_key,
             args.server_host,
             args.tls_pin_sha256,
         )

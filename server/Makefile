@@ -39,7 +39,7 @@ production-check:
 	@test -n "$(OBLIVION_PRODUCTION_GAME_DIR)" || (echo "[ERROR] Set OBLIVION_PRODUCTION_GAME_DIR to the exact package distributed to players." >&2; exit 2)
 	@test -n "$(OBLIVION_SERVER_HOST)" || (echo "[ERROR] Set OBLIVION_SERVER_HOST to the configured DNS name or IP address." >&2; exit 2)
 	@test -n "$(OBLIVION_TLS_PIN_SHA256)" || (echo "[ERROR] Set OBLIVION_TLS_PIN_SHA256 to the deployed leaf-certificate pin list." >&2; exit 2)
-	python3 ../tools/check_production_readiness.py --game-dir "$(OBLIVION_PRODUCTION_GAME_DIR)" --tls-cert "$(TLS_CERT_FILE)" --server-host "$(OBLIVION_SERVER_HOST)" --tls-pin-sha256 "$(OBLIVION_TLS_PIN_SHA256)"
+	python3 ../tools/check_production_readiness.py --game-dir "$(OBLIVION_PRODUCTION_GAME_DIR)" --tls-cert "$(TLS_CERT_FILE)" --tls-key "$(TLS_KEY_FILE)" --server-host "$(OBLIVION_SERVER_HOST)" --tls-pin-sha256 "$(OBLIVION_TLS_PIN_SHA256)"
 
 integration-test: $(TARGET) $(TLS_PROBE_TARGET)
 	python3 ../tests/heartbeat_integration.py ./$(TARGET) ./$(TLS_PROBE_TARGET)

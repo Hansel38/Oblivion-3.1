@@ -190,12 +190,14 @@ passes.
      OBLIVION_PRODUCTION_GAME_DIR="/absolute/path/to/the/exact/game-package" \\
      OBLIVION_SERVER_HOST="shield.example.com" \\
      OBLIVION_TLS_PIN_SHA256="paste-the-real-64-hex-leaf-pin" \\
-     TLS_CERT_FILE="/absolute/path/to/server-cert.pem"
+     TLS_CERT_FILE="/absolute/path/to/server-cert.pem" \\
+     TLS_KEY_FILE="/absolute/path/to/server-key.pem"
    ```
 
 The preflight refuses placeholders, malformed digests, package/hash mismatches, file sizes above
-the configured runtime cap, missing Release enforcement flags, invalid or mismatched TLS pins,
-expired/not-yet-valid certificates, and missing or mismatched hostname/IP SANs. It does not
+the configured runtime cap, missing Release enforcement flags, invalid or mismatched TLS certificate/key
+pairs, missing serverAuth EKU, invalid TLS pins, expired/not-yet-valid certificates, and missing or
+mismatched hostname/IP SANs. It does not
 replace a live Windows smoke test, production server load test, or Authenticode code signing.
 
 ## Client Protection Status (Heartbeat PONG)
