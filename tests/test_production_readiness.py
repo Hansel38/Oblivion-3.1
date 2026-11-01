@@ -31,6 +31,11 @@ DEFAULT_HOST = "shield.example.test"
 
 @unittest.skipUnless(shutil.which("openssl"), "OpenSSL CLI required to create local test certificates")
 class ProductionReadinessTests(unittest.TestCase):
+    def test_windows_directory_buffer_uses_a_single_nul_escape(self) -> None:
+        source = (ROOT / "client" / "src" / "advanced_process_heuristics.cpp").read_text(encoding="utf-8")
+        self.assertIn(r"std::wstring path(32768, L'\0');", source)
+        self.assertNotIn(r"std::wstring path(32768, L'\\0');", source)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)
