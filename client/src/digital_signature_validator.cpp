@@ -78,7 +78,15 @@ struct ModuleFileStamp {
     LONGLONG changeTime = 0;
 };
 
-bool GetModuleFileStamp(const std::wstring& path, ModuleFileStamp& stamp) {
+enum class ModuleFileStampResult {
+    Success,
+    Unavailable,
+    MissingOrInvalid
+};
+
+ModuleFileStampResult GetModuleFileStamp(
+    const std::wstring& path,
+    ModuleFileStamp& stamp) {
     stamp = ModuleFileStamp{};
     HANDLE file = CreateFileW(
         path.c_str(),
@@ -89,7 +97,14 @@ bool GetModuleFileStamp(const std::wstring& path, ModuleFileStamp& stamp) {
         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        return false;
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND ||
+            error == ERROR_PATH_NOT_FOUND ||
+            error == ERROR_DELETE_PENDING ||
+            error == ERROR_CANT_ACCESS_FILE) {
+            return ModuleFileStampResult::MissingOrInvalid;
+        }
+        return ModuleFileStampResult::Unavailable;
     }
 
     BY_HANDLE_FILE_INFORMATION fileInfo{};
@@ -99,10 +114,12 @@ bool GetModuleFileStamp(const std::wstring& path, ModuleFileStamp& stamp) {
         GetFileInformationByHandleEx(
             file, FileBasicInfo, &basicInfo, sizeof(basicInfo)) != FALSE;
     CloseHandle(file);
-    if (!okay ||
-        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+    if (!okay) {
+        return ModuleFileStampResult::Unavailable;
+    }
+    if ((fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
         (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        return false;
+        return ModuleFileStampResult::MissingOrInvalid;
     }
 
     stamp.size =
@@ -113,7 +130,7 @@ bool GetModuleFileStamp(const std::wstring& path, ModuleFileStamp& stamp) {
     stamp.fileIndexHigh = fileInfo.nFileIndexHigh;
     stamp.fileIndexLow = fileInfo.nFileIndexLow;
     stamp.changeTime = basicInfo.ChangeTime.QuadPart;
-    return true;
+    return ModuleFileStampResult::Success;
 }
 
 bool SameModuleFileStamp(const ModuleFileStamp& left, const ModuleFileStamp& right) {
@@ -497,8 +514,12 @@ namespace Oblivion {
 
         const std::wstring cacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
         ModuleFileStamp initialStamp;
-        if (!GetModuleFileStamp(filePath, initialStamp)) {
-            return ModuleTrustResult::Inconclusive;
+        const ModuleFileStampResult initialStampResult =
+            GetModuleFileStamp(filePath, initialStamp);
+        if (initialStampResult != ModuleFileStampResult::Success) {
+            return initialStampResult == ModuleFileStampResult::MissingOrInvalid
+                ? ModuleTrustResult::Untrusted
+                : ModuleTrustResult::Inconclusive;
         }
 
         const auto cached = m_moduleTrustCache.find(cacheKey);
@@ -541,8 +562,10 @@ namespace Oblivion {
         // If the path was replaced or written during verification, discard the
         // verdict and retry on the next scan rather than caching ambiguous trust.
         ModuleFileStamp finalStamp;
-        if (!GetModuleFileStamp(filePath, finalStamp) ||
+        if (GetModuleFileStamp(filePath, finalStamp) != ModuleFileStampResult::Success ||
             !SameModuleFileStamp(initialStamp, finalStamp)) {
+            // Treat a path mutation during verification as inconclusive; a
+            // subsequent scan will classify a persistently missing/reparse target.
             return ModuleTrustResult::Inconclusive;
         }
 
