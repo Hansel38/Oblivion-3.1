@@ -91,10 +91,6 @@ namespace OblivionServer {
 
         const std::string secretPath = executableDir + "secret.dat";
         FILE* f = std::fopen(secretPath.c_str(), "rb");
-        // Backward compatibility for deployments that used the process working directory.
-        if (!f && executableDir != "./") {
-            f = std::fopen("secret.dat", "rb");
-        }
         if (f) {
             bool readOk = false;
             if (std::fseek(f, 0, SEEK_END) == 0) {
@@ -119,21 +115,7 @@ namespace OblivionServer {
         }
 #endif
 
-        // 3) Fallback development value jika tidak ada konfigurasi
-        const char* devDefault = "DEV_SECRET_NOT_SET";
-        size_t len = strlen(devDefault);
-        std::vector<unsigned char> encoded(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            encoded[i] = (unsigned char)(devDefault[i] ^ key);
-        }
-        secret.reserve(len);
-        for (size_t i = 0; i < len; ++i) {
-            unsigned char key = (unsigned char)(0x5A + ((i * 7) % 0x3F));
-            secret += (char)(encoded[i] ^ key);
-        }
-
-        cached = secret;
+        // No built-in shared-secret fallback: missing deployment credentials must fail closed.
         return cached;
     }
 }
