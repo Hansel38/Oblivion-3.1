@@ -107,6 +107,38 @@ The installer now refuses a fresh install if it cannot find a certificate/key pa
 
 For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
 
+### VPS listen address, TCP port, and client endpoint
+
+The server binds to the local wildcard address (not to a hard-coded public IP), so a VPS public IP does not need to be entered on the server itself. The default listener is TCP port `54321`. You can override the port without editing the source:
+
+```bash
+export OBLIVION_LISTEN_PORT=54321
+./oblivion-server
+```
+
+Set `OBLIVION_LISTEN_PORT` in your systemd service environment when running the server as a service. The value must be a decimal TCP port from 1 to 65535. The client endpoint must use the same port.
+
+Allow the port through **both** the VPS provider's network/security firewall and the operating-system firewall. On Ubuntu/Debian with UFW, for example:
+
+```bash
+sudo ufw allow 54321/tcp
+sudo ufw status
+sudo ss -lntp | grep ':54321'
+```
+
+In the client Release build, configure the reachable public DNS name (recommended) or public IP and the matching TLS leaf-certificate SHA-256 pin in the generated production header. For example, run from the repository root after the server certificate is installed:
+
+```bash
+openssl x509 -in server/server-cert.pem -outform DER | sha256sum
+python3 tools/generate_production_network_config.py \
+  --server-endpoints "shield.your-domain.example:54321" \
+  --tls-pin-sha256 "PASTE_THE_REAL_64_HEX_LEAF_CERTIFICATE_PIN"
+```
+
+Replace the example hostname and pin with your real values; never ship the example values. The certificate SAN must match the host in the endpoint. Rebuild the Windows client after generating this header. Release clients intentionally ignore endpoint and pin overrides in `oblivion.cfg`; that file remains a development convenience, not the production trust policy.
+
+Changing the port requires updating the VPS firewall and regenerating/rebuilding the client endpoint configuration with the same port. The anti-cheat listener uses TCP, not UDP.
+
 Example for a DNS endpoint (use your real server name):
 
 ~~~bash
@@ -379,7 +411,7 @@ sudo systemctl status oblivion-server
 ## Troubleshooting
 
 ### Port already in use
-If port 54321 is already in use, you can change it by modifying `DEFAULT_PORT` in `server_linux.cpp` or use a port forwarder.
+If port 54321 is already in use, set `OBLIVION_LISTEN_PORT` to an available TCP port and allow that same port in the VPS/provider firewall and operating-system firewall.
 
 ### Permission denied
 Make sure the server executable has execute permissions:
