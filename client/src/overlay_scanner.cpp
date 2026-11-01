@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "overlay_scanner.h"
+#include "win_path_utils.h"
 #include "digital_signature_validator.h"
 #include <string>
 #include <array>
@@ -53,14 +54,7 @@ namespace {
             return L"";
         }
 
-        wchar_t processPath[MAX_PATH] = { 0 };
-        DWORD size = MAX_PATH;
-        std::wstring result;
-
-        if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
-            result = processPath;
-        }
-
+        std::wstring result = Oblivion::WinPath::GetProcessImagePath(hProcess);
         CloseHandle(hProcess);
         return result;
     }

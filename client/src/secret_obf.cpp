@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "secret_obf.h"
+#include "win_path_utils.h"
 #include <vector>
 #include <windows.h>
 
@@ -28,16 +29,20 @@ namespace Oblivion {
 
         // 2) Coba load dari file berdampingan (secret.dat) untuk produksi
         //    File berisi bytes yang sudah di-XOR (encoded) agar tidak terlihat literal
-        std::wstring exePathW;
-        wchar_t pathBuf[MAX_PATH] = {0};
-        DWORD sz = GetModuleFileNameW(NULL, pathBuf, MAX_PATH);
-        if (sz > 0) {
-            exePathW.assign(pathBuf, sz);
-            size_t lastSlash = exePathW.find_last_of(L"\\/");
-            if (lastSlash != std::wstring::npos) exePathW = exePathW.substr(0, lastSlash + 1);
+        std::wstring secretPathW;
+        const std::wstring executablePath = Oblivion::WinPath::GetModulePath(nullptr);
+        if (!executablePath.empty()) {
+            const size_t lastSlash = executablePath.find_last_of(L"\\/");
+            if (lastSlash != std::wstring::npos) {
+                secretPathW = executablePath.substr(0, lastSlash + 1) + L"secret.dat";
+            }
         }
-        std::wstring secretPathW = exePathW + L"secret.dat";
-        HANDLE hFile = CreateFileW(secretPathW.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+        // Do not fall back to the process working directory if module path
+        // resolution fails; only load a secret located beside the executable.
+        HANDLE hFile = secretPathW.empty()
+            ? INVALID_HANDLE_VALUE
+            : CreateFileW(secretPathW.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD fileSize = GetFileSize(hFile, NULL);
             if (fileSize > 0 && fileSize < 1024) {

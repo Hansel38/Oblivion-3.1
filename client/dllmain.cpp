@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "win_path_utils.h"
 #include "process_watcher.h"
 #include "file_integrity_check.h"
 #include "network_reporter.h"
@@ -197,21 +198,20 @@ void InitializeSecuritySystem() {
             return; // Jika GDI+ gagal, lanjut tanpa splash
         }
 
-        wchar_t modulePath[MAX_PATH] = { 0 };
-        const DWORD modulePathLength = GetModuleFileNameW(
-            g_hSelfModule ? g_hSelfModule : GetModuleHandleW(nullptr),
-            modulePath, MAX_PATH);
-        if (modulePathLength == 0 || modulePathLength >= MAX_PATH) {
+        const HMODULE resourceModule =
+            g_hSelfModule ? g_hSelfModule : GetModuleHandleW(nullptr);
+        const std::wstring modulePath = Oblivion::WinPath::GetModulePath(resourceModule);
+        if (modulePath.empty()) {
             GdiplusShutdown(gdiplusToken);
             return;
         }
-        wchar_t* lastSlash = wcsrchr(modulePath, L'\\');
-        if (!lastSlash) {
+        const size_t lastSlash = modulePath.find_last_of(L"\\/");
+        if (lastSlash == std::wstring::npos) {
             GdiplusShutdown(gdiplusToken);
             return;
         }
-        *lastSlash = L'\0';
-        const std::wstring imagePath = std::wstring(modulePath) + L"\\logo\\OblivionHS.png";
+        const std::wstring imagePath =
+            modulePath.substr(0, lastSlash) + L"\\logo\\OblivionHS.png";
 
         HWND hwndSplash = nullptr;
         HBITMAP hBmp = nullptr;

@@ -39,5 +39,43 @@ inline std::wstring GetModulePath(HMODULE module) {
     return L"";
 }
 
+
+ 
+// Resolve a process image path without assuming that MAX_PATH is sufficient.
+// QueryFullProcessImageNameW reports ERROR_INSUFFICIENT_BUFFER when the
+// provided buffer cannot hold the complete path.
+inline std::wstring GetProcessImagePath(HANDLE process) {
+    if (process == nullptr || process == INVALID_HANDLE_VALUE) {
+        return L"";
+    }
+
+    constexpr size_t kInitialPathCapacity = MAX_PATH;
+    constexpr size_t kMaxPathCapacity = 32768;
+    std::vector<wchar_t> pathBuffer(kInitialPathCapacity, L'\0');
+
+    while (pathBuffer.size() <= kMaxPathCapacity) {
+        DWORD pathLength = static_cast<DWORD>(pathBuffer.size());
+        if (QueryFullProcessImageNameW(
+                process, 0, pathBuffer.data(), &pathLength)) {
+            if (pathLength == 0 || static_cast<size_t>(pathLength) > pathBuffer.size()) {
+                return L"";
+            }
+            return std::wstring(pathBuffer.data(), pathLength);
+        }
+
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+            pathBuffer.size() == kMaxPathCapacity) {
+            return L"";
+        }
+
+        const size_t doubledCapacity = pathBuffer.size() * 2;
+        const size_t nextCapacity =
+            doubledCapacity > kMaxPathCapacity ? kMaxPathCapacity : doubledCapacity;
+        pathBuffer.resize(nextCapacity, L'\0');
+    }
+
+    return L"";
+}
+
 } // namespace WinPath
 } // namespace Oblivion
