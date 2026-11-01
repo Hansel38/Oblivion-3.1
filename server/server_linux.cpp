@@ -16,6 +16,9 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
 #include <filesystem>
 #include "../common/tls_transport.h"
 #include <cerrno>
@@ -191,34 +194,14 @@ static SSL_CTX* InitializeTlsServerContext() {
 }
 
 static SSL* AcceptTlsConnection(SocketType clientSocket) {
-#ifdef _WIN32
-    const DWORD handshakeTimeoutMs = 5000;
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&handshakeTimeoutMs), sizeof(handshakeTimeoutMs));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-        reinterpret_cast<const char*>(&handshakeTimeoutMs), sizeof(handshakeTimeoutMs));
-#else
-    const timeval handshakeTimeout{5, 0};
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &handshakeTimeout, sizeof(handshakeTimeout));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &handshakeTimeout, sizeof(handshakeTimeout));
-#endif
+    if (!SetSocketNonBlocking(clientSocket)) {
+        std::cerr << "[TLS] Cannot set accepted socket nonblocking; closing connection." << std::endl;
+        return nullptr;
+    }
 
     std::string error;
     SSL* session = Oblivion::Tls::Accept(
         g_tlsServerContext, static_cast<int>(clientSocket), error);
-
-#ifdef _WIN32
-    const DWORD noTimeout = 0;
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-        reinterpret_cast<const char*>(&noTimeout), sizeof(noTimeout));
-#else
-    const timeval noTimeout{0, 0};
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, sizeof(noTimeout));
-    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &noTimeout, sizeof(noTimeout));
-#endif
-
     if (session == nullptr) {
         std::cerr << "[TLS] Client TLS handshake rejected: " << error << std::endl;
     }
@@ -940,6 +923,37 @@ void SleepHeartbeat(uint32_t milliseconds) {
 #endif
 }
 
+static bool WaitForTlsIo(SocketType socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
+    const int sslError = SSL_get_error(tls, sslResult);
+    if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE) return false;
+
+    fd_set readSet;
+    fd_set writeSet;
+    FD_ZERO(&readSet);
+    FD_ZERO(&writeSet);
+    if (sslError == SSL_ERROR_WANT_READ) FD_SET(socket, &readSet);
+    else FD_SET(socket, &writeSet);
+
+    struct timeval timeout{};
+    timeout.tv_sec = timeoutMs / 1000;
+    timeout.tv_usec = (timeoutMs % 1000) * 1000;
+#ifdef _WIN32
+    return select(0, &readSet, &writeSet, nullptr, &timeout) > 0;
+#else
+    return select(socket + 1, &readSet, &writeSet, nullptr, &timeout) > 0;
+#endif
+}
+
+static bool SetSocketNonBlocking(SocketType socket) {
+#ifdef _WIN32
+    u_long nonBlocking = 1;
+    return ioctlsocket(socket, FIONBIO, &nonBlocking) == 0;
+#else
+    const int flags = fcntl(socket, F_GETFL, 0);
+    return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
 bool SendAllBytes(SocketType socket, const std::string& payload) {
     size_t sent = 0;
     while (sent < payload.size()) {
@@ -954,6 +968,10 @@ bool SendAllBytes(SocketType socket, const std::string& payload) {
 #else
             result = static_cast<int>(send(socket, payload.data() + sent, static_cast<size_t>(chunk), SEND_FLAGS));
 #endif
+        }
+        if (g_activeTls != nullptr && result <= 0) {
+            if (WaitForTlsIo(socket, g_activeTls, result, 5000)) continue;
+            return false;
         }
         if (result <= 0) return false;
         sent += static_cast<size_t>(result);
@@ -993,6 +1011,13 @@ bool ReceiveSemicolonFrame(SocketType socket, std::string& buffered, uint32_t ti
 #else
             received = static_cast<int>(recv(socket, chunk, sizeof(chunk), 0));
 #endif
+        }
+        if (g_activeTls != nullptr && received <= 0) {
+            const int sslError = SSL_get_error(g_activeTls, received);
+            if (sslError == SSL_ERROR_WANT_READ) continue;
+            if (sslError == SSL_ERROR_WANT_WRITE &&
+                WaitForTlsIo(socket, g_activeTls, received, remainingMs)) continue;
+            return false;
         }
         if (received <= 0 || buffered.size() + static_cast<size_t>(received) > maxBytes) return false;
         buffered.append(chunk, static_cast<size_t>(received));
