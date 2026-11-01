@@ -207,6 +207,29 @@ def verify_missing_ban_list_is_rejected(ban_list_path: Path) -> None:
 
 
 
+def verify_missing_secret_is_rejected(server_binary: Path) -> None:
+    # Isolate executable-adjacent secret lookup from any developer checkout.
+    with tempfile.TemporaryDirectory(prefix="oblivion-missing-secret-") as directory:
+        isolated_server = Path(directory) / server_binary.name
+        shutil.copy2(server_binary, isolated_server)
+        env = os.environ.copy()
+        env.pop("OBLIVION_SECRET", None)
+        result = subprocess.run(
+            [str(isolated_server)],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0 or "wajib dikonfigurasi" not in output:
+            raise RuntimeError(
+                "server did not fail closed when no shared secret was provisioned: "
+                f"exit={result.returncode}, output={output!r}"
+            )
+
+
 def verify_weak_secret_is_rejected(server_binary: Path) -> None:
     env = os.environ.copy()
     env["OBLIVION_SECRET"] = "weak"
@@ -509,6 +532,7 @@ def verify_insecure_tls_private_key_is_rejected(
 
 def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     global TLS_CONTEXT
+    verify_missing_secret_is_rejected(server_binary)
     verify_weak_secret_is_rejected(server_binary)
     verify_overlong_secret_is_rejected(server_binary)
     verify_secret_delimiters_are_rejected(server_binary)
