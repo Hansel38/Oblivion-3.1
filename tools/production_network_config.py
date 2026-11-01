@@ -106,6 +106,51 @@ def parse_endpoint_list(setting: str) -> list[dict[str, object]]:
     return endpoints
 
 
+def validate_deployable_endpoints(
+    endpoints: list[dict[str, object]],
+    *,
+    allow_test_endpoints: bool = False,
+) -> None:
+    """Reject obvious examples/reserved targets from a production trust policy.
+
+    The explicit override is intended only for compile-only CI fixtures. The
+    production preflight always calls this with the default (strict) setting.
+    """
+    reserved_dns_suffixes = (".invalid", ".test", ".example", ".localhost")
+    reserved_dns_names = {
+        "localhost",
+        "example.com", "example.net", "example.org",
+    }
+
+    for endpoint in endpoints:
+        host = str(endpoint["host"]).lower().rstrip(".")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if not allow_test_endpoints and (
+                host in reserved_dns_names
+                or any(host == suffix[1:] or host.endswith(suffix) for suffix in reserved_dns_suffixes)
+                or host.endswith(".example.com")
+                or host.endswith(".example.net")
+                or host.endswith(".example.org")
+            ):
+                raise NetworkConfigError(
+                    f"reserved/test hostname {host!r} cannot be used in a production network policy"
+                )
+            continue
+
+        if not allow_test_endpoints and (
+            address.is_loopback
+            or address.is_unspecified
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+        ):
+            raise NetworkConfigError(
+                f"reserved/test IP address {host!r} cannot be used in a production network policy"
+            )
+
+
 def parse_pin_list(setting: str) -> list[str]:
     tokens = [token for token in re.split(r"[,;\s]+", setting.strip()) if token]
     if not tokens:
@@ -169,6 +214,7 @@ def read_network_config(path: Path) -> dict[str, object]:
 
     endpoints = parse_endpoint_list(endpoint_values[0])
     pins = parse_pin_list(pin_values[0])
+    validate_deployable_endpoints(endpoints)
     return {
         "endpoints": endpoints,
         "pins": pins,
