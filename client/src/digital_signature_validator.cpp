@@ -56,6 +56,7 @@ std::wstring ResolveWindowsDirectory() {
 const std::vector<std::wstring> Oblivion::DigitalSignatureValidator::m_trustedPublishers = {
     L"Microsoft Corporation",
     L"Microsoft Windows",
+    L"Microsoft Windows Publisher",
     L"NVIDIA Corporation",
     L"Advanced Micro Devices, Inc.",
     L"Intel Corporation",
