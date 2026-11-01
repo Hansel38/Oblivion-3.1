@@ -55,7 +55,10 @@ class ProductionReadinessTests(unittest.TestCase):
         self.runtime_source.write_text(
             "#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_ENFORCE_FILE_INTEGRITY != 1\n"
             "#define OBLIVION_MAX_HASH_FILE_SIZE_BYTES 16777216\n"
-            "static constexpr unsigned long long kMaxHashFileSizeBytes = OBLIVION_MAX_HASH_FILE_SIZE_BYTES;\n",
+            "static constexpr unsigned long long kMaxHashFileSizeBytes = OBLIVION_MAX_HASH_FILE_SIZE_BYTES;\n"
+            "GetFileInformationByHandleEx FILE_ATTRIBUTE_REPARSE_POINT "
+            "initialBasicInfo.ChangeTime.QuadPart == finalBasicInfo.ChangeTime.QuadPart "
+            "unsigned long long totalBytesHashed ERROR_FILE_TOO_LARGE\n",
             encoding="utf-8",
         )
         self.generate_certificate(
