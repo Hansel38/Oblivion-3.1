@@ -787,7 +787,7 @@ namespace Oblivion {
             LogClientIssue("TLS_CONFIG_INVALID", reason);
             if (m_failClosed) {
                 MessageBoxW(nullptr,
-                    L"Konfigurasi TLS Oblivion tidak lengkap atau tidak valid.\\n\\nClient akan ditutup untuk mencegah koneksi tidak terenkripsi.",
+                    L"Konfigurasi TLS Oblivion tidak lengkap atau tidak valid.\n\nClient akan ditutup untuk mencegah koneksi tidak terenkripsi.",
                     L"Oblivion Hack Shield - TLS Configuration Error",
                     MB_OK | MB_ICONERROR | MB_TOPMOST);
                 ExitProcess(1);
@@ -838,7 +838,7 @@ namespace Oblivion {
             LogClientIssue("TLS_HANDSHAKE_FAILED", tlsError);
             if (m_failClosed) {
                 MessageBoxW(nullptr,
-                    L"Identitas server keamanan tidak dapat diverifikasi melalui TLS.\\n\\nClient akan ditutup.",
+                    L"Identitas server keamanan tidak dapat diverifikasi melalui TLS.\n\nClient akan ditutup.",
                     L"Oblivion Hack Shield - TLS Verification Failed",
                     MB_OK | MB_ICONERROR | MB_TOPMOST);
                 ExitProcess(1);
