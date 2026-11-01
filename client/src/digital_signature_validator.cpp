@@ -166,7 +166,7 @@ bool GetCatalogPublisherName(const std::wstring& catalogPath, std::wstring& publ
     HCERTSTORE store = nullptr;
     HCRYPTMSG message = nullptr;
     PCCERT_CONTEXT signerCertificate = nullptr;
-    PCMSG_SIGNER_INFO signerInfo = nullptr;
+    PCERT_INFO signerInfo = nullptr;
     bool success = false;
 
     DWORD encoding = 0;
@@ -193,7 +193,7 @@ bool GetCatalogPublisherName(const std::wstring& catalogPath, std::wstring& publ
         goto cleanup;
     }
 
-    signerInfo = static_cast<PCMSG_SIGNER_INFO>(LocalAlloc(LPTR, signerInfoSize));
+    signerInfo = static_cast<PCERT_INFO>(LocalAlloc(LPTR, signerInfoSize));
     if (signerInfo == nullptr) {
         goto cleanup;
     }
@@ -902,12 +902,12 @@ namespace Oblivion {
         }
 
         // Dapatkan sertifikat penandatangan (biasanya hanya ada satu)
-        PCMSG_SIGNER_INFO pSignerInfo = nullptr;
+        PCERT_INFO pSignerInfo = nullptr;
         if (!CryptMsgGetParam(hMsg, CMSG_SIGNER_CERT_INFO_PARAM, 0, NULL, &formatType)) {
             goto cleanup;
         }
 
-        pSignerInfo = (PCMSG_SIGNER_INFO)LocalAlloc(LPTR, formatType);
+        pSignerInfo = (PCERT_INFO)LocalAlloc(LPTR, formatType);
         if (!pSignerInfo) {
             goto cleanup;
         }
@@ -985,7 +985,7 @@ namespace Oblivion {
         HCERTSTORE hStore = NULL;
         HCRYPTMSG hMsg = NULL;
         PCCERT_CONTEXT pCertContext = NULL;
-        PCMSG_SIGNER_INFO pSignerInfo = NULL;
+        PCERT_INFO pSignerInfo = NULL;
         bool result = false;
 
         DWORD encoding, contentType, formatType;
@@ -1002,7 +1002,7 @@ namespace Oblivion {
             goto cleanup;
         }
 
-        pSignerInfo = (PCMSG_SIGNER_INFO)LocalAlloc(LPTR, dwSize);
+        pSignerInfo = (PCERT_INFO)LocalAlloc(LPTR, dwSize);
         if (!pSignerInfo) {
             goto cleanup;
         }

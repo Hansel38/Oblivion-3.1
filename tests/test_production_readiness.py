@@ -167,6 +167,12 @@ class ProductionReadinessTests(unittest.TestCase):
             timeout=15,
         )
 
+    def test_signer_certificate_info_uses_cert_info_structure(self) -> None:
+        source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")
+        self.assertIn("CMSG_SIGNER_CERT_INFO_PARAM", source)
+        self.assertIn("PCERT_INFO", source)
+        self.assertNotIn("PCMSG_SIGNER_INFO", source)
+
     def test_catalog_signature_fallback_is_present(self) -> None:
         source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")
         for token in (
