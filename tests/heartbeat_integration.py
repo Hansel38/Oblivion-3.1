@@ -13,6 +13,7 @@ import signal
 import shutil
 import ssl
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -441,6 +442,38 @@ def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
                 f"exit={result.returncode}, output={output!r}"
             )
 
+def verify_insecure_tls_private_key_is_rejected(
+    server_binary: Path, server_certificate: Path, server_key: Path
+) -> None:
+    # Runtime policy must agree with production-check: group/world-accessible key
+    # material is a deployment error, not something to warn about and continue.
+    original_mode = stat.S_IMODE(server_key.stat().st_mode)
+    try:
+        server_key.chmod((original_mode & ~0o077) | 0o640)
+        env = os.environ.copy()
+        env["OBLIVION_SECRET"] = TEST_SECRET
+        env["OBLIVION_TLS_CERT_FILE"] = str(server_certificate)
+        env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
+        result = subprocess.run(
+            [str(server_binary)],
+            cwd=str(server_key.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            raise RuntimeError("server accepted a TLS private key readable by the group")
+        if "TLS private key permissions expose the key to group/other users" not in output:
+            raise RuntimeError(
+                "server rejected an insecure TLS key for an unexpected reason: "
+                f"exit={result.returncode}, output={output!r}"
+            )
+    finally:
+        server_key.chmod(original_mode)
+
+
 def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     global TLS_CONTEXT
     verify_weak_secret_is_rejected(server_binary)
@@ -485,6 +518,8 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
 
     TLS_CONTEXT = ssl.create_default_context(cafile=str(ca_cert))
     TLS_CONTEXT.check_hostname = True
+
+    verify_insecure_tls_private_key_is_rejected(server_binary, server_cert, server_key)
 
     ban_list_path = server_binary.parent / "bans.txt"
     original_ban_list = ban_list_path.read_bytes() if ban_list_path.exists() else None
