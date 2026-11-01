@@ -16,7 +16,7 @@
 ### Debian/Ubuntu
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential libssl-dev
+sudo apt-get install -y build-essential libssl-dev libyaml-cpp-dev
 ```
 
 ### Dependencies
@@ -83,6 +83,60 @@ chmod +x oblivion-start
 ```
 
 ## Configuration
+
+### YAML runtime configuration
+
+The server reads `oblivion-server.yaml` beside the executable. A default, editable file is included at `server/oblivion-server.yaml`; `make install` copies it next to the installed binary only when no existing config is present. Existing operator edits are preserved during subsequent installs.
+
+The supported sections are:
+- `server.bind_address`: IPv4 address to bind to; `0.0.0.0` listens on all local IPv4 interfaces.
+- `server.listen_port`: TCP listener port from 1 to 65535 (default `54321`).
+- `tls.certificate_file` and `tls.private_key_file`: relative paths beside the server executable or absolute paths.
+- `heartbeat.*`: bounded heartbeat interval, jitter, timeout, miss threshold, and RTT warning threshold.
+
+Example:
+
+```yaml
+version: 1
+server:
+  bind_address: "0.0.0.0"
+  listen_port: "54321"
+tls:
+  certificate_file: "server-cert.pem"
+  private_key_file: "server-key.pem"
+heartbeat:
+  interval_ms: 3000
+  jitter_ms: 250
+  timeout_ms: 4000
+  max_consecutive_misses: 3
+  rtt_warn_ms: 1500
+```
+
+Malformed YAML, unsupported keys, out-of-range values, and files larger than 64 KiB cause startup/configuration failure rather than silently using an unsafe value. Environment variables remain available to override supported fields. **Never put the shared secret or TLS private key contents in YAML**; keep `OBLIVION_SECRET` in the environment or the protected `secret.dat`, and keep the TLS private key as a separate file with mode `0600`.
+
+### Client YAML configuration
+
+Copy `client/oblivion.yaml.example` to `oblivion.yaml` in the directory containing the Ragnarok executable. Then edit only the server endpoint and connection parameters:
+
+```yaml
+version: 1
+server:
+  default_port: 54321
+  endpoints:
+    - "anticheat.your-domain.example:54321"
+connection:
+  connect_timeout_ms: 3000
+  retry_count: 3
+  handshake_timeout_ms: 4000
+policy:
+  fail_closed: true
+```
+
+The client can read multiple entries in `server.endpoints` and tries them in order. Prefer a stable DNS hostname pointing to the VPS instead of hard-coding a changing public IP.
+
+**Release trust boundary:** `oblivion.yaml` can select the hostname and port, but it cannot change the TLS certificate pin. Release builds always use the pin compiled into the client and verify the certificate validity, server-auth purpose, and hostname/IP SAN. An endpoint that does not present the pinned leaf certificate with a matching SAN is rejected. The `tls.pin_sha256` field is for Debug/development builds only; Release ignores it. When rotating the server certificate, provision the new pin into the client build before removing the old pin.
+
+If no YAML file exists, the client retains the legacy INI/development fallback behavior; Release falls back to its compiled endpoint. A malformed YAML file is logged and does not weaken TLS verification.
 
 ### Environment Variables
 You can configure heartbeat settings via environment variables:
