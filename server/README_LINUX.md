@@ -162,7 +162,43 @@ openssl rand -hex 32
    - Create a file named `secret.dat` in the same directory as the server executable
    - The file should contain XOR-encoded secret (same format as Windows version)
 
-### Client Protection Status (Heartbeat PONG)
+### Production release preflight (required)
+
+The Visual Studio Release configurations for both Win32/x86 and x64 now define
+`OBLIVION_PRODUCTION_BUILD=1` and `OBLIVION_ENFORCE_FILE_INTEGRITY=1`.
+They will fail closed at startup when any integrity hash is a placeholder. Debug
+builds remain report-only for development. Do not distribute a Release client
+until its manifest is generated from the exact package and the preflight below
+passes.
+
+1. Generate the manifest from the exact folder that will be shipped. Run from the repository root:
+
+   ```powershell
+   python tools/generate_integrity_manifest.py "D:\\Builds\\Ragnarok-Package"
+   ```
+
+2. If `RRO.exe`, `en.grf`, or `DATA.ini` is larger than 512 MiB, review performance and raise
+   `OBLIVION_MAX_HASH_FILE_SIZE_BYTES` in both Release configurations to a measured, acceptable
+   value. The runtime refuses to enforce files over that limit.
+
+3. Run the release preflight. The certificate must be a PEM leaf certificate whose SAN matches
+   the configured DNS name/IP, is currently valid, and whose SHA-256 fingerprint appears in the
+   pin list distributed to the client:
+
+   ```bash
+   make -C server production-check \\
+     OBLIVION_PRODUCTION_GAME_DIR="/absolute/path/to/the/exact/game-package" \\
+     OBLIVION_SERVER_HOST="shield.example.com" \\
+     OBLIVION_TLS_PIN_SHA256="paste-the-real-64-hex-leaf-pin" \\
+     TLS_CERT_FILE="/absolute/path/to/server-cert.pem"
+   ```
+
+The preflight refuses placeholders, malformed digests, package/hash mismatches, file sizes above
+the configured runtime cap, missing Release enforcement flags, invalid or mismatched TLS pins,
+expired/not-yet-valid certificates, and missing or mismatched hostname/IP SANs. It does not
+replace a live Windows smoke test, production server load test, or Authenticode code signing.
+
+## Client Protection Status (Heartbeat PONG)
 
 Setiap PONG dari client membawa bit status lapisan pengaman:
 

@@ -43,10 +43,19 @@ extern void ReportViolationSoft(const std::string& type, const std::string& deta
 #define OBLIVION_ENFORCE_FILE_INTEGRITY 0
 #endif
 
+#if defined(OBLIVION_PRODUCTION_BUILD) && OBLIVION_ENFORCE_FILE_INTEGRITY != 1
+#error Production builds must enable OBLIVION_ENFORCE_FILE_INTEGRITY=1
+#endif
+
+#ifndef OBLIVION_MAX_HASH_FILE_SIZE_BYTES
+#define OBLIVION_MAX_HASH_FILE_SIZE_BYTES (512ULL * 1024ULL * 1024ULL)
+#endif
+
 // Batas ukuran file yang di-hash saat start. File lebih besar dari ini dilewati
 // (dengan catatan lokal) supaya startup tidak memblokir puluhan detik; hash-nya
 // bisa dihitung oleh tool external dan ditaruh pada daftar terpisah.
-static const unsigned long long kMaxHashFileSizeBytes = 512ULL * 1024ULL * 1024ULL;
+static constexpr unsigned long long kMaxHashFileSizeBytes =
+    static_cast<unsigned long long>(OBLIVION_MAX_HASH_FILE_SIZE_BYTES);
 
 // Hash placeholder (belum digenerate) ditandai dengan marker ini supaya bisa
 // dilewati tanpa risiko false positive.
