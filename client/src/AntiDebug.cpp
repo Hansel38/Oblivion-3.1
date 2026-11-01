@@ -3,6 +3,7 @@
 #include "win_path_utils.h"
 #include <vector>
 #include <cwctype>
+#include <algorithm>
 #include <windows.h>
 #include <winternl.h> // Untuk fungsi-fungsi NT yang tidak berdokumentasi
 
