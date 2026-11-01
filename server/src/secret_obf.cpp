@@ -76,11 +76,12 @@ namespace OblivionServer {
             CloseHandle(hFile);
         }
 #else
-        // Resolve secret.dat beside the executable, not the current working directory.
+        // Resolve secret.dat beside the executable only. If executable-path
+        // resolution fails, do not fall back to the process working directory.
         char executablePath[PATH_MAX] = {0};
-        std::string executableDir = "./";
+        std::string executableDir;
         const ssize_t pathLength = readlink("/proc/self/exe", executablePath, sizeof(executablePath) - 1);
-        if (pathLength > 0) {
+        if (pathLength > 0 && static_cast<size_t>(pathLength) < sizeof(executablePath)) {
             executablePath[pathLength] = '\0';
             const std::string fullPath(executablePath);
             const size_t slash = fullPath.find_last_of('/');
@@ -89,11 +90,10 @@ namespace OblivionServer {
             }
         }
 
-        const std::string secretPath = executableDir + "secret.dat";
-        FILE* f = std::fopen(secretPath.c_str(), "rb");
-        // Backward compatibility for deployments that used the process working directory.
-        if (!f && executableDir != "./") {
-            f = std::fopen("secret.dat", "rb");
+        FILE* f = nullptr;
+        if (!executableDir.empty()) {
+            const std::string secretPath = executableDir + "secret.dat";
+            f = std::fopen(secretPath.c_str(), "rb");
         }
         if (f) {
             bool readOk = false;
