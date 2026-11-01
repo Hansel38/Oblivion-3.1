@@ -536,6 +536,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     env["OBLIVION_TLS_CERT_FILE"] = str(server_cert)
     env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
     env["OBLV_HB_INTERVAL_MS"] = "250"
+    env["OBLV_HB_JITTER_MS"] = "0"
     env["OBLV_HB_TIMEOUT_MS"] = "1000"
     env["OBLV_HB_MAX_MISS"] = "2"
     env["OBLV_HB_RTT_WARN_MS"] = "60000"
