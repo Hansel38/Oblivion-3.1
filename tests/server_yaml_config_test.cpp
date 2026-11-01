@@ -59,6 +59,7 @@ int main() {
             "version: 1\nshared_secret: should-never-be-accepted\n",
             "version: 1\nserver:\n  unknown_key: true\n",
             "version: 1\nserver:\n  bind_address: 999.1.1.1\n",
+            "version: 1\nserver:\n  bind_address: 010.0.0.1\n",
             "version: [not, an, integer]\n"}) {
         settings = ServerSettings{};
         error.clear();
