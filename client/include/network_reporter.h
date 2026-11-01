@@ -66,7 +66,7 @@ namespace Oblivion {
         void LoadConfiguration();
         SOCKET ConnectToAnyEndpoint(std::string& outHost, int& outPort);
         SOCKET ConnectWithTimeout(const std::string& host, int port) const;
-        bool PerformCheckin(SOCKET s, bool& isBanned, std::string& errorOut);
+        bool PerformCheckin(SOCKET s, SSL* tls, bool& isBanned, std::string& errorOut);
         void LogClientIssue(const std::string& type, const std::string& details) const;
         void QueuePendingViolation(const std::string& type, const std::string& details) const;
 
