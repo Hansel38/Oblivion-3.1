@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Oblivion {
     class DigitalSignatureValidator {
@@ -50,12 +51,19 @@ namespace Oblivion {
             bool isTrusted;
         };
 
-        // Fungsi untuk memeriksa apakah sebuah modul tepercaya
-        bool IsModuleTrusted(
-            HMODULE hModule,
+        enum class ModuleTrustResult {
+            Trusted,
+            Untrusted,
+            Inconclusive
+        };
+
+        // Signature verification may be inconclusive due to trust-provider infrastructure.
+        // That state is reported softly rather than being treated as proof of cheating.
+        ModuleTrustResult IsModuleTrusted(
             std::wstring& moduleName,
             const std::wstring& filePath,
-            const std::wstring& gameDirectory);
+            const std::wstring& gameDirectory,
+            bool allowAnyValidSigner);
 
         // Fungsi untuk mendapatkan nama penerbit dari sertifikat
         bool GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName);
@@ -72,5 +80,6 @@ namespace Oblivion {
         // WinVerifyTrust relatif mahal. Cache dibatalkan otomatis bila ukuran atau
         // waktu modifikasi file berubah, sehingga modul yang diganti tetap diverifikasi.
         std::unordered_map<std::wstring, ModuleTrustCacheEntry> m_moduleTrustCache;
+        std::unordered_set<std::wstring> m_reportedUnverifiableModules;
     };
 }

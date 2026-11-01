@@ -26,12 +26,14 @@ TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 
 PATH_POLICY_TEST_TARGET := $(BUILD_DIR)/windows_path_policy_test
 AUTHENTICODE_POLICY_TEST_TARGET := $(BUILD_DIR)/authenticode_verdict_policy_test
+MODULE_TRUST_POLICY_TEST_TARGET := $(BUILD_DIR)/module_trust_policy_test
 
-test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET)
+test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(MODULE_TRUST_POLICY_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HWID_TEST_TARGET)
 	./$(PATH_POLICY_TEST_TARGET)
 	./$(AUTHENTICODE_POLICY_TEST_TARGET)
+	./$(MODULE_TRUST_POLICY_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
@@ -55,6 +57,9 @@ $(PATH_POLICY_TEST_TARGET): ../tests/windows_path_policy_test.cpp ../common/wind
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(AUTHENTICODE_POLICY_TEST_TARGET): ../tests/authenticode_verdict_policy_test.cpp ../common/authenticode_verdict_policy.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
+
+$(MODULE_TRUST_POLICY_TEST_TARGET): ../tests/module_trust_policy_test.cpp ../common/module_trust_policy.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(TLS_PROBE_TARGET): ../tests/tls_client_probe.cpp ../common/tls_transport.h | $(BUILD_DIR)

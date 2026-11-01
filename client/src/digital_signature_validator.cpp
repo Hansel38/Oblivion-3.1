@@ -3,6 +3,7 @@
 #include "win_path_utils.h"
 #include "../../common/windows_path_policy.h"
 #include "../../common/authenticode_verdict_policy.h"
+#include "../../common/module_trust_policy.h"
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
@@ -16,6 +17,7 @@
 
 // Forward declaration
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+extern void ReportViolationSoft(const std::string& type, const std::string& details);
 
 namespace {
 std::wstring ReadEnvironmentDirectory(const wchar_t* variableName) {
@@ -43,6 +45,25 @@ std::wstring ResolveWindowsDirectory() {
     }
     value.resize(written);
     return value;
+}
+std::string WideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return std::string();
+    }
+    const int required = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return std::string();
+    }
+    std::string result(static_cast<size_t>(required), '\0');
+    const int written = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
+    if (written != required) {
+        return std::string();
+    }
+    return result;
 }
 } // namespace
 
@@ -253,9 +274,17 @@ namespace Oblivion {
         }
         std::transform(gameDir.begin(), gameDir.end(), gameDir.begin(), ::towlower);
 
-        // Resolve exempt roots once per scan. The game directory itself is never
-        // exempted by location alone, even when installed below Program Files.
+        // Resolve trust-policy roots once per scan. Do not exempt every module
+        // under the Windows directory: folders such as Windows\\Temp are not
+        // protected system module directories.
         const std::wstring windowsDirectory = ResolveWindowsDirectory();
+        const std::vector<std::wstring> protectedWindowsRoots = windowsDirectory.empty()
+            ? std::vector<std::wstring>()
+            : std::vector<std::wstring>{
+                windowsDirectory + L"\\System32",
+                windowsDirectory + L"\\SysWOW64",
+                windowsDirectory + L"\\WinSxS"
+            };
         const std::wstring programFiles = ReadEnvironmentDirectory(L"ProgramFiles");
         const std::wstring programFilesX86 = ReadEnvironmentDirectory(L"ProgramFiles(x86)");
 
@@ -283,32 +312,52 @@ namespace Oblivion {
                 std::wstring modulePathStr = modulePath;
                 std::transform(modulePathStr.begin(), modulePathStr.end(), modulePathStr.begin(), ::towlower);
 
-                // Never skip a game-local module based only on its parent directory:
-                // Ragnarok is commonly installed under Program Files, and the old substring
-                // checks also skipped unrelated paths such as C:\\Games\\Windows\\Injected.dll.
                 const bool isGameModule =
                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, gameDir);
-
-                if (!isGameModule && !windowsDirectory.empty() &&
-                    Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, windowsDirectory)) {
-                    continue; // Actual Windows directory, not any path containing "\\windows\\"
+                bool isProtectedWindowsModule = false;
+                for (const auto& root : protectedWindowsRoots) {
+                    if (Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, root)) {
+                        isProtectedWindowsModule = true;
+                        break;
+                    }
                 }
 
-                // Keep the compatibility exemption for third-party Program Files modules,
-                // but never let it suppress modules loaded from the game directory.
                 const bool isUnderProgramFiles =
                     (!programFiles.empty() &&
                      Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFiles)) ||
                     (!programFilesX86.empty() &&
                      Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFilesX86));
-                if (!isGameModule && isUnderProgramFiles) {
+
+                // Modules are no longer exempted merely because they live under
+                // Windows or Program Files. A valid Authenticode signature is
+                // required for third-party signed components in those protected
+                // locations; unsigned/invalid files are still rejected.
+                const bool allowAnyValidSigner =
+                    !isGameModule && (isProtectedWindowsModule || isUnderProgramFiles);
+
+                std::wstring moduleName(me32.szModule);
+                const ModuleTrustResult trustResult = IsModuleTrusted(
+                    moduleName, modulePath, gameDir, allowAnyValidSigner);
+
+                if (trustResult == ModuleTrustResult::Inconclusive) {
+                    // Infrastructure/provider errors are not proof of cheating.
+                    // Report once per resolved path and retry on later scans.
+                    const std::wstring warningKey =
+                        Oblivion::PathPolicy::NormalizeWindowsPath(modulePath);
+                    if (m_reportedUnverifiableModules.size() < 4096 &&
+                        m_reportedUnverifiableModules.insert(warningKey).second) {
+                        const std::wstring detailsWide =
+                            L"Module signature verification was inconclusive; no kick was issued | Path: " +
+                            modulePath;
+                        const std::string detailsUtf8 = WideToUtf8(detailsWide);
+                        if (!detailsUtf8.empty()) {
+                            ReportViolationSoft("MODULE_SIGNATURE_UNVERIFIABLE", detailsUtf8);
+                        }
+                    }
                     continue;
                 }
 
-                // Hanya periksa modul yang berasal dari folder game atau folder lain yang mencurigakan
-                // (seperti modul yang di-inject dari cheat engine, wpe, rpe, openkore)
-                std::wstring moduleName(me32.szModule);
-                if (!IsModuleTrusted(me32.hModule, moduleName, modulePath, gameDir)) {
+                if (trustResult == ModuleTrustResult::Untrusted) {
                     // Modul tidak tepercaya!
                     std::wstring message = L"Modul tidak tepercaya (tidak ditandatangani atau penerbit tidak dikenal) terdeteksi: ";
                     message += me32.szModule;
@@ -341,19 +390,17 @@ namespace Oblivion {
         CloseHandle(hSnapshot);
     }
 
-    bool DigitalSignatureValidator::IsModuleTrusted(
-        HMODULE hModule,
+    DigitalSignatureValidator::ModuleTrustResult DigitalSignatureValidator::IsModuleTrusted(
         std::wstring& moduleName,
         const std::wstring& filePath,
-        const std::wstring& gameDirectory) {
+        const std::wstring& gameDirectory,
+        bool allowAnyValidSigner) {
         if (filePath.empty()) {
-            return false; // Tidak bisa mendapatkan path lengkap, anggap tidak tepercaya
+            return ModuleTrustResult::Untrusted;
         }
 
-        // A filename-only allowlist is not sufficient: an unsigned DLL with a
-        // familiar name could be loaded from a temp/download folder or another
-        // unrelated location. Only preserve the legacy unsigned-DLL exemption
-        // when the loaded module is actually inside this game's directory.
+        // Legacy unsigned libraries are only exempt when both their exact filename
+        // is allowlisted and the loaded module resolves inside the game directory.
         std::wstring moduleNameLower = moduleName;
         std::transform(moduleNameLower.begin(), moduleNameLower.end(), moduleNameLower.begin(), ::towlower);
         bool isAllowlistedName = false;
@@ -368,12 +415,10 @@ namespace Oblivion {
 
         if (Oblivion::PathPolicy::CanTrustUnsignedModuleByName(
                 isAllowlistedName, filePath, gameDirectory)) {
-            return true; // Legacy unsigned DLL exemption restricted to the game directory
+            return ModuleTrustResult::Trusted;
         }
 
-        std::wstring cacheKey = filePath;
-        std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
-
+        const std::wstring cacheKey = Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
         WIN32_FILE_ATTRIBUTE_DATA attributes{};
         const bool hasAttributes = GetFileAttributesExW(
             filePath.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
@@ -385,78 +430,53 @@ namespace Oblivion {
             if (cached != m_moduleTrustCache.end() &&
                 cached->second.fileSize == size.QuadPart &&
                 CompareFileTime(&cached->second.lastWriteTime, &attributes.ftLastWriteTime) == 0) {
-                return cached->second.isTrusted;
+                return cached->second.isTrusted
+                    ? ModuleTrustResult::Trusted
+                    : ModuleTrustResult::Untrusted;
             }
         }
 
-        // Catatan: Pengecekan folder Windows system dan Program Files sudah dilakukan di PerformScan()
-        // Jadi fungsi ini hanya akan dipanggil untuk modul yang berasal dari folder game atau folder mencurigakan
-
-        // Struktur untuk WinVerifyTrust
-        WINTRUST_FILE_INFO fileInfo = { 0 };
-        fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
-        fileInfo.pcwszFilePath = filePath.c_str();
-        fileInfo.hFile = NULL;
-        fileInfo.pgKnownSubject = NULL;
-
-        WINTRUST_DATA winTrustData = { 0 };
-        winTrustData.cbStruct = sizeof(WINTRUST_DATA);
-        winTrustData.pPolicyCallbackData = NULL;
-        winTrustData.pSIPClientData = NULL;
-        winTrustData.dwUIChoice = WTD_UI_NONE;
-        winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
-        winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
-        winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
-        winTrustData.hWVTStateData = NULL;
-        winTrustData.pwszURLReference = NULL;
-        winTrustData.dwProvFlags = WTD_SAFER_FLAG;
-        winTrustData.dwUIContext = 0;
-        winTrustData.pFile = &fileInfo;
-
-        GUID policyGUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-        // Verifikasi signature
-        LONG result = WinVerifyTrust(NULL, &policyGUID, &winTrustData);
-
-        bool isSignatureValid = (result == ERROR_SUCCESS);
-
-        // Cleanup state
-        winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
-        WinVerifyTrust(NULL, &policyGUID, &winTrustData);
-
-        if (!isSignatureValid) {
-            if (hasAttributes) {
-                const ULARGE_INTEGER size = {
-                    attributes.nFileSizeLow, attributes.nFileSizeHigh
-                };
-                m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
-            }
-            return false; // Signature tidak valid atau tidak ada
-        }
-
-        // Jika signature valid, periksa penerbitnya
         std::wstring publisherName;
-        if (GetCertificateSubjectName(hModule, publisherName)) {
-            for (const auto& trustedName : m_trustedPublishers) {
-                if (publisherName.find(trustedName) != std::wstring::npos) {
-                    if (hasAttributes) {
-                        const ULARGE_INTEGER size = {
-                            attributes.nFileSizeLow, attributes.nFileSizeHigh
-                        };
-                        m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, true };
-                    }
-                    return true; // Penerbit tepercaya
-                }
-            }
+        const SignatureVerdict verdict = GetSignatureVerdict(filePath, publisherName);
+        Oblivion::ModuleTrustPolicy::SignatureEvidence evidence;
+        switch (verdict) {
+        case SignatureVerdict::TrustedPublisher:
+            evidence = Oblivion::ModuleTrustPolicy::SignatureEvidence::TrustedPublisher;
+            break;
+        case SignatureVerdict::UntrustedPublisher:
+            evidence = Oblivion::ModuleTrustPolicy::SignatureEvidence::ValidUntrustedPublisher;
+            break;
+        case SignatureVerdict::Unsigned:
+            evidence = Oblivion::ModuleTrustPolicy::SignatureEvidence::Unsigned;
+            break;
+        case SignatureVerdict::InvalidSignature:
+            evidence = Oblivion::ModuleTrustPolicy::SignatureEvidence::InvalidSignature;
+            break;
+        case SignatureVerdict::VerificationError:
+        default:
+            evidence = Oblivion::ModuleTrustPolicy::SignatureEvidence::Inconclusive;
+            break;
         }
 
+        const auto decision = Oblivion::ModuleTrustPolicy::Evaluate(
+            evidence, allowAnyValidSigner, !publisherName.empty());
+        if (decision == Oblivion::ModuleTrustPolicy::Decision::Inconclusive) {
+            // Do not cache inconclusive provider errors: retry after the system
+            // trust state changes, and let the caller report this softly.
+            return ModuleTrustResult::Inconclusive;
+        }
+
+        const bool isTrusted = decision == Oblivion::ModuleTrustPolicy::Decision::Trusted;
         if (hasAttributes) {
             const ULARGE_INTEGER size = {
                 attributes.nFileSizeLow, attributes.nFileSizeHigh
             };
-            m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
+            m_moduleTrustCache[cacheKey] = {
+                size.QuadPart, attributes.ftLastWriteTime, isTrusted
+            };
         }
-        return false; // Penerbit tidak ada di whitelist
+
+        return isTrusted ? ModuleTrustResult::Trusted : ModuleTrustResult::Untrusted;
     }
 
     bool DigitalSignatureValidator::GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName) {
@@ -669,7 +689,7 @@ namespace Oblivion {
                 for (const auto& trustedPublisher : m_trustedPublishers) {
                     // A trusted brand appearing as a substring is not enough:
                     // exact publisher identity avoids names such as "Microsoft Corporation Fake".
-                    if (Oblivion::SignaturePolicy::IsExactPublisherMatch(
+                    if (Oblivion::SignaturePolicy::IsExpectedPublisherMatch(
                             actualPublisher, trustedPublisher)) {
                         return SignatureVerdict::TrustedPublisher;
                     }
