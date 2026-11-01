@@ -796,9 +796,11 @@ void HandleClient(SOCKET clientSocket) {
                 std::cout << "[ERROR] Invalid protocol format: " << parsed.errorMessage << std::endl;
                 std::cout << "[DEBUG] Expected format: TYPE:DETAILS:HWID:SECRET;" << std::endl;
                 
-                // Log attempt dengan data mentah (truncated untuk keamanan)
-                std::string truncatedReport = report.length() > 100 ? report.substr(0, 100) + "..." : report;
-                LogViolation("MALFORMED_REQUEST", parsed.errorMessage + " | Data: " + truncatedReport, extractedHwid);
+                // Never log a raw malformed frame: it may contain the shared
+                // secret in its final field, even when parsing fails early.
+                LogViolation("MALFORMED_REQUEST",
+                    parsed.errorMessage + " | Raw request omitted to protect credentials",
+                    extractedHwid);
                 
                 // Kirim error response dan tutup koneksi
                 const char* errorResponse = "ERROR:INVALID_FORMAT;";
