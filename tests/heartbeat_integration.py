@@ -229,6 +229,27 @@ def verify_missing_secret_is_rejected(server_binary: Path) -> None:
                 f"exit={result.returncode}, output={output!r}"
             )
 
+        secret_bytes = TEST_SECRET.encode("ascii")
+        encoded = bytes(byte ^ (0x5A + ((index * 7) % 0x3F))
+                        for index, byte in enumerate(secret_bytes))
+        secret_path = isolated_server.parent / "secret.dat"
+        secret_path.write_bytes(encoded)
+        secret_path.chmod(0o644)
+        insecure = subprocess.run(
+            [str(isolated_server)],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        insecure_output = (insecure.stdout or "") + (insecure.stderr or "")
+        if insecure.returncode == 0 or "wajib dikonfigurasi" not in insecure_output:
+            raise RuntimeError(
+                "server accepted a group/world-readable secret.dat: "
+                f"exit={insecure.returncode}, output={insecure_output!r}"
+            )
+
 
 def verify_weak_secret_is_rejected(server_binary: Path) -> None:
     env = os.environ.copy()
