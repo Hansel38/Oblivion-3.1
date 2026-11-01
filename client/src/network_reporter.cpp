@@ -426,8 +426,9 @@ namespace {
             cfg.tlsPinSpec.clear();
         }
 #else
-        // ---- 3) Default dari kode (fallback terakhir) ----
-        if (cfg.endpoints.empty()) {
+        // No hard-coded endpoint fallback: require explicit runtime configuration
+        // in development builds as well. Release uses its provisioned policy above.
+        if (cfg.endpoints.empty() && !fallbackHost.empty()) {
             AppendEndpointList(cfg, fallbackHost + ":" + std::to_string(cfg.defaultPort));
         }
 #endif
