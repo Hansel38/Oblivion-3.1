@@ -623,9 +623,11 @@ namespace {
             return true;
         }
 
-        // Defensive: publisher ASLI tetap mengandung publisher yang diharapkan
-        // (mis. perbedaan penulisan/legal name) -> anggap sah.
-        if (!verifiedPublisher.empty()) {
+        // A publisher-name fallback is valid only after WinVerifyTrust succeeded
+        // and classified the file as signed but outside the global publisher list.
+        // Never let an extracted certificate override an invalid/broken signature.
+        if (verdict == Oblivion::DigitalSignatureValidator::SignatureVerdict::UntrustedPublisher &&
+            !verifiedPublisher.empty()) {
             const std::wstring lowerActual = ToLowerCopy(verifiedPublisher);
             const std::wstring lowerExpected = ToLowerCopy(expectedPublisher);
             if (lowerActual.find(lowerExpected) != std::wstring::npos) {

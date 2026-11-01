@@ -2,6 +2,7 @@
 #include "digital_signature_validator.h"
 #include "win_path_utils.h"
 #include "../../common/windows_path_policy.h"
+#include "../../common/authenticode_verdict_policy.h"
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
@@ -515,8 +516,9 @@ namespace Oblivion {
         return result;
     }
 
-    // Static function untuk verifikasi file signature (untuk process verification)
-    bool DigitalSignatureValidator::VerifyFileSignature(const std::wstring& filePath) {
+    // Preserve the actual WinVerifyTrust status so a tampered file is not
+    // mistaken for an infrastructure-only verification failure.
+    LONG DigitalSignatureValidator::VerifyFileSignatureStatus(const std::wstring& filePath) {
         WINTRUST_FILE_INFO fileInfo = { 0 };
         fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
         fileInfo.pcwszFilePath = filePath.c_str();
@@ -539,13 +541,12 @@ namespace Oblivion {
 
         GUID policyGUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
 
-        LONG result = WinVerifyTrust(NULL, &policyGUID, &winTrustData);
+        const LONG result = WinVerifyTrust(NULL, &policyGUID, &winTrustData);
 
-        // Cleanup
+        // Cleanup state without overwriting the original verification status.
         winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
         WinVerifyTrust(NULL, &policyGUID, &winTrustData);
-
-        return (result == ERROR_SUCCESS);
+        return result;
     }
 
     // Static function untuk mendapatkan publisher dari file
@@ -606,7 +607,7 @@ namespace Oblivion {
     // Static function untuk verifikasi process signature dengan expected publisher
     bool DigitalSignatureValidator::VerifyProcessSignature(const std::wstring& processPath, const std::wstring& expectedPublisher) {
         // Step 1: Verify digital signature
-        if (!VerifyFileSignature(processPath)) {
+        if (VerifyFileSignatureStatus(processPath) != ERROR_SUCCESS) {
             // Signature tidak valid atau tidak ada
             return false;
         }
@@ -646,13 +647,18 @@ namespace Oblivion {
             return SignatureVerdict::VerificationError;
         }
 
-        // GetFilePublisher berhasil selama file memiliki signature Authenticode yang
-        // bisa dibaca, terlepas dari apakah trust chain-nya dapat divalidasi. Hasil ini
-        // dipakai untuk membedakan file unsigned dari file yang gagal diverifikasi.
+        // Certificate extraction alone does not prove the PE image signature is
+        // valid: a modified executable can retain its embedded PKCS#7 certificate.
+        // Keep the trust-provider status so known integrity failures are distinct
+        // from chain/network/provider failures.
         std::wstring actualPublisher;
         const bool hasEmbeddedSignature = GetFilePublisher(filePath, actualPublisher);
+        const LONG verificationStatus = VerifyFileSignatureStatus(filePath);
+        const auto resultClass = Oblivion::SignaturePolicy::ClassifyWinTrustResult(
+            static_cast<std::uint32_t>(verificationStatus));
 
-        if (VerifyFileSignature(filePath)) {
+        switch (resultClass) {
+        case Oblivion::SignaturePolicy::WinTrustResultClass::Trusted:
             publisherName = actualPublisher;
 
             if (!actualPublisher.empty()) {
@@ -669,11 +675,24 @@ namespace Oblivion {
             }
 
             return SignatureVerdict::UntrustedPublisher;
+
+        case Oblivion::SignaturePolicy::WinTrustResultClass::Rejected:
+            // Do not expose the extracted publisher to the caller as a fallback:
+            // BAD_DIGEST/revoked/distrusted signatures must never be whitelisted.
+            return SignatureVerdict::InvalidSignature;
+
+        case Oblivion::SignaturePolicy::WinTrustResultClass::NoSignature:
+            return SignatureVerdict::Unsigned;
+
+        case Oblivion::SignaturePolicy::WinTrustResultClass::Inconclusive:
+            // A nonzero status not recognized as a definite signature failure may
+            // reflect unavailable trust-chain infrastructure. Preserve the existing
+            // anti-false-positive behavior only when an embedded signature exists.
+            return hasEmbeddedSignature
+                ? SignatureVerdict::VerificationError
+                : SignatureVerdict::Unsigned;
         }
 
-        // WinVerifyTrust gagal. Tidak adanya signature sama sekali = Unsigned,
-        // sedangkan signature yang ada tetapi tidak dapat divalidasi = VerificationError
-        // (jangan dianggap spoofing).
-        return hasEmbeddedSignature ? SignatureVerdict::VerificationError : SignatureVerdict::Unsigned;
+        return SignatureVerdict::VerificationError;
     }
 }
