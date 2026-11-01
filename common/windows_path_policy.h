@@ -44,4 +44,16 @@ inline bool IsPathWithinDirectory(
     return root.back() == L'\\' || path[root.size()] == L'\\';
 }
 
+
+// Preserve a legacy unsigned-DLL exemption only when both the filename is
+// explicitly allowlisted and the resolved module path stays within the game
+// installation. A matching name from a temp or unrelated directory is not
+// sufficient evidence of trust.
+inline bool CanTrustUnsignedModuleByName(
+    bool isAllowlistedName,
+    const std::wstring& modulePath,
+    const std::wstring& gameDirectory) {
+    return isAllowlistedName && IsPathWithinDirectory(modulePath, gameDirectory);
+}
+
 } // namespace Oblivion::PathPolicy

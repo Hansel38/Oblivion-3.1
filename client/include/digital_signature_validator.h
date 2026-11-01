@@ -50,7 +50,11 @@ namespace Oblivion {
         };
 
         // Fungsi untuk memeriksa apakah sebuah modul tepercaya
-        bool IsModuleTrusted(HMODULE hModule, std::wstring& moduleName);
+        bool IsModuleTrusted(
+            HMODULE hModule,
+            std::wstring& moduleName,
+            const std::wstring& filePath,
+            const std::wstring& gameDirectory);
 
         // Fungsi untuk mendapatkan nama penerbit dari sertifikat
         bool GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName);

@@ -38,6 +38,29 @@ int main() {
     Expect(!IsPathWithinDirectory(L"", L"C:\\Windows"), "empty candidate is rejected");
     Expect(!IsPathWithinDirectory(L"C:\\Windows\\x.dll", L""), "empty root is rejected");
 
+
+    using Oblivion::PathPolicy::CanTrustUnsignedModuleByName;
+    Expect(CanTrustUnsignedModuleByName(
+        true,
+        L"C:\\Games\\Ragnarok\\client.dll",
+        L"C:\\Games\\Ragnarok"),
+        "an allowlisted unsigned DLL under the game directory retains compatibility");
+    Expect(!CanTrustUnsignedModuleByName(
+        true,
+        L"C:\\Users\\Player\\AppData\\Local\\Temp\\client.dll",
+        L"C:\\Games\\Ragnarok"),
+        "an allowlisted filename outside the game directory is not trusted");
+    Expect(!CanTrustUnsignedModuleByName(
+        false,
+        L"C:\\Games\\Ragnarok\\unknown.dll",
+        L"C:\\Games\\Ragnarok"),
+        "an unlisted filename is not accepted by the unsigned-DLL exemption");
+    Expect(!CanTrustUnsignedModuleByName(
+        true,
+        L"C:\\Games\\RagnarokBackup\\client.dll",
+        L"C:\\Games\\Ragnarok"),
+        "a sibling directory sharing a prefix is not trusted");
+
     std::cout << "Windows path policy regression tests passed\n";
     return 0;
 }
