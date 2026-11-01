@@ -666,12 +666,17 @@ namespace Oblivion {
         winTrustData.pPolicyCallbackData = NULL;
         winTrustData.pSIPClientData = NULL;
         winTrustData.dwUIChoice = WTD_UI_NONE;
-        winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+        // Check certificate revocation through the full signer chain. Network or
+        // provider failures remain classified as inconclusive (soft report), but a
+        // certificate explicitly reported as revoked is rejected by the verdict policy.
+        winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
         winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
         winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
         winTrustData.hWVTStateData = NULL;
         winTrustData.pwszURLReference = NULL;
-        winTrustData.dwProvFlags = WTD_SAFER_FLAG;
+        // WTD_SAFER_FLAG is documented as unsupported. Disable legacy MD2/MD4
+        // verification instead of relying on that obsolete provider flag.
+        winTrustData.dwProvFlags = WTD_DISABLE_MD2_MD4;
         winTrustData.dwUIContext = 0;
         winTrustData.pFile = &fileInfo;
 
