@@ -52,7 +52,7 @@ constexpr WinTrustResultClass ClassifyWinTrustResult(std::uint32_t status) noexc
 
 
 inline std::wstring NormalizePublisherName(std::wstring publisher) {
-    auto isSpace = [](wchar_t ch) { return std::iswspace(static_cast<wint_t>(ch)) != 0; };
+    auto isSpace = [](wchar_t ch) { return std::iswspace(static_cast<std::wint_t>(ch)) != 0; };
     while (!publisher.empty() && isSpace(publisher.front())) {
         publisher.erase(publisher.begin());
     }
@@ -60,7 +60,7 @@ inline std::wstring NormalizePublisherName(std::wstring publisher) {
         publisher.pop_back();
     }
     for (wchar_t& ch : publisher) {
-        ch = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
+        ch = static_cast<wchar_t>(std::towlower(static_cast<std::wint_t>(ch)));
     }
     return publisher;
 }
