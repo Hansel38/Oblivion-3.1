@@ -18,6 +18,7 @@
 #include <cwctype>
 #include <map>
 #include <sstream>
+#include <utility>
 
 // Forward declarations
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
@@ -779,7 +780,8 @@ namespace Oblivion {
             cached->second.volumeSerial == initialStamp.volumeSerial &&
             cached->second.fileIndexHigh == initialStamp.fileIndexHigh &&
             cached->second.fileIndexLow == initialStamp.fileIndexLow &&
-            cached->second.changeTime == initialStamp.changeTime) {
+            cached->second.changeTime == initialStamp.changeTime &&
+            cached->second.allowAnyValidSigner == allowAnyValidSigner) {
             return cached->second.isTrusted
                 ? ModuleTrustResult::Trusted
                 : ModuleTrustResult::Untrusted;
@@ -817,6 +819,9 @@ namespace Oblivion {
         }
 
         if (trustResult != ModuleTrustResult::Inconclusive) {
+            if (m_moduleTrustCache.size() >= 512 && m_moduleTrustCache.find(cacheKey) == m_moduleTrustCache.end()) {
+                m_moduleTrustCache.clear();
+            }
             m_moduleTrustCache[cacheKey] = {
                 initialStamp.size,
                 initialStamp.lastWriteTime,
@@ -824,6 +829,7 @@ namespace Oblivion {
                 initialStamp.fileIndexHigh,
                 initialStamp.fileIndexLow,
                 initialStamp.changeTime,
+                allowAnyValidSigner,
                 trustResult == ModuleTrustResult::Trusted
             };
         }
