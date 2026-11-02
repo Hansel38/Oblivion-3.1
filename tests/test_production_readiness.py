@@ -36,6 +36,19 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn(r"std::wstring path(32768, L'\0');", source)
         self.assertNotIn(r"std::wstring path(32768, L'\\0');", source)
 
+    def test_module_scanner_verifies_protected_external_paths(self) -> None:
+        source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "client" / "include" / "digital_signature_validator.h").read_text(encoding="utf-8")
+        self.assertIn("SHGetKnownFolderPath", source)
+        self.assertIn("FOLDERID_ProgramFiles", source)
+        self.assertIn("protectedWindowsRoots", source)
+        self.assertIn("ModuleTrustResult::Inconclusive", source)
+        self.assertIn("GetSignatureVerdict(filePath, publisherName)", source)
+        self.assertNotIn('ReadEnvironmentDirectory(L"ProgramFiles")', source)
+        self.assertNotIn("publisherName.find(trustedName)", source)
+        self.assertIn("LONGLONG changeTime;", header)
+        self.assertIn("m_reportedUnverifiableModules", header)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)
