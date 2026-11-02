@@ -26,11 +26,12 @@ TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 
 PATH_POLICY_TEST_TARGET := $(BUILD_DIR)/windows_path_policy_test
 AUTHENTICODE_POLICY_TEST_TARGET := $(BUILD_DIR)/authenticode_verdict_policy_test
+BOUNDED_LOG_TEST_TARGET := $(BUILD_DIR)/bounded_log_file_test
 LISTEN_PORT_TEST_TARGET := $(BUILD_DIR)/server_listen_port_test
 SERVER_YAML_TEST_TARGET := $(BUILD_DIR)/server_yaml_config_test
 CLIENT_YAML_TEST_TARGET := $(BUILD_DIR)/client_yaml_config_test
 
-test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET)
+test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET) $(BOUNDED_LOG_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HWID_TEST_TARGET)
 	./$(PATH_POLICY_TEST_TARGET)
@@ -38,6 +39,7 @@ test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICO
 	./$(LISTEN_PORT_TEST_TARGET)
 	./$(SERVER_YAML_TEST_TARGET)
 	./$(CLIENT_YAML_TEST_TARGET)
+	./$(BOUNDED_LOG_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
@@ -71,6 +73,9 @@ $(SERVER_YAML_TEST_TARGET): ../tests/server_yaml_config_test.cpp ../common/serve
 
 $(CLIENT_YAML_TEST_TARGET): ../tests/client_yaml_config_test.cpp ../common/client_yaml_config.h ../common/server_yaml_config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
+
+$(BOUNDED_LOG_TEST_TARGET): ../tests/bounded_log_file_test.cpp ../common/bounded_log_file.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(TLS_PROBE_TARGET): ../tests/tls_client_probe.cpp ../common/tls_transport.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< -lssl -lcrypto
