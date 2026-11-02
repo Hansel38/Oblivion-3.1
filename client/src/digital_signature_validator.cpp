@@ -241,6 +241,7 @@ namespace Oblivion {
     DigitalSignatureValidator::~DigitalSignatureValidator() {}
 
     void DigitalSignatureValidator::PerformScan() {
+        ReportProgress();
         // Dapatkan path folder game untuk membandingkan dengan path modul
         const std::wstring gameExePath = Oblivion::WinPath::GetModulePath(nullptr);
         if (gameExePath.empty()) {
@@ -269,6 +270,7 @@ namespace Oblivion {
 
         if (Module32FirstW(hSnapshot, &me32)) {
             do {
+                ReportProgress();
                 // Lewati modul utama (rro.exe) karena seringkali tidak ditandatangani
                 if (me32.hModule == GetModuleHandle(NULL)) {
                     continue;
@@ -308,6 +310,7 @@ namespace Oblivion {
                 // Hanya periksa modul yang berasal dari folder game atau folder lain yang mencurigakan
                 // (seperti modul yang di-inject dari cheat engine, wpe, rpe, openkore)
                 std::wstring moduleName(me32.szModule);
+                ReportProgress();
                 if (!IsModuleTrusted(me32.hModule, moduleName, modulePath, gameDir)) {
                     // Modul tidak tepercaya!
                     std::wstring message = L"Modul tidak tepercaya (tidak ditandatangani atau penerbit tidak dikenal) terdeteksi: ";
