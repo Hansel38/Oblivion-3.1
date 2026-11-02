@@ -47,7 +47,10 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertNotIn('ReadEnvironmentDirectory(L"ProgramFiles")', source)
         self.assertNotIn("publisherName.find(trustedName)", source)
         self.assertIn("LONGLONG changeTime;", header)
-        self.assertIn("m_reportedUnverifiableModules", header)
+        self.assertIn("m_reportedSignatureProviderIssue", header)
+        self.assertIn("VerifyCatalogSignatureStatus", source)
+        self.assertIn("WTD_CHOICE_CATALOG", source)
+        self.assertIn("return SignatureVerdict::VerificationError;", source)
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
