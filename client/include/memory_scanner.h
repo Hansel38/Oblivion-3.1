@@ -13,7 +13,8 @@ namespace Oblivion {
     // Struktur untuk menyimpan baseline yang diverifikasi dari disk
     struct ExecutableRegion {
         uint32_t rva;               // PE RVA selalu 32-bit, bahkan pada proses x64
-        size_t size;                // Ukuran region dalam bytes
+        size_t size;                // Ukuran virtual section dalam bytes
+        size_t memoryHashSize;      // Panjang persis yang dipakai saat CRC baseline memori dibuat
         uint32_t diskCRC32;         // CRC32 dari file di disk (ground truth)
         uint32_t memoryCRC32;       // CRC32 dari memori saat pertama load (untuk cross-check)
         bool isCodeSection;         // Apakah ini code section (.text)
