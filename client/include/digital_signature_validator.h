@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Oblivion {
     class DigitalSignatureValidator {
@@ -47,15 +48,25 @@ namespace Oblivion {
         struct ModuleTrustCacheEntry {
             ULONGLONG fileSize;
             FILETIME lastWriteTime;
+            DWORD volumeSerial;
+            DWORD fileIndexHigh;
+            DWORD fileIndexLow;
+            LONGLONG changeTime;
             bool isTrusted;
         };
 
-        // Fungsi untuk memeriksa apakah sebuah modul tepercaya
-        bool IsModuleTrusted(
-            HMODULE hModule,
+        enum class ModuleTrustResult {
+            Trusted,
+            Untrusted,
+            Inconclusive
+        };
+
+        // Trust-provider errors are not proof that the loaded module is malicious.
+        ModuleTrustResult IsModuleTrusted(
             std::wstring& moduleName,
             const std::wstring& filePath,
-            const std::wstring& gameDirectory);
+            const std::wstring& gameDirectory,
+            bool allowAnyValidSigner);
 
         // Fungsi untuk mendapatkan nama penerbit dari sertifikat
         bool GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName);
@@ -69,8 +80,8 @@ namespace Oblivion {
         // Daftar DLL yang diizinkan meskipun tidak ditandatangani (DLL legitimate dari game/engine)
         static const std::vector<std::wstring> m_allowedUnsignedDlls;
 
-        // WinVerifyTrust relatif mahal. Cache dibatalkan otomatis bila ukuran atau
-        // waktu modifikasi file berubah, sehingga modul yang diganti tetap diverifikasi.
+        // Cache identity includes file ID and NTFS ChangeTime, not only path/mtime.
         std::unordered_map<std::wstring, ModuleTrustCacheEntry> m_moduleTrustCache;
+        std::unordered_set<std::wstring> m_reportedUnverifiableModules;
     };
 }
