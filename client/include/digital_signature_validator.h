@@ -51,6 +51,7 @@ namespace Oblivion {
             DWORD fileIndexHigh;
             DWORD fileIndexLow;
             LONGLONG changeTime;
+            bool allowAnyValidSigner;
             bool isTrusted;
         };
 
