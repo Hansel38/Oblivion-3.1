@@ -8,6 +8,7 @@
 #include <map>
 #include <unordered_set>
 #include <chrono>
+#include <functional>
 
 namespace Oblivion {
     // Struktur untuk menyimpan baseline yang diverifikasi dari disk
@@ -48,7 +49,17 @@ namespace Oblivion {
         // Fungsi utama untuk memindai memori
         void PerformScan();
 
+        // Dipanggil ketika scanner maju melalui phase/section yang memakan waktu.
+        void SetProgressCallback(std::function<void()> callback) {
+            m_progressCallback = callback;
+        }
+
     private:
+        void ReportProgress() const {
+            if (m_progressCallback) {
+                try { m_progressCallback(); } catch (...) {}
+            }
+        }
         // === LAYER 1: PE Header & Structure Validation ===
         bool ValidatePEStructure(const std::vector<uint8_t>& fileData);
         bool ParsePEHeaders(const std::vector<uint8_t>& fileData, 
@@ -106,5 +117,6 @@ namespace Oblivion {
         uint32_t m_baselineChecksum;                       // Checksum untuk baseline integrity
         std::wstring m_executablePath;                     // Path ke executable
         std::chrono::steady_clock::time_point m_lastDiskVerification;
+        std::function<void()> m_progressCallback;
     };
 }
