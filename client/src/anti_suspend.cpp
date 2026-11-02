@@ -51,10 +51,11 @@ namespace Oblivion {
     }
 
     void AntiSuspend::GuardianLoop() {
-        // Timeout dalam milidetik. Harus lebih besar dari total waktu scan + interval tidur ProcessWatcher.
-        // Signature verification bisa lambat (WinVerifyTrust, disk I/O), jadi timeout diperbesar.
-        // Advanced heuristics + signature check bisa memakan 10-15 detik pada sistem lambat.
-        const auto timeout = std::chrono::milliseconds(20000); // 20 detik (sebelumnya 8 detik)
+        // Timeout berlaku untuk tidak adanya progres, bukan total durasi semua scan.
+        // MemoryScanner dan DigitalSignatureValidator sekarang memperbarui heartbeat
+        // pada tiap section/modul; 30 detik memberi ruang untuk satu panggilan API
+        // sistem yang lambat tanpa membiarkan watcher yang benar-benar macet terlalu lama.
+        const auto timeout = std::chrono::milliseconds(30000);
 
         while (m_isRunning) {
             // Guardian tidur sebentar sebelum memeriksa
