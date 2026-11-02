@@ -6,6 +6,8 @@
 #include <tlhelp32.h>
 #include <wintrust.h>
 #include <wincrypt.h>
+#include <mscat.h>
+#include <bcrypt.h>
 #include <psapi.h>
 #include <softpub.h>
 #include <shlobj.h>
@@ -117,6 +119,269 @@ bool SameModuleFileStamp(
         left.fileIndexHigh == right.fileIndexHigh &&
         left.fileIndexLow == right.fileIndexLow &&
         left.changeTime == right.changeTime;
+}
+
+
+using CatAcquireContext2Fn = BOOL (WINAPI*)(
+    HCATADMIN*, const GUID*, PCWSTR, PCCERT_STRONG_SIGN_PARA, DWORD);
+using CatCalcHash2Fn = BOOL (WINAPI*)(HCATADMIN, HANDLE, DWORD*, BYTE*, DWORD);
+using CatEnumFromHashFn = HCATINFO (WINAPI*)(HCATADMIN, BYTE*, DWORD, DWORD, HCATINFO*);
+using CatCatalogInfoFn = BOOL (WINAPI*)(HCATINFO, CATALOG_INFO*, DWORD);
+using CatReleaseCatalogFn = BOOL (WINAPI*)(HCATADMIN, HCATINFO, DWORD);
+using CatReleaseContextFn = BOOL (WINAPI*)(HCATADMIN, DWORD);
+
+LONG Win32ErrorToTrustStatus(DWORD error) {
+    if (error == ERROR_SUCCESS) {
+        error = ERROR_GEN_FAILURE;
+    }
+    return static_cast<LONG>(HRESULT_FROM_WIN32(error));
+}
+
+bool GetCatalogPublisherName(const std::wstring& catalogPath, std::wstring& publisherName) {
+    publisherName.clear();
+    HCERTSTORE store = nullptr;
+    HCRYPTMSG message = nullptr;
+    PCCERT_CONTEXT signerCertificate = nullptr;
+    PCERT_INFO signerInfo = nullptr;
+    bool success = false;
+
+    DWORD encoding = 0;
+    DWORD contentType = 0;
+    DWORD formatType = 0;
+    if (!CryptQueryObject(
+            CERT_QUERY_OBJECT_FILE,
+            catalogPath.c_str(),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED,
+            CERT_QUERY_FORMAT_FLAG_BINARY,
+            0,
+            &encoding,
+            &contentType,
+            &formatType,
+            &store,
+            &message,
+            nullptr)) {
+        return false;
+    }
+
+    DWORD signerInfoSize = 0;
+    if (!CryptMsgGetParam(
+            message, CMSG_SIGNER_CERT_INFO_PARAM, 0, nullptr, &signerInfoSize)) {
+        goto cleanup;
+    }
+
+    signerInfo = static_cast<PCERT_INFO>(LocalAlloc(LPTR, signerInfoSize));
+    if (signerInfo == nullptr) {
+        goto cleanup;
+    }
+    if (!CryptMsgGetParam(
+            message, CMSG_SIGNER_CERT_INFO_PARAM, 0, signerInfo, &signerInfoSize)) {
+        LocalFree(signerInfo);
+        signerInfo = nullptr;
+        goto cleanup;
+    }
+
+    signerCertificate = CertFindCertificateInStore(
+        store, encoding, 0, CERT_FIND_SUBJECT_CERT, signerInfo, nullptr);
+    LocalFree(signerInfo);
+    signerInfo = nullptr;
+    if (signerCertificate != nullptr) {
+        const DWORD nameSize = CertGetNameStringW(
+            signerCertificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, nullptr, 0);
+        if (nameSize > 1) {
+            std::vector<WCHAR> nameBuffer(nameSize);
+            const DWORD written = CertGetNameStringW(
+                signerCertificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr,
+                nameBuffer.data(), nameSize);
+            if (written > 1 && nameBuffer[written - 1] == L'\0') {
+                publisherName.assign(nameBuffer.data(), written - 1);
+                success = !publisherName.empty();
+            }
+        }
+        CertFreeCertificateContext(signerCertificate);
+        signerCertificate = nullptr;
+    }
+
+cleanup:
+    if (signerInfo != nullptr) {
+        LocalFree(signerInfo);
+    }
+    if (signerCertificate != nullptr) {
+        CertFreeCertificateContext(signerCertificate);
+    }
+    if (store != nullptr) {
+        CertCloseStore(store, 0);
+    }
+    if (message != nullptr) {
+        CryptMsgClose(message);
+    }
+    return success;
+}
+
+// Verify Windows catalog signatures for modules with no embedded PE signature.
+// Only SHA-256 catalog APIs are accepted; missing APIs yield an inconclusive result.
+LONG VerifyCatalogSignatureStatus(
+    const std::wstring& filePath,
+    std::wstring& publisherName) {
+    publisherName.clear();
+
+    HMODULE wintrustModule = LoadLibraryW(L"wintrust.dll");
+    if (wintrustModule == nullptr) {
+        return TRUST_E_PROVIDER_UNKNOWN;
+    }
+
+    const auto acquireContext2 = reinterpret_cast<CatAcquireContext2Fn>(
+        GetProcAddress(wintrustModule, "CryptCATAdminAcquireContext2"));
+    const auto calcHash2 = reinterpret_cast<CatCalcHash2Fn>(
+        GetProcAddress(wintrustModule, "CryptCATAdminCalcHashFromFileHandle2"));
+    const auto enumCatalog = reinterpret_cast<CatEnumFromHashFn>(
+        GetProcAddress(wintrustModule, "CryptCATAdminEnumCatalogFromHash"));
+    const auto getCatalogInfo = reinterpret_cast<CatCatalogInfoFn>(
+        GetProcAddress(wintrustModule, "CryptCATCatalogInfoFromContext"));
+    const auto releaseCatalog = reinterpret_cast<CatReleaseCatalogFn>(
+        GetProcAddress(wintrustModule, "CryptCATAdminReleaseCatalogContext"));
+    const auto releaseContext = reinterpret_cast<CatReleaseContextFn>(
+        GetProcAddress(wintrustModule, "CryptCATAdminReleaseContext"));
+
+    if (acquireContext2 == nullptr || calcHash2 == nullptr ||
+        enumCatalog == nullptr || getCatalogInfo == nullptr ||
+        releaseCatalog == nullptr || releaseContext == nullptr) {
+        FreeLibrary(wintrustModule);
+        return TRUST_E_PROVIDER_UNKNOWN;
+    }
+
+    HANDLE file = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const LONG error = Win32ErrorToTrustStatus(GetLastError());
+        FreeLibrary(wintrustModule);
+        return error;
+    }
+
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (!GetFileInformationByHandle(file, &fileInfo)) {
+        const LONG error = Win32ErrorToTrustStatus(GetLastError());
+        CloseHandle(file);
+        FreeLibrary(wintrustModule);
+        return error;
+    }
+    if ((fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        CloseHandle(file);
+        FreeLibrary(wintrustModule);
+        return TRUST_E_BAD_DIGEST;
+    }
+
+    HCATADMIN catalogAdmin = nullptr;
+    const BOOL acquired = acquireContext2(
+        &catalogAdmin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    if (!acquired || catalogAdmin == nullptr) {
+        const LONG error = Win32ErrorToTrustStatus(GetLastError());
+        CloseHandle(file);
+        FreeLibrary(wintrustModule);
+        return error;
+    }
+
+    DWORD hashLength = 0;
+    const BOOL sized = calcHash2(catalogAdmin, file, &hashLength, nullptr, 0);
+    if (!sized || hashLength == 0 || hashLength > 128) {
+        const LONG error = Win32ErrorToTrustStatus(GetLastError());
+        releaseContext(catalogAdmin, 0);
+        CloseHandle(file);
+        FreeLibrary(wintrustModule);
+        return error;
+    }
+
+    std::vector<BYTE> hash(hashLength);
+    const BOOL hashed = calcHash2(catalogAdmin, file, &hashLength, hash.data(), 0);
+    if (!hashed || hashLength != hash.size()) {
+        const LONG error = Win32ErrorToTrustStatus(GetLastError());
+        releaseContext(catalogAdmin, 0);
+        CloseHandle(file);
+        FreeLibrary(wintrustModule);
+        return error;
+    }
+
+    static constexpr wchar_t kHex[] = L"0123456789ABCDEF";
+    std::wstring memberTag;
+    memberTag.reserve(hash.size() * 2);
+    for (BYTE byte : hash) {
+        memberTag.push_back(kHex[(byte >> 4) & 0x0f]);
+        memberTag.push_back(kHex[byte & 0x0f]);
+    }
+
+    LONG bestFailure = TRUST_E_NOSIGNATURE;
+    bool foundCatalog = false;
+    HCATINFO catalogContext = nullptr;
+    while ((catalogContext = enumCatalog(
+                catalogAdmin, hash.data(), hashLength, 0, &catalogContext)) != nullptr) {
+        foundCatalog = true;
+        CATALOG_INFO catalogInfo{};
+        catalogInfo.cbStruct = sizeof(catalogInfo);
+        if (!getCatalogInfo(catalogContext, &catalogInfo, 0)) {
+            bestFailure = Win32ErrorToTrustStatus(GetLastError());
+            break;
+        }
+
+        WINTRUST_CATALOG_INFO trustCatalog{};
+        trustCatalog.cbStruct = sizeof(trustCatalog);
+        trustCatalog.pcwszCatalogFilePath = catalogInfo.wszCatalogFile;
+        trustCatalog.pcwszMemberTag = memberTag.c_str();
+        trustCatalog.pcwszMemberFilePath = filePath.c_str();
+        trustCatalog.hMemberFile = file;
+        trustCatalog.pbCalculatedFileHash = hash.data();
+        trustCatalog.cbCalculatedFileHash = hashLength;
+        trustCatalog.hCatAdmin = catalogAdmin;
+
+        WINTRUST_DATA trustData{};
+        trustData.cbStruct = sizeof(trustData);
+        trustData.dwUIChoice = WTD_UI_NONE;
+        trustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+        trustData.dwUnionChoice = WTD_CHOICE_CATALOG;
+        trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        trustData.dwProvFlags = WTD_DISABLE_MD2_MD4;
+        trustData.pCatalog = &trustCatalog;
+
+        GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        const LONG status = WinVerifyTrust(nullptr, &action, &trustData);
+        trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        WinVerifyTrust(nullptr, &action, &trustData);
+
+        if (status == ERROR_SUCCESS) {
+            std::wstring catalogPublisher;
+            if (GetCatalogPublisherName(catalogInfo.wszCatalogFile, catalogPublisher)) {
+                publisherName = std::move(catalogPublisher);
+                releaseCatalog(catalogAdmin, catalogContext, 0);
+                releaseContext(catalogAdmin, 0);
+                CloseHandle(file);
+                FreeLibrary(wintrustModule);
+                return ERROR_SUCCESS;
+            }
+            bestFailure = TRUST_E_PROVIDER_UNKNOWN;
+        } else {
+            const auto failureClass = Oblivion::SignaturePolicy::ClassifyWinTrustResult(
+                static_cast<std::uint32_t>(status));
+            if (failureClass == Oblivion::SignaturePolicy::WinTrustResultClass::Inconclusive ||
+                (failureClass == Oblivion::SignaturePolicy::WinTrustResultClass::Rejected &&
+                 bestFailure == TRUST_E_NOSIGNATURE)) {
+                bestFailure = status;
+            }
+        }
+    }
+
+    if (catalogContext != nullptr) {
+        releaseCatalog(catalogAdmin, catalogContext, 0);
+    }
+    releaseContext(catalogAdmin, 0);
+    CloseHandle(file);
+    FreeLibrary(wintrustModule);
+
+    return foundCatalog ? bestFailure : TRUST_E_NOSIGNATURE;
 }
 
 } // namespace
@@ -413,11 +678,8 @@ namespace Oblivion {
                 if (trustResult == ModuleTrustResult::Inconclusive) {
                     const std::wstring warningKey =
                         Oblivion::PathPolicy::NormalizeWindowsPath(modulePath);
-                    if (m_reportedUnverifiableModules.insert(warningKey).second) {
-                        if (m_reportedUnverifiableModules.size() > 256) {
-                            m_reportedUnverifiableModules.clear();
-                        }
-
+                    if (!m_reportedSignatureProviderIssue) {
+                        m_reportedSignatureProviderIssue = true;
                         std::wstringstream detailsStream;
                         detailsStream << L"Module: " << me32.szModule
                                       << L" | Path: " << modulePath
@@ -762,17 +1024,43 @@ namespace Oblivion {
 
         // Certificate extraction alone does not prove the PE image signature is
         // valid: a modified executable can retain its embedded PKCS#7 certificate.
-        // Keep the trust-provider status so known integrity failures are distinct
-        // from chain/network/provider failures.
         std::wstring actualPublisher;
-        const bool hasEmbeddedSignature = GetFilePublisher(filePath, actualPublisher);
-        const LONG verificationStatus = VerifyFileSignatureStatus(filePath);
+        GetFilePublisher(filePath, actualPublisher);
+        LONG verificationStatus = VerifyFileSignatureStatus(filePath);
+
+        // Windows system modules commonly use a catalog signature instead of an
+        // embedded PE signature. Verify the catalog with SHA-256 before deciding
+        // that a file is unsigned.
+        if (Oblivion::SignaturePolicy::ClassifyWinTrustResult(
+                static_cast<std::uint32_t>(verificationStatus)) ==
+            Oblivion::SignaturePolicy::WinTrustResultClass::NoSignature) {
+            std::wstring catalogPublisher;
+            const LONG catalogStatus = VerifyCatalogSignatureStatus(filePath, catalogPublisher);
+            if (catalogStatus == ERROR_SUCCESS) {
+                if (catalogPublisher.empty()) {
+                    return SignatureVerdict::VerificationError;
+                }
+                actualPublisher = std::move(catalogPublisher);
+                verificationStatus = ERROR_SUCCESS;
+            } else {
+                const auto catalogClass = Oblivion::SignaturePolicy::ClassifyWinTrustResult(
+                    static_cast<std::uint32_t>(catalogStatus));
+                if (catalogClass == Oblivion::SignaturePolicy::WinTrustResultClass::NoSignature) {
+                    return SignatureVerdict::Unsigned;
+                }
+                verificationStatus = catalogStatus;
+            }
+        }
+
         const auto resultClass = Oblivion::SignaturePolicy::ClassifyWinTrustResult(
             static_cast<std::uint32_t>(verificationStatus));
 
         switch (resultClass) {
         case Oblivion::SignaturePolicy::WinTrustResultClass::Trusted:
             publisherName = actualPublisher;
+            if (actualPublisher.empty()) {
+                return SignatureVerdict::VerificationError;
+            }
 
             if (!actualPublisher.empty()) {
                 for (const auto& trustedPublisher : m_trustedPublishers) {
@@ -799,9 +1087,7 @@ namespace Oblivion {
             // A nonzero status not recognized as a definite signature failure may
             // reflect unavailable trust-chain infrastructure. Preserve the existing
             // anti-false-positive behavior only when an embedded signature exists.
-            return hasEmbeddedSignature
-                ? SignatureVerdict::VerificationError
-                : SignatureVerdict::Unsigned;
+            return SignatureVerdict::VerificationError;
         }
 
         return SignatureVerdict::VerificationError;
