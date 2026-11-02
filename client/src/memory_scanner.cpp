@@ -449,6 +449,7 @@ namespace Oblivion {
     }
 
     void MemoryScanner::CreateBaselineFromDisk(const std::wstring& filePath) {
+        ReportProgress();
         if (m_baselineCreated) {
             return;
         }
@@ -509,6 +510,7 @@ namespace Oblivion {
 
         // STEP 6: Create baseline untuk setiap executable section
         for (const auto& section : sections) {
+            ReportProgress();
             // Hanya process executable sections
             if (!(section.characteristics & IMAGE_SCN_MEM_EXECUTE)) {
                 continue;
@@ -636,6 +638,7 @@ namespace Oblivion {
         m_verifiedSections.clear();
 
         for (const auto& baseline : m_diskBaseline) {
+            ReportProgress();
             uint8_t* memoryAddr = reinterpret_cast<uint8_t*>(m_moduleBaseAddress + baseline.rva);
             
             MEMORY_BASIC_INFORMATION mbi;
@@ -1044,6 +1047,7 @@ namespace Oblivion {
     // === Main Scan Function - Multi-Layer Verification ===
 
     void MemoryScanner::PerformScan() {
+        ReportProgress();
         // === PHASE 1: Baseline Creation (ONCE, at first scan) ===
         if (!m_baselineCreated) {
             const std::wstring exePath = Oblivion::WinPath::GetModulePath(nullptr);
