@@ -8,31 +8,20 @@
 #include <wincrypt.h>
 #include <psapi.h>
 #include <softpub.h>
+#include <shlobj.h>
+#include <knownfolders.h>
+#include <objbase.h>
 #include <iostream>
 #include <algorithm>
 #include <cwctype>
 #include <map>
 #include <sstream>
 
-// Forward declaration
+// Forward declarations
 extern void ReportViolationAndExit(const std::wstring& message, const std::string& type, const std::string& details);
+extern void ReportViolationSoft(const std::string& type, const std::string& details);
 
 namespace {
-std::wstring ReadEnvironmentDirectory(const wchar_t* variableName) {
-    const DWORD required = GetEnvironmentVariableW(variableName, nullptr, 0);
-    if (required == 0) {
-        return L"";
-    }
-
-    std::wstring value(required, L'\0');
-    const DWORD written = GetEnvironmentVariableW(variableName, value.data(), required);
-    if (written == 0 || written >= required) {
-        return L"";
-    }
-    value.resize(written);
-    return value;
-}
-
 std::wstring ResolveWindowsDirectory() {
     // Use the actual Windows directory instead of searching for a "\\windows\\"
     // substring anywhere in the path (which also matches unrelated game folders).
@@ -44,6 +33,92 @@ std::wstring ResolveWindowsDirectory() {
     value.resize(written);
     return value;
 }
+
+std::wstring ResolveKnownFolderPath(const KNOWNFOLDERID& folderId) {
+    PWSTR rawPath = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(
+        folderId, KF_FLAG_DEFAULT, nullptr, &rawPath);
+    if (FAILED(result) || rawPath == nullptr) {
+        if (rawPath != nullptr) {
+            CoTaskMemFree(rawPath);
+        }
+        return L"";
+    }
+
+    const std::wstring value(rawPath);
+    CoTaskMemFree(rawPath);
+    return value;
+}
+
+struct ModuleFileStamp {
+    ULONGLONG size = 0;
+    FILETIME lastWriteTime{};
+    DWORD volumeSerial = 0;
+    DWORD fileIndexHigh = 0;
+    DWORD fileIndexLow = 0;
+    LONGLONG changeTime = 0;
+};
+
+enum class ModuleFileStampResult {
+    Success,
+    Unavailable,
+    Invalid
+};
+
+ModuleFileStampResult GetModuleFileStamp(
+    const std::wstring& path,
+    ModuleFileStamp& stamp) {
+    stamp = ModuleFileStamp{};
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return ModuleFileStampResult::Unavailable;
+    }
+
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    FILE_BASIC_INFO basicInfo{};
+    const bool okay =
+        GetFileInformationByHandle(file, &fileInfo) != FALSE &&
+        GetFileInformationByHandleEx(
+            file, FileBasicInfo, &basicInfo, sizeof(basicInfo)) != FALSE;
+    CloseHandle(file);
+    if (!okay) {
+        return ModuleFileStampResult::Unavailable;
+    }
+
+    if ((fileInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return ModuleFileStampResult::Invalid;
+    }
+
+    stamp.size =
+        (static_cast<ULONGLONG>(fileInfo.nFileSizeHigh) << 32) |
+        fileInfo.nFileSizeLow;
+    stamp.lastWriteTime = fileInfo.ftLastWriteTime;
+    stamp.volumeSerial = fileInfo.dwVolumeSerialNumber;
+    stamp.fileIndexHigh = fileInfo.nFileIndexHigh;
+    stamp.fileIndexLow = fileInfo.nFileIndexLow;
+    stamp.changeTime = basicInfo.ChangeTime.QuadPart;
+    return ModuleFileStampResult::Success;
+}
+
+bool SameModuleFileStamp(
+    const ModuleFileStamp& left,
+    const ModuleFileStamp& right) {
+    return left.size == right.size &&
+        CompareFileTime(&left.lastWriteTime, &right.lastWriteTime) == 0 &&
+        left.volumeSerial == right.volumeSerial &&
+        left.fileIndexHigh == right.fileIndexHigh &&
+        left.fileIndexLow == right.fileIndexLow &&
+        left.changeTime == right.changeTime;
+}
+
 } // namespace
 
 #pragma comment(lib, "wintrust.lib")
@@ -253,11 +328,31 @@ namespace Oblivion {
         }
         std::transform(gameDir.begin(), gameDir.end(), gameDir.begin(), ::towlower);
 
-        // Resolve exempt roots once per scan. The game directory itself is never
-        // exempted by location alone, even when installed below Program Files.
+        // Only actual Windows servicing roots are protected system locations.
+        // Do not exempt every module under C:\Windows: writable paths such as
+        // Windows\Temp must still be checked.
         const std::wstring windowsDirectory = ResolveWindowsDirectory();
-        const std::wstring programFiles = ReadEnvironmentDirectory(L"ProgramFiles");
-        const std::wstring programFilesX86 = ReadEnvironmentDirectory(L"ProgramFiles(x86)");
+        const std::vector<std::wstring> protectedWindowsRoots = windowsDirectory.empty()
+            ? std::vector<std::wstring>()
+            : std::vector<std::wstring>{
+                windowsDirectory + L"\System32",
+                windowsDirectory + L"\SysWOW64",
+                windowsDirectory + L"\WinSxS"
+            };
+
+        // Resolve Program Files from the Known Folder API, not environment variables
+        // controlled by the launching process.
+        std::vector<std::wstring> programFilesRoots;
+        const std::wstring programFiles = ResolveKnownFolderPath(FOLDERID_ProgramFiles);
+        const std::wstring programFilesX86 = ResolveKnownFolderPath(FOLDERID_ProgramFilesX86);
+        if (!programFiles.empty()) {
+            programFilesRoots.push_back(programFiles);
+        }
+        if (!programFilesX86.empty() &&
+            Oblivion::PathPolicy::NormalizeWindowsPath(programFilesX86) !=
+                Oblivion::PathPolicy::NormalizeWindowsPath(programFiles)) {
+            programFilesRoots.push_back(programFilesX86);
+        }
 
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
         if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -289,49 +384,83 @@ namespace Oblivion {
                 const bool isGameModule =
                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, gameDir);
 
-                if (!isGameModule && !windowsDirectory.empty() &&
-                    Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, windowsDirectory)) {
-                    continue; // Actual Windows directory, not any path containing "\\windows\\"
+                bool isProtectedWindowsModule = false;
+                for (const auto& root : protectedWindowsRoots) {
+                    if (Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, root)) {
+                        isProtectedWindowsModule = true;
+                        break;
+                    }
                 }
 
-                // Keep the compatibility exemption for third-party Program Files modules,
-                // but never let it suppress modules loaded from the game directory.
-                const bool isUnderProgramFiles =
-                    (!programFiles.empty() &&
-                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFiles)) ||
-                    (!programFilesX86.empty() &&
-                     Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, programFilesX86));
-                if (!isGameModule && isUnderProgramFiles) {
-                    continue;
+                bool isUnderProgramFiles = false;
+                for (const auto& root : programFilesRoots) {
+                    if (Oblivion::PathPolicy::IsPathWithinDirectory(modulePathStr, root)) {
+                        isUnderProgramFiles = true;
+                        break;
+                    }
                 }
 
-                // Hanya periksa modul yang berasal dari folder game atau folder lain yang mencurigakan
-                // (seperti modul yang di-inject dari cheat engine, wpe, rpe, openkore)
+                // Protected Windows modules and third-party Program Files modules may
+                // have valid publishers outside the product allowlist, but a valid
+                // Authenticode verdict is still required.
+                const bool allowAnyValidSigner =
+                    !isGameModule && (isProtectedWindowsModule || isUnderProgramFiles);
+
                 std::wstring moduleName(me32.szModule);
-                if (!IsModuleTrusted(me32.hModule, moduleName, modulePath, gameDir)) {
-                    // Modul tidak tepercaya!
+                const ModuleTrustResult trustResult = IsModuleTrusted(
+                    moduleName, modulePath, gameDir, allowAnyValidSigner);
+
+                if (trustResult == ModuleTrustResult::Inconclusive) {
+                    const std::wstring warningKey =
+                        Oblivion::PathPolicy::NormalizeWindowsPath(modulePath);
+                    if (m_reportedUnverifiableModules.insert(warningKey).second) {
+                        if (m_reportedUnverifiableModules.size() > 256) {
+                            m_reportedUnverifiableModules.clear();
+                        }
+
+                        std::wstringstream detailsStream;
+                        detailsStream << L"Module: " << me32.szModule
+                                      << L" | Path: " << modulePath
+                                      << L" | Authenticode trust provider returned an inconclusive result";
+                        const std::wstring detailsWide = detailsStream.str();
+                        const int size_needed = WideCharToMultiByte(
+                            CP_UTF8, 0, detailsWide.c_str(),
+                            static_cast<int>(detailsWide.size()), nullptr, 0, nullptr, nullptr);
+                        std::string details_utf8;
+                        if (size_needed > 0) {
+                            details_utf8.resize(static_cast<size_t>(size_needed));
+                            WideCharToMultiByte(
+                                CP_UTF8, 0, detailsWide.c_str(),
+                                static_cast<int>(detailsWide.size()), &details_utf8[0],
+                                size_needed, nullptr, nullptr);
+                        }
+                        ReportViolationSoft("SIGNATURE_VERIFICATION_INCONCLUSIVE", details_utf8);
+                    }
+                    continue; // Retry later; an inconclusive result is not cheating evidence.
+                }
+
+                if (trustResult == ModuleTrustResult::Untrusted) {
                     std::wstring message = L"Modul tidak tepercaya (tidak ditandatangani atau penerbit tidak dikenal) terdeteksi: ";
                     message += me32.szModule;
                     message += L"\n\nPath: ";
                     message += modulePath;
                     message += L"\n\nClient akan ditutup.";
-                    
-                    // Build details untuk server report
+
                     std::wstringstream detailsStream;
                     detailsStream << L"Module: " << me32.szModule
                                   << L" | Path: " << modulePath;
-                    
-                    std::wstring detailsWide = detailsStream.str();
-                    
-                    // Convert ke UTF-8 untuk server
-                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), NULL, 0, NULL, NULL);
+                    const std::wstring detailsWide = detailsStream.str();
+                    const int size_needed = WideCharToMultiByte(
+                        CP_UTF8, 0, detailsWide.c_str(),
+                        static_cast<int>(detailsWide.size()), nullptr, 0, nullptr, nullptr);
                     std::string details_utf8;
                     if (size_needed > 0) {
-                        details_utf8.resize(size_needed);
-                        WideCharToMultiByte(CP_UTF8, 0, detailsWide.c_str(), (int)detailsWide.length(), &details_utf8[0], size_needed, NULL, NULL);
+                        details_utf8.resize(static_cast<size_t>(size_needed));
+                        WideCharToMultiByte(
+                            CP_UTF8, 0, detailsWide.c_str(),
+                            static_cast<int>(detailsWide.size()), &details_utf8[0],
+                            size_needed, nullptr, nullptr);
                     }
-                    
-                    // Report ke server dan exit (ReportViolationAndExit akan mengirim laporan ke server sebelum ExitProcess)
                     ReportViolationAndExit(message, "UNTRUSTED_MODULE", details_utf8);
                 }
 
@@ -341,19 +470,18 @@ namespace Oblivion {
         CloseHandle(hSnapshot);
     }
 
-    bool DigitalSignatureValidator::IsModuleTrusted(
-        HMODULE hModule,
+    DigitalSignatureValidator::ModuleTrustResult
+    DigitalSignatureValidator::IsModuleTrusted(
         std::wstring& moduleName,
         const std::wstring& filePath,
-        const std::wstring& gameDirectory) {
+        const std::wstring& gameDirectory,
+        bool allowAnyValidSigner) {
         if (filePath.empty()) {
-            return false; // Tidak bisa mendapatkan path lengkap, anggap tidak tepercaya
+            return ModuleTrustResult::Inconclusive;
         }
 
-        // A filename-only allowlist is not sufficient: an unsigned DLL with a
-        // familiar name could be loaded from a temp/download folder or another
-        // unrelated location. Only preserve the legacy unsigned-DLL exemption
-        // when the loaded module is actually inside this game's directory.
+        // Preserve the legacy unsigned library exception only for exact names inside
+        // the game directory. Every external module must receive a signature verdict.
         std::wstring moduleNameLower = moduleName;
         std::transform(moduleNameLower.begin(), moduleNameLower.end(), moduleNameLower.begin(), ::towlower);
         bool isAllowlistedName = false;
@@ -368,95 +496,76 @@ namespace Oblivion {
 
         if (Oblivion::PathPolicy::CanTrustUnsignedModuleByName(
                 isAllowlistedName, filePath, gameDirectory)) {
-            return true; // Legacy unsigned DLL exemption restricted to the game directory
+            return ModuleTrustResult::Trusted;
         }
 
-        std::wstring cacheKey = filePath;
-        std::transform(cacheKey.begin(), cacheKey.end(), cacheKey.begin(), ::towlower);
-
-        WIN32_FILE_ATTRIBUTE_DATA attributes{};
-        const bool hasAttributes = GetFileAttributesExW(
-            filePath.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
-        if (hasAttributes) {
-            const ULARGE_INTEGER size = {
-                attributes.nFileSizeLow, attributes.nFileSizeHigh
-            };
-            const auto cached = m_moduleTrustCache.find(cacheKey);
-            if (cached != m_moduleTrustCache.end() &&
-                cached->second.fileSize == size.QuadPart &&
-                CompareFileTime(&cached->second.lastWriteTime, &attributes.ftLastWriteTime) == 0) {
-                return cached->second.isTrusted;
-            }
+        ModuleFileStamp initialStamp;
+        const ModuleFileStampResult stampResult = GetModuleFileStamp(filePath, initialStamp);
+        if (stampResult == ModuleFileStampResult::Invalid) {
+            return ModuleTrustResult::Untrusted;
+        }
+        if (stampResult != ModuleFileStampResult::Success) {
+            return ModuleTrustResult::Inconclusive;
         }
 
-        // Catatan: Pengecekan folder Windows system dan Program Files sudah dilakukan di PerformScan()
-        // Jadi fungsi ini hanya akan dipanggil untuk modul yang berasal dari folder game atau folder mencurigakan
-
-        // Struktur untuk WinVerifyTrust
-        WINTRUST_FILE_INFO fileInfo = { 0 };
-        fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
-        fileInfo.pcwszFilePath = filePath.c_str();
-        fileInfo.hFile = NULL;
-        fileInfo.pgKnownSubject = NULL;
-
-        WINTRUST_DATA winTrustData = { 0 };
-        winTrustData.cbStruct = sizeof(WINTRUST_DATA);
-        winTrustData.pPolicyCallbackData = NULL;
-        winTrustData.pSIPClientData = NULL;
-        winTrustData.dwUIChoice = WTD_UI_NONE;
-        winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
-        winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
-        winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
-        winTrustData.hWVTStateData = NULL;
-        winTrustData.pwszURLReference = NULL;
-        winTrustData.dwProvFlags = WTD_SAFER_FLAG;
-        winTrustData.dwUIContext = 0;
-        winTrustData.pFile = &fileInfo;
-
-        GUID policyGUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-        // Verifikasi signature
-        LONG result = WinVerifyTrust(NULL, &policyGUID, &winTrustData);
-
-        bool isSignatureValid = (result == ERROR_SUCCESS);
-
-        // Cleanup state
-        winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
-        WinVerifyTrust(NULL, &policyGUID, &winTrustData);
-
-        if (!isSignatureValid) {
-            if (hasAttributes) {
-                const ULARGE_INTEGER size = {
-                    attributes.nFileSizeLow, attributes.nFileSizeHigh
-                };
-                m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
-            }
-            return false; // Signature tidak valid atau tidak ada
+        const std::wstring cacheKey =
+            Oblivion::PathPolicy::NormalizeWindowsPath(filePath);
+        const auto cached = m_moduleTrustCache.find(cacheKey);
+        if (cached != m_moduleTrustCache.end() &&
+            cached->second.fileSize == initialStamp.size &&
+            CompareFileTime(&cached->second.lastWriteTime, &initialStamp.lastWriteTime) == 0 &&
+            cached->second.volumeSerial == initialStamp.volumeSerial &&
+            cached->second.fileIndexHigh == initialStamp.fileIndexHigh &&
+            cached->second.fileIndexLow == initialStamp.fileIndexLow &&
+            cached->second.changeTime == initialStamp.changeTime) {
+            return cached->second.isTrusted
+                ? ModuleTrustResult::Trusted
+                : ModuleTrustResult::Untrusted;
         }
 
-        // Jika signature valid, periksa penerbitnya
+        // Reuse the centralized verdict logic: it checks the image digest and
+        // matches trusted publishers exactly, rather than using substring matching.
         std::wstring publisherName;
-        if (GetCertificateSubjectName(hModule, publisherName)) {
-            for (const auto& trustedName : m_trustedPublishers) {
-                if (publisherName.find(trustedName) != std::wstring::npos) {
-                    if (hasAttributes) {
-                        const ULARGE_INTEGER size = {
-                            attributes.nFileSizeLow, attributes.nFileSizeHigh
-                        };
-                        m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, true };
-                    }
-                    return true; // Penerbit tepercaya
-                }
-            }
+        const SignatureVerdict verdict = GetSignatureVerdict(filePath, publisherName);
+
+        ModuleTrustResult trustResult = ModuleTrustResult::Inconclusive;
+        switch (verdict) {
+        case SignatureVerdict::TrustedPublisher:
+            trustResult = ModuleTrustResult::Trusted;
+            break;
+        case SignatureVerdict::UntrustedPublisher:
+            trustResult = allowAnyValidSigner
+                ? ModuleTrustResult::Trusted
+                : ModuleTrustResult::Untrusted;
+            break;
+        case SignatureVerdict::Unsigned:
+        case SignatureVerdict::InvalidSignature:
+            trustResult = ModuleTrustResult::Untrusted;
+            break;
+        case SignatureVerdict::VerificationError:
+            trustResult = ModuleTrustResult::Inconclusive;
+            break;
         }
 
-        if (hasAttributes) {
-            const ULARGE_INTEGER size = {
-                attributes.nFileSizeLow, attributes.nFileSizeHigh
-            };
-            m_moduleTrustCache[cacheKey] = { size.QuadPart, attributes.ftLastWriteTime, false };
+        // Never cache or punish a file that changed while WinVerifyTrust inspected it.
+        ModuleFileStamp finalStamp;
+        if (GetModuleFileStamp(filePath, finalStamp) != ModuleFileStampResult::Success ||
+            !SameModuleFileStamp(initialStamp, finalStamp)) {
+            return ModuleTrustResult::Inconclusive;
         }
-        return false; // Penerbit tidak ada di whitelist
+
+        if (trustResult != ModuleTrustResult::Inconclusive) {
+            m_moduleTrustCache[cacheKey] = {
+                initialStamp.size,
+                initialStamp.lastWriteTime,
+                initialStamp.volumeSerial,
+                initialStamp.fileIndexHigh,
+                initialStamp.fileIndexLow,
+                initialStamp.changeTime,
+                trustResult == ModuleTrustResult::Trusted
+            };
+        }
+        return trustResult;
     }
 
     bool DigitalSignatureValidator::GetCertificateSubjectName(HMODULE hModule, std::wstring& subjectName) {
