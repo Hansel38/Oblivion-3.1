@@ -31,6 +31,10 @@ def main() -> int:
             "ProcessWatcher must wire MemoryScanner progress to AntiSuspend")
     require("m_pDigitalSignatureValidator->SetProgressCallback(reportProgress)" in watcher_source,
             "ProcessWatcher must wire signature-scan progress to AntiSuspend")
+    process_loop = watcher_source.index("if (Process32First(hSnapshot, &pe32))")
+    process_heartbeat = watcher_source.index("m_pAntiSuspend->UpdateHeartbeat();", process_loop)
+    require(process_heartbeat < watcher_source.index("IsProcessBlacklisted(processName)", process_loop),
+            "ProcessWatcher must report progress during process enumeration")
 
     baseline_loop = memory_source.index("for (const auto& section : sections)")
     baseline_progress = memory_source.index("ReportProgress();", baseline_loop)
