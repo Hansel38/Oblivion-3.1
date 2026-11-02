@@ -600,9 +600,9 @@ namespace Oblivion {
         const std::vector<std::wstring> protectedWindowsRoots = windowsDirectory.empty()
             ? std::vector<std::wstring>()
             : std::vector<std::wstring>{
-                windowsDirectory + L"\System32",
-                windowsDirectory + L"\SysWOW64",
-                windowsDirectory + L"\WinSxS"
+                windowsDirectory + L"\\System32",
+                windowsDirectory + L"\\SysWOW64",
+                windowsDirectory + L"\\WinSxS"
             };
 
         // Resolve Program Files from the Known Folder API, not environment variables
