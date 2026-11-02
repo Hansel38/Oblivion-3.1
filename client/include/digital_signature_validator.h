@@ -5,7 +5,6 @@
 #include <string>
 #include <map>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace Oblivion {
     class DigitalSignatureValidator {
@@ -82,6 +81,6 @@ namespace Oblivion {
 
         // Cache identity includes file ID and NTFS ChangeTime, not only path/mtime.
         std::unordered_map<std::wstring, ModuleTrustCacheEntry> m_moduleTrustCache;
-        std::unordered_set<std::wstring> m_reportedUnverifiableModules;
+        bool m_reportedSignatureProviderIssue = false;
     };
 }
