@@ -44,12 +44,18 @@ namespace Oblivion {
             m_pIATHookScanner = std::make_unique<IATHookScanner>();
             m_pAdvancedHeuristics = std::make_unique<AdvancedProcessHeuristics>();
             
-            // Set heartbeat callback untuk AdvancedHeuristics
-            m_pAdvancedHeuristics->SetHeartbeatCallback([this]() {
+            // Heartbeat juga harus diperbarui dari dalam scanner yang berjalan
+            // sinkron. Tanpa callback ini, satu siklus MemoryScanner/WinVerifyTrust
+            // yang panjang tidak memberi tick sampai seluruh scan selesai, sehingga
+            // guardian mengira watcher digantung dan men-kick pemain sah.
+            const auto reportProgress = [this]() {
                 if (m_isRunning && m_pAntiSuspend) {
                     m_pAntiSuspend->UpdateHeartbeat();
                 }
-            });
+            };
+            m_pAdvancedHeuristics->SetHeartbeatCallback(reportProgress);
+            m_pMemoryScanner->SetProgressCallback(reportProgress);
+            m_pDigitalSignatureValidator->SetProgressCallback(reportProgress);
             
             std::cout << "[ProcessWatcher] All components initialized successfully" << std::endl;
         } catch (const std::exception& e) {
