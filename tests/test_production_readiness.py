@@ -48,6 +48,26 @@ class ProductionReadinessTests(unittest.TestCase):
             source,
         )
 
+    def test_module_scanner_verifies_protected_external_paths(self) -> None:
+        source = (ROOT / "client" / "src" / "digital_signature_validator.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "client" / "include" / "digital_signature_validator.h").read_text(encoding="utf-8")
+        self.assertIn("SHGetKnownFolderPath", source)
+        self.assertIn("FOLDERID_ProgramFiles", source)
+        self.assertIn("protectedWindowsRoots", source)
+        self.assertIn("ModuleTrustResult::Inconclusive", source)
+        self.assertIn("GetSignatureVerdict(filePath, publisherName)", source)
+        self.assertNotIn('ReadEnvironmentDirectory(L"ProgramFiles")', source)
+        self.assertNotIn("publisherName.find(trustedName)", source)
+        self.assertIn("LONGLONG changeTime;", header)
+        self.assertIn("bool allowAnyValidSigner;", header)
+        self.assertIn("cached->second.allowAnyValidSigner == allowAnyValidSigner", source)
+        self.assertIn("m_moduleTrustCache.size() >= 512", source)
+        self.assertIn("m_reportedSignatureProviderIssue", header)
+        self.assertIn("VerifyCatalogSignatureStatus", source)
+        self.assertIn("WTD_CHOICE_CATALOG", source)
+        self.assertIn("return SignatureVerdict::VerificationError;", source)
+
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)
