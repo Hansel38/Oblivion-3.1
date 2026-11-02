@@ -36,6 +36,18 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertIn(r"std::wstring path(32768, L'\0');", source)
         self.assertNotIn(r"std::wstring path(32768, L'\\0');", source)
 
+    def test_memory_scanner_reuses_the_exact_baseline_hash_length(self) -> None:
+        header = (ROOT / "client" / "include" / "memory_scanner.h").read_text(encoding="utf-8")
+        source = (ROOT / "client" / "src" / "memory_scanner.cpp").read_text(encoding="utf-8")
+        self.assertIn("size_t memoryHashSize;", header)
+        self.assertIn("baseline.memoryHashSize = sizeToHash;", source)
+        self.assertIn("const size_t sizeToCheck = baseline.memoryHashSize;", source)
+        self.assertIn("ReadProcessMemory(", source)
+        self.assertNotIn(
+            "size_t sizeToCheck = (baseline.size < static_cast<size_t>(mbi.RegionSize))",
+            source,
+        )
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="oblivion-production-preflight-")
         self.addCleanup(self.temp.cleanup)

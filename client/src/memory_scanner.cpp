@@ -525,9 +525,10 @@ namespace Oblivion {
                 continue; // Skip verification untuk sections ini
             }
 
-            ExecutableRegion baseline;
+            ExecutableRegion baseline{};
             baseline.rva = section.virtualAddress;
             baseline.size = section.virtualSize;
+            baseline.memoryHashSize = 0;
             baseline.isCodeSection = (section.name.find(".text") != std::string::npos);
 
             // CRITICAL: Hash dari DISK (trusted source)
@@ -546,6 +547,11 @@ namespace Oblivion {
                 if (sizeToHash > baseline.size) {
                     sizeToHash = baseline.size;
                 }
+                // Simpan panjang persis dari snapshot awal. VirtualQuery dapat
+                // mengembalikan RegionSize berbeda setelah VirtualProtect memecah
+                // section menjadi beberapa region; CRC harus selalu membandingkan
+                // jumlah byte yang sama dengan baseline.
+                baseline.memoryHashSize = sizeToHash;
                 baseline.memoryCRC32 = CalculateCRC32(memoryAddr, sizeToHash);
                 
                 // CRITICAL CHECK: Jika memory sudah berbeda dari disk saat baseline creation,
@@ -659,8 +665,27 @@ namespace Oblivion {
                 }
             }
 
-            size_t sizeToCheck = (baseline.size < static_cast<size_t>(mbi.RegionSize)) ? baseline.size : static_cast<size_t>(mbi.RegionSize);
-            uint32_t currentMemoryCRC32 = CalculateCRC32(memoryAddr, sizeToCheck);
+            // Jangan memakai RegionSize terkini sebagai panjang hash: proteksi
+            // halaman dapat memecah/menggabungkan VirtualQuery region setelah
+            // baseline dibuat. Baca ulang rentang persis yang sudah di-hash pada
+            // startup, termasuk bila rentang tersebut melintasi beberapa region.
+            const size_t sizeToCheck = baseline.memoryHashSize;
+            if (sizeToCheck == 0 || sizeToCheck > baseline.size) {
+                continue; // Snapshot awal tidak tersedia; bukan bukti modifikasi.
+            }
+
+            std::vector<uint8_t> currentMemoryBytes(sizeToCheck);
+            SIZE_T bytesRead = 0;
+            if (!ReadProcessMemory(
+                    GetCurrentProcess(), memoryAddr, currentMemoryBytes.data(),
+                    sizeToCheck, &bytesRead) || bytesRead != sizeToCheck) {
+                // Region mungkin sedang berubah atau tidak seluruhnya readable.
+                // Jangan membandingkan CRC dengan panjang berbeda dan menendang
+                // pemain sah karena hasil yang tidak konklusif.
+                continue;
+            }
+            const uint32_t currentMemoryCRC32 =
+                CalculateCRC32(currentMemoryBytes.data(), sizeToCheck);
 
             // CRITICAL: Bandingkan dengan memory baseline (bukan disk baseline)
             // karena relocations membuat memory berbeda dari disk sejak awal
@@ -685,7 +710,7 @@ namespace Oblivion {
                             size_t bytesToCompare = (sizeToCheck < section.rawDataSize) ? sizeToCheck : section.rawDataSize;
                             
                             for (size_t i = 0; i < bytesToCompare; i++) {
-                                if (diskData[i] != memoryAddr[i]) {
+                                if (diskData[i] != currentMemoryBytes[i]) {
                                     differentBytes++;
                                 }
                             }
