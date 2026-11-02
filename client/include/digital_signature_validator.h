@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <functional>
 
 namespace Oblivion {
     class DigitalSignatureValidator {
@@ -14,6 +15,11 @@ namespace Oblivion {
 
         // Fungsi utama untuk memindai semua modul
         void PerformScan();
+
+        // Melaporkan progres saat enumerasi/verifikasi modul berjalan.
+        void SetProgressCallback(std::function<void()> callback) {
+            m_progressCallback = callback;
+        }
 
         // Fungsi untuk verifikasi process executable (untuk whitelist verification)
         // Mengembalikan true jika signature valid dan publisher sesuai ekspektasi
@@ -72,5 +78,12 @@ namespace Oblivion {
         // WinVerifyTrust relatif mahal. Cache dibatalkan otomatis bila ukuran atau
         // waktu modifikasi file berubah, sehingga modul yang diganti tetap diverifikasi.
         std::unordered_map<std::wstring, ModuleTrustCacheEntry> m_moduleTrustCache;
+        std::function<void()> m_progressCallback;
+
+        void ReportProgress() const {
+            if (m_progressCallback) {
+                try { m_progressCallback(); } catch (...) {}
+            }
+        }
     };
 }
