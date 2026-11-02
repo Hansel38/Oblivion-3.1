@@ -18,6 +18,7 @@
 #include "../common/tls_transport.h"
 #include "../common/server_listen_port.h"
 #include "../common/server_yaml_config.h"
+#include "../common/bounded_log_file.h"
 #include <windows.h>
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
@@ -479,6 +480,15 @@ void LogViolation(const std::string& type, const std::string& details, const std
         std::cerr << "[ERROR] Cannot resolve executable directory; violation log was not written." << std::endl;
         return;
     }
+    std::error_code logPrepareError;
+    constexpr std::uintmax_t kMaxViolationLogBytes = 32ULL * 1024ULL * 1024ULL;
+    if (!Oblivion::Logging::PrepareBoundedAppendLog(
+            logFilePath, kMaxViolationLogBytes, logPrepareError)) {
+        std::cerr << "[ERROR] Violation log rotation refused the active log file: "
+                  << logPrepareError.message() << std::endl;
+        return;
+    }
+
     std::ofstream logFile(logFilePath, std::ios::app);
     if (logFile.is_open()) {
         // Extract only from sanitized details so log records cannot be forged.
