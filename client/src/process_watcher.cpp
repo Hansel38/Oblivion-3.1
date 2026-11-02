@@ -227,6 +227,10 @@ namespace Oblivion {
         std::unordered_set<DWORD> activeProcesses;
         if (Process32First(hSnapshot, &pe32)) {
             do {
+                // Process enumeration can also be long on busy systems.
+                if (m_pAntiSuspend) {
+                    m_pAntiSuspend->UpdateHeartbeat();
+                }
                 std::wstring processName = pe32.szExeFile;
                 DWORD processId = pe32.th32ProcessID;
                 activeProcesses.insert(processId);
