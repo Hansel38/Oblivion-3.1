@@ -1741,18 +1741,7 @@ namespace Oblivion {
     }
 
     std::string AdvancedProcessHeuristics::ConvertWideToUtf8(const std::wstring& input) const {
-        if (input.empty()) {
-            return std::string();
-        }
-
-        int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (sizeNeeded <= 0) {
-            return std::string();
-        }
-
-        std::string result(static_cast<size_t>(sizeNeeded) - 1, 0);
-        WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, &result[0], sizeNeeded, nullptr, nullptr);
-        return result;
+        return Oblivion::WinPath::ToUtf8(input);
     }
 }
 
