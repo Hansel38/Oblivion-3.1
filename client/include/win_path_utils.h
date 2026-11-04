@@ -95,7 +95,7 @@ inline std::wstring GetProcessImagePath(HANDLE process) {
          return {};
      }
 
-     std::string output(static_cast<size_t>(required), '\\0');
+     std::string output(static_cast<size_t>(required), '\0');
      const int written = WideCharToMultiByte(
          CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), inputLength,
          output.data(), required, nullptr, nullptr);
