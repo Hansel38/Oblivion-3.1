@@ -13,6 +13,19 @@ described as kernel-level protection. Such inspection is heuristic telemetry;
 it cannot guarantee prevention of memory access by an administrator, kernel
 driver, or hypervisor.
 
+## User-mode connection rate limiting
+
+The TCP accept path applies a per-source-IP token bucket before creating a
+worker thread or performing the TLS handshake:
+- Burst capacity: 120 connection attempts.
+- Refill: 2 attempts per second.
+- Maximum tracked source addresses: 65,536.
+- Idle state expires after 10 minutes; expired entries are pruned periodically.
+
+This is an application-layer abuse control, not volumetric DDoS protection.
+Deploy firewall/provider-level connection controls as well. Large shared-NAT
+networks must be load-tested before changing the policy.
+
 ## Production security boundary
 
 The Ragnarok client is untrusted. Client-side scanners and heartbeat status are
