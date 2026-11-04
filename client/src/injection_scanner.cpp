@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "injection_scanner.h"
+#include "win_path_utils.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <string>
@@ -29,14 +30,9 @@ namespace Oblivion {
             do {
                 // Periksa apakah modul (DLL) ini ada di daftar hitam
                 if (IsDllBlacklisted(me32.szModule)) {
-                    // Jika iya, hentikan client
-                    // Konversi DLL name ke UTF-8 untuk details
-                    std::string details_utf8;
-                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, me32.szModule, -1, NULL, 0, NULL, NULL);
-                    if (size_needed > 0) {
-                        details_utf8.assign(size_needed - 1, 0); // -1 untuk menghilangkan null terminator
-                        WideCharToMultiByte(CP_UTF8, 0, me32.szModule, -1, &details_utf8[0], size_needed, NULL, NULL);
-                    }
+                    // Convert safely without writing the null terminator past std::string storage.
+                    const std::string details_utf8 =
+                        Oblivion::WinPath::ToUtf8(std::wstring(me32.szModule));
                     
                     // Panggil fungsi pelaporan global
                     ReportViolationAndExit(L"", "INJECTION_DETECTED", details_utf8);
