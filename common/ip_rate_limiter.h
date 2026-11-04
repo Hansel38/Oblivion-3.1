@@ -45,8 +45,10 @@ public:
 
         auto entry = buckets_.find(ipAddress);
         if (entry == buckets_.end()) {
-            if ((operations_ % cleanupInterval_) == 0 ||
-                buckets_.size() >= maximumTrackedIps_) {
+            // Full-table misses are rejected cheaply. Do not scan the entire
+            // map on every new source address, which would amplify IP-rotation
+            // floods into repeated O(N) cleanup work.
+            if ((operations_ % cleanupInterval_) == 0) {
                 PruneExpiredLocked(now);
             }
 
