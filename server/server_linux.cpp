@@ -1614,8 +1614,6 @@ int main() {
             continue;
         }
 
-        std::cout << "\n[CONNECTION] New client connected" << std::endl;
-
         // Enforce a bounded per-IP connection rate before allocating a worker
         // or performing an expensive TLS handshake.
         const std::string peerIp = GetPeerIpAddress(ClientSocket);
@@ -1623,6 +1621,8 @@ int main() {
             closesocket_impl(ClientSocket);
             continue;
         }
+
+        std::cout << "\n[CONNECTION] New client connected" << std::endl;
 
         // Reserve a slot atomically; load()+fetch_add() allowed concurrent
         // accepts to exceed the configured worker limit under connection floods.
