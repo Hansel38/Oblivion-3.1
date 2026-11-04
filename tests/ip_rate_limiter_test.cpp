@@ -50,7 +50,7 @@ int main() {
     assert(accepted.load(std::memory_order_relaxed) == 100);
 
     // State remains bounded, and an expired entry can be reclaimed.
-    Limiter bounded(1.0, 0.0, 1, seconds(5), 100);
+    Limiter bounded(1.0, 0.0, 1, seconds(5), 1);
     assert(bounded.Allow("198.51.100.1", start));
     assert(!bounded.Allow("198.51.100.2", start));
     assert(bounded.Allow("198.51.100.2", start + seconds(6)));
