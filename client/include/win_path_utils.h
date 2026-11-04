@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace Oblivion {
 namespace WinPath {
@@ -76,6 +77,33 @@ inline std::wstring GetProcessImagePath(HANDLE process) {
 
     return L"";
 }
+
+
+ // Convert UTF-16 to UTF-8 using explicit lengths. This avoids the common
+ // null-terminator capacity mismatch when WideCharToMultiByte is called with -1.
+ inline std::string ToUtf8(const std::wstring& input) {
+     if (input.empty() ||
+         input.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+         return {};
+     }
+
+     const int inputLength = static_cast<int>(input.size());
+     const int required = WideCharToMultiByte(
+         CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), inputLength,
+         nullptr, 0, nullptr, nullptr);
+     if (required <= 0) {
+         return {};
+     }
+
+     std::string output(static_cast<size_t>(required), '\0');
+     const int written = WideCharToMultiByte(
+         CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), inputLength,
+         output.data(), required, nullptr, nullptr);
+     if (written != required) {
+         return {};
+     }
+     return output;
+ }
 
 } // namespace WinPath
 } // namespace Oblivion

@@ -24,6 +24,7 @@
 #include "../common/tls_transport.h"
 #include "../common/server_listen_port.h"
 #include "../common/server_yaml_config.h"
+#include "../common/ip_rate_limiter.h"
 #include <cerrno>
 #include <csignal>
 #include <unistd.h>
@@ -934,6 +935,11 @@ static const int kMaxConcurrentClients = 256;
 static std::atomic<int> g_activeClients{ 0 };
 static Oblivion::HeartbeatConfig g_heartbeatConfig;
 
+// Initial policy: 120 connection attempts in a burst, then 2 attempts/second
+// per source IP. The table is bounded and idle entries expire after 10 minutes.
+static Oblivion::Security::IpRateLimiter g_connectionRateLimiter(
+    120.0, 2.0, 65536, std::chrono::minutes(10), 256);
+
 static bool TryAcquireClientSlot() {
     int current = g_activeClients.load(std::memory_order_relaxed);
     while (current < kMaxConcurrentClients) {
@@ -945,6 +951,36 @@ static bool TryAcquireClientSlot() {
         }
     }
     return false;
+}
+
+static std::string GetPeerIpAddress(SocketType socket) {
+    sockaddr_storage peer{};
+#ifdef _WIN32
+    int peerLength = static_cast<int>(sizeof(peer));
+    if (getpeername(socket, reinterpret_cast<sockaddr*>(&peer), &peerLength) == SOCKET_ERROR) {
+        return {};
+    }
+#else
+    socklen_t peerLength = static_cast<socklen_t>(sizeof(peer));
+    if (getpeername(socket, reinterpret_cast<sockaddr*>(&peer), &peerLength) != 0) {
+        return {};
+    }
+#endif
+
+    const void* address = nullptr;
+    if (peer.ss_family == AF_INET) {
+        address = &reinterpret_cast<const sockaddr_in*>(&peer)->sin_addr;
+    } else if (peer.ss_family == AF_INET6) {
+        address = &reinterpret_cast<const sockaddr_in6*>(&peer)->sin6_addr;
+    } else {
+        return {};
+    }
+
+    char text[INET6_ADDRSTRLEN] = {};
+    if (inet_ntop(peer.ss_family, address, text, sizeof(text)) == nullptr) {
+        return {};
+    }
+    return std::string(text);
 }
 
 // Generate nonces only with the operating system cryptographic random generator.
@@ -1575,6 +1611,14 @@ int main() {
         ClientSocket = accept(ListenSocket, NULL, NULL);
         if (ClientSocket == INVALID_SOCKET_VAL) {
             std::cerr << "[ERROR] Accept gagal" << std::endl;
+            continue;
+        }
+
+        // Enforce a bounded per-IP connection rate before allocating a worker
+        // or performing an expensive TLS handshake.
+        const std::string peerIp = GetPeerIpAddress(ClientSocket);
+        if (peerIp.empty() || !g_connectionRateLimiter.Allow(peerIp)) {
+            closesocket_impl(ClientSocket);
             continue;
         }
 

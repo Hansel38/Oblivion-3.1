@@ -487,6 +487,26 @@ To clean build artifacts:
 make clean
 ```
 
+## Pre-TLS connection rate limiting
+
+The TCP accept loop applies an in-memory token bucket by numeric source IP
+before allocating a worker thread or negotiating TLS. The current compiled
+policy is:
+- Burst capacity: 120 accepted connection attempts per source IP.
+- Refill rate: 2 connection attempts per second per source IP.
+- Maximum tracked source addresses: 65,536.
+- Idle buckets expire after 10 minutes and are pruned periodically.
+
+This limits repeated connection attempts from one address; it is not a DDoS
+scrubber and does not replace provider/firewall controls. Test large NATs
+(internet cafes, campuses, and shared mobile gateways) before production rollout.
+When operating behind a TCP proxy or load balancer, do not use this policy until
+the service has a trusted source-address integration; otherwise all clients can
+appear to originate from the proxy address.
+
+The policy is implemented in `common/ip_rate_limiter.h` and covered by
+`tests/ip_rate_limiter_test.cpp`, which is included in `make test`.
+
 ## Notes
 
 - The server listens on port 54321 by default
