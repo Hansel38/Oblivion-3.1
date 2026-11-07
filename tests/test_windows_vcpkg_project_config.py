@@ -44,6 +44,31 @@ class WindowsVcpkgProjectConfigTests(unittest.TestCase):
             self.assertIn(r"$(OblivionVcpkgInstalledDir)\lib", content)
             self.assertNotIn(r"$(VCPKG_ROOT)\installed\$(OblivionVcpkgTriplet)", content)
 
+    def test_win32_uses_x86_triplet_and_has_repository_root_fallback(self):
+        for relative in ("client/client.vcxproj", "server/server.vcxproj"):
+            content = (ROOT / relative).read_text(encoding="utf-8-sig")
+            self.assertIn(
+                r"<OblivionVcpkgTriplet Condition=\"'$(Platform)'=='Win32'\">x86-windows-static-md</OblivionVcpkgTriplet>",
+                content,
+            )
+
+        props = (ROOT / "common" / "OblivionVcpkg.props").read_text(encoding="utf-8")
+        self.assertIn("OblivionVcpkgRepositoryRoot", props)
+        self.assertIn("installed\\$(OblivionVcpkgTriplet)\\include\\openssl\\ssl.h", props)
+        self.assertIn("Checked: $(OblivionVcpkgInstalledDir)", props)
+
+    def test_setup_script_verifies_installed_headers_and_libraries(self):
+        content = (ROOT / "tools" / "setup_windows_dependencies.ps1").read_text(encoding="utf-8")
+        for required in (
+            'include\\openssl\\ssl.h',
+            'lib\\libssl.lib',
+            'lib\\libcrypto.lib',
+            'lib\\yaml-cpp.lib',
+            "Dependency installation for",
+            "PathType Leaf",
+        ):
+            self.assertIn(required, content)
+
     def test_public_network_reporter_header_forward_declares_tls_types(self):
         header = (ROOT / "client" / "include" / "network_reporter.h").read_text(encoding="utf-8")
         self.assertNotIn("#include <openssl/ssl.h>", header)
