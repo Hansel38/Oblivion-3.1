@@ -13,6 +13,8 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <windows.h>
+#include <wincrypt.h>
 #else
 #include <sys/select.h>
 #include <sys/time.h>
@@ -98,6 +100,43 @@ inline std::string CertificateSha256Pin(X509* certificate) {
     return pin;
 }
 
+#ifdef _WIN32
+inline void AddWindowsRootStoreToOpenSsl(X509_STORE* store, DWORD location) {
+    if (store == nullptr) {
+        return;
+    }
+
+    HCERTSTORE windowsStore = CertOpenStore(
+        CERT_STORE_PROV_SYSTEM_W,
+        0,
+        nullptr,
+        location | CERT_STORE_READONLY_FLAG,
+        L"ROOT");
+    if (windowsStore == nullptr) {
+        return;
+    }
+
+    PCCERT_CONTEXT certificateContext = nullptr;
+    while ((certificateContext = CertEnumCertificatesInStore(
+                windowsStore, certificateContext)) != nullptr) {
+        const unsigned char* encoded = certificateContext->pbCertEncoded;
+        X509* certificate = d2i_X509(
+            nullptr, &encoded, static_cast<long>(certificateContext->cbCertEncoded));
+        if (certificate != nullptr) {
+            if (X509_STORE_add_cert(store, certificate) != 1) {
+                // Duplicate certificates are expected when both Windows root
+                // locations contain the same public CA. Clear only the OpenSSL
+                // error queue; the existing trusted copy remains in the store.
+                ERR_clear_error();
+            }
+            X509_free(certificate);
+        }
+    }
+
+    CertCloseStore(windowsStore, 0);
+}
+#endif
+
 inline SSL_CTX* CreateClientContext(std::string& error) {
     error.clear();
     SSL_CTX* context = SSL_CTX_new(TLS_client_method());
@@ -118,6 +157,11 @@ inline SSL_CTX* CreateClientContext(std::string& error) {
     // A missing CA bundle does not disable explicitly pinned self-signed deployments;
     // it simply means CA-issued peers cannot be validated.
     (void)SSL_CTX_set_default_verify_paths(context);
+#ifdef _WIN32
+    X509_STORE* trustStore = SSL_CTX_get_cert_store(context);
+    AddWindowsRootStoreToOpenSsl(trustStore, CERT_SYSTEM_STORE_CURRENT_USER);
+    AddWindowsRootStoreToOpenSsl(trustStore, CERT_SYSTEM_STORE_LOCAL_MACHINE);
+#endif
     // Certificate identity is validated after the handshake so the explicitly
     // pinned self-signed leaf trust-anchor policy can be applied deliberately.
     SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
