@@ -76,11 +76,32 @@ Invoke-NativeCommand -FilePath $vcpkgExecutable -Arguments (
     @("install") + $packages + @("--disable-metrics")
 )
 
+# Do not report success based only on vcpkg's exit code: verify the exact files
+# consumed by the Visual Studio projects for every requested architecture.
+foreach ($triplet in $triplets) {
+    $installedDir = Join-Path $VcpkgRoot ("installed\{0}" -f $triplet)
+    $requiredFiles = @(
+        (Join-Path $installedDir "include\openssl\ssl.h"),
+        (Join-Path $installedDir "lib\libssl.lib"),
+        (Join-Path $installedDir "lib\libcrypto.lib"),
+        (Join-Path $installedDir "lib\yaml-cpp.lib")
+    )
+
+    $missingFiles = @($requiredFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+    if ($missingFiles.Count -gt 0) {
+        $missingList = $missingFiles -join [Environment]::NewLine
+        throw ("Dependency installation for {0} is incomplete. Missing files:{1}{2}" -f
+            $triplet, [Environment]::NewLine, $missingList)
+    }
+
+    Write-Host ("Verified {0}: {1}" -f $triplet, $installedDir) -ForegroundColor Green
+}
+
 [Environment]::SetEnvironmentVariable("VCPKG_ROOT", $VcpkgRoot, "User")
 $env:VCPKG_ROOT = $VcpkgRoot
 
 Write-Host ""
-Write-Host "Oblivion Windows dependencies are installed." -ForegroundColor Green
+Write-Host "Oblivion Windows dependencies are installed and verified." -ForegroundColor Green
 Write-Host "VCPKG_ROOT: $VcpkgRoot"
 Write-Host "Installed triplets: $($triplets -join ', ')"
-Write-Host "Close and reopen Visual Studio before building the solution."
+Write-Host "Visual Studio will use the selected VCPKG_ROOT. Close and reopen Visual Studio before building."
