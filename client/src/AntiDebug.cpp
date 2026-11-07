@@ -3,6 +3,7 @@
 #include "win_path_utils.h"
 #include "../../common/module_whitelist_policy.h"
 #include "../../common/peb_layout_policy.h"
+#include "../../common/hardware_breakpoint_policy.h"
 #include <cstring>
 #include <vector>
 #include <cwctype>
@@ -61,6 +62,39 @@ static PVOID QueryCurrentPebBaseAddress() noexcept {
     }
 
     return information.PebBaseAddress;
+}
+
+struct HardwareBreakpointCaptureRequest {
+    HANDLE threadHandle = nullptr;
+    CONTEXT context{};
+    bool contextCaptured = false;
+    bool resumed = false;
+};
+
+// GetThreadContext cannot return a valid context for the running current thread.
+// A short-lived helper thread suspends the scanner thread, captures only the
+// debug-register portion, and resumes it before returning to the caller.
+static DWORD WINAPI CaptureCurrentThreadDebugRegisters(void* parameter) noexcept {
+    auto* request = static_cast<HardwareBreakpointCaptureRequest*>(parameter);
+    if (request == nullptr || request->threadHandle == nullptr) {
+        return 0;
+    }
+
+    if (SuspendThread(request->threadHandle) == MAXDWORD) {
+        return 0;
+    }
+
+    CONTEXT capturedContext{};
+    capturedContext.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    request->contextCaptured =
+        GetThreadContext(request->threadHandle, &capturedContext) != FALSE;
+
+    // Resume the scanner thread even when GetThreadContext fails.
+    request->resumed = ResumeThread(request->threadHandle) != MAXDWORD;
+    if (request->contextCaptured && request->resumed) {
+        request->context = capturedContext;
+    }
+    return 0;
 }
 
 // VEH probe handler and flag (file-scope)
@@ -364,16 +398,41 @@ namespace Oblivion {
     }
 
     bool AntiDebug::CheckHardwareBreakpoints() {
-        // Cek DR0–DR3 dan flag enable di DR7 pada thread saat ini
-        CONTEXT ctx = {};
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-        if (!GetThreadContext(GetCurrentThread(), &ctx)) {
-            return false; // Tidak bisa mendapatkan konteks, asumsikan aman
+        const DWORD currentThreadId = GetCurrentThreadId();
+        HANDLE threadHandle = OpenThread(
+            THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME,
+            FALSE,
+            currentThreadId);
+        if (threadHandle == nullptr) {
+            return false;
         }
 
-        bool anyDrSet = (ctx.Dr0 != 0) || (ctx.Dr1 != 0) || (ctx.Dr2 != 0) || (ctx.Dr3 != 0);
-        bool dr7Enabled = (ctx.Dr7 & 0xFF) != 0; // Enable bits untuk local/global bp
-        return anyDrSet || dr7Enabled;
+        HardwareBreakpointCaptureRequest request{};
+        request.threadHandle = threadHandle;
+        HANDLE captureThread = CreateThread(
+            nullptr,
+            0,
+            CaptureCurrentThreadDebugRegisters,
+            &request,
+            0,
+            nullptr);
+        if (captureThread == nullptr) {
+            CloseHandle(threadHandle);
+            return false;
+        }
+
+        // The request remains on this stack until the helper has completed.
+        // The helper does not wait for or depend on the scanner thread.
+        const DWORD waitResult = WaitForSingleObject(captureThread, INFINITE);
+        CloseHandle(captureThread);
+        CloseHandle(threadHandle);
+
+        if (waitResult != WAIT_OBJECT_0 || !request.contextCaptured || !request.resumed) {
+            return false;
+        }
+
+        return Oblivion::Windows::HasEnabledHardwareBreakpoints(
+            static_cast<std::uint64_t>(request.context.Dr7));
     }
 
     bool AntiDebug::CheckKernelDebugger() {
