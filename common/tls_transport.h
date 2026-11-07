@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <wincrypt.h>
 #else
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #endif
@@ -401,12 +402,53 @@ inline bool WaitForHandshakeIo(
     return ready > 0;
 }
 
+// TLS handshake deadlines are only enforceable when the underlying socket is
+// nonblocking. This helper is intentionally idempotent and leaves the socket
+// nonblocking because the TLS read/write pumps also use select() + WANT_READ/WANT_WRITE.
+inline bool EnsureSocketNonBlocking(int socketDescriptor, std::string& error) {
+    if (socketDescriptor < 0) {
+        error = "TLS socket descriptor is invalid";
+        return false;
+    }
+
+#ifdef _WIN32
+    u_long nonBlocking = 1;
+    if (ioctlsocket(static_cast<SOCKET>(socketDescriptor), FIONBIO, &nonBlocking) != 0) {
+        error = "cannot set TLS socket nonblocking (Winsock error " +
+            std::to_string(WSAGetLastError()) + ")";
+        return false;
+    }
+#else
+    const int flags = fcntl(socketDescriptor, F_GETFL, 0);
+    if (flags < 0) {
+        error = "cannot read TLS socket flags";
+        return false;
+    }
+    if ((flags & O_NONBLOCK) == 0 &&
+        fcntl(socketDescriptor, F_SETFL, flags | O_NONBLOCK) < 0) {
+        error = "cannot set TLS socket nonblocking";
+        return false;
+    }
+#endif
+    return true;
+}
+
 inline bool PerformHandshake(
     SSL* session,
     int socketDescriptor,
     bool serverSide,
-    std::string& error) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    std::string& error,
+    std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+    error.clear();
+    if (session == nullptr || timeout.count() <= 0) {
+        error = "TLS handshake inputs or timeout are invalid";
+        return false;
+    }
+    if (!EnsureSocketNonBlocking(socketDescriptor, error)) {
+        return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true) {
         const int result = serverSide ? SSL_accept(session) : SSL_connect(session);
         if (result == 1) {
