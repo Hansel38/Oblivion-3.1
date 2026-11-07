@@ -51,6 +51,7 @@ test: $(TEST_TARGET) $(HEARTBEAT_TIMING_TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
+	python3 ../tests/test_windows_vcpkg_project_config.py
 
 production-check:
 	@test -n "$(OBLIVION_PRODUCTION_GAME_DIR)" || (echo "[ERROR] Set OBLIVION_PRODUCTION_GAME_DIR to the exact package distributed to players." >&2; exit 2)
