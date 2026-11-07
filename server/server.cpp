@@ -1048,8 +1048,6 @@ void HandleClient(SOCKET clientSocket) {
                            ";HEARTBEAT:" + std::to_string(cfg.interval_ms) +
                            ":" + std::to_string(cfg.jitter_ms) +
                            ":" + std::to_string(cfg.timeout_ms) + ";");
-                    SendAllBytes(clientSocket, response);
-                    std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
 
                     // Basic ping scheduler over the same socket (line-based)
                     uint32_t seq = 1;
@@ -1118,10 +1116,18 @@ void HandleClient(SOCKET clientSocket) {
                         }
                         return out;
                     };
-                    std::string sessionKey = hmacSha256(SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
+                    std::string sessionKey;
+                    if (sessionNonce != 0) {
+                        sessionKey = hmacSha256(
+                            SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
+                    }
                     if (sessionNonce == 0 || sessionKey.empty()) {
                         LogViolation("HB_INIT_FAILED", "Cryptographic session initialization failed", hwid);
+                        SendAllBytes(clientSocket, "ERROR:CRYPTO;");
+                    } else if (!SendAllBytes(clientSocket, response)) {
+                        LogViolation("HB_INIT_FAILED", "Unable to send authenticated check-in response", hwid);
                     } else {
+                        std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
                         std::cout << "[HEARTBEAT] Started for HWID [" << hwid << "]" << std::endl;
                         bool warningLogged = false;
                         std::string heartbeatBuffer;
