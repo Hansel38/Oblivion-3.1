@@ -4,13 +4,13 @@
 #include "digital_signature_validator.h"
 #include "../../common/windows_path_policy.h"
 #include "../../common/authenticode_verdict_policy.h"
+#include "../../common/thread_safe_cache.h"
 #include <tlhelp32.h>
 #include <vector>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
 #include <iostream>
-#include <map>
 #include <psapi.h>
 #include <winternl.h>
 
@@ -94,7 +94,8 @@ namespace {
         bool trusted = false;
     };
 
-    using FileTrustCache = std::map<std::wstring, FileTrustCacheEntry>;
+    using FileTrustCache =
+        Oblivion::Security::ThreadSafeCache<std::wstring, FileTrustCacheEntry>;
     constexpr size_t kMaximumCachedFileTrustEntries = 4096;
     FileTrustCache g_signatureCache;
     FileTrustCache g_trustedFileCache;
@@ -166,15 +167,15 @@ namespace {
         const std::wstring& key,
         const FileTrustStamp& currentStamp,
         bool& trusted) {
-        const auto found = cache.find(key);
-        if (found == cache.end()) {
+        FileTrustCacheEntry cachedEntry;
+        if (!cache.TryGet(key, cachedEntry)) {
             return false;
         }
-        if (!SameFileTrustStamp(found->second.stamp, currentStamp)) {
-            cache.erase(found);
+        if (!SameFileTrustStamp(cachedEntry.stamp, currentStamp)) {
+            cache.Erase(key);
             return false;
         }
-        trusted = found->second.trusted;
+        trusted = cachedEntry.trusted;
         return true;
     }
 
@@ -187,13 +188,13 @@ namespace {
         FileTrustStamp currentStamp;
         if (!GetFileTrustStamp(filePath, currentStamp) ||
             !SameFileTrustStamp(initialStamp, currentStamp)) {
-            cache.erase(key);
+            cache.Erase(key);
             return false;
         }
-        if (cache.find(key) == cache.end() && cache.size() >= kMaximumCachedFileTrustEntries) {
-            cache.clear();
-        }
-        cache[key] = FileTrustCacheEntry{ currentStamp, trusted };
+        cache.Store(
+            key,
+            FileTrustCacheEntry{ currentStamp, trusted },
+            kMaximumCachedFileTrustEntries);
         return true;
     }
 
@@ -370,11 +371,11 @@ namespace {
     // Nama tipe dibaca lewat NtQueryObject dan hasilnya di-cache per nomor tipe,
     // sehingga biaya query hanya sekali per tipe objek (bukan per handle).
     bool IsProcessHandleType(DWORD ownerProcessId, HANDLE handleValue, BYTE objectTypeNumber) {
-        static std::map<BYTE, bool> typeCache;
+        static Oblivion::Security::ThreadSafeCache<BYTE, bool> typeCache;
 
-        auto cached = typeCache.find(objectTypeNumber);
-        if (cached != typeCache.end()) {
-            return cached->second;
+        bool cachedIsProcess = false;
+        if (typeCache.TryGet(objectTypeNumber, cachedIsProcess)) {
+            return cachedIsProcess;
         }
 
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerProcessId);
@@ -391,7 +392,7 @@ namespace {
         }
 
         const bool isProcess = (_wcsicmp(typeName.c_str(), L"Process") == 0);
-        typeCache[objectTypeNumber] = isProcess;
+        typeCache.Store(objectTypeNumber, isProcess);
         return isProcess;
     }
 
