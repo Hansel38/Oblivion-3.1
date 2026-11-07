@@ -15,6 +15,7 @@
 #include <mutex>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include "../common/tls_transport.h"
 #include "../common/server_listen_port.h"
 #include "../common/server_yaml_config.h"
@@ -755,18 +756,14 @@ ParsedReport ParseProtocol(const std::string& report) {
 // Batas koneksi client yang diproses bersamaan. Satu thread per koneksi TANPA batas
 // bisa dihabiskan oleh flood koneksi (thread + handle menumpuk) sehingga anti-cheat
 // tidak bisa lagi melayani pemain sah (DoS).
-static const int kMaxConcurrentClients = 256;
-static std::atomic<int> g_activeClients{ 0 };
+static std::size_t g_maxConcurrentClients = 256;
+static std::atomic<std::size_t> g_activeClients{ 0 };
 static Oblivion::HeartbeatConfig g_heartbeatConfig;
-
-// Initial policy: 120 connection attempts in a burst, then 2 attempts/second
-// per source IP. The table is bounded and idle entries expire after 10 minutes.
-static Oblivion::Security::IpRateLimiter g_connectionRateLimiter(
-    120.0, 2.0, 65536, std::chrono::minutes(10), 256);
+static std::unique_ptr<Oblivion::Security::IpRateLimiter> g_connectionRateLimiter;
 
 static bool TryAcquireClientSlot() {
-    int current = g_activeClients.load(std::memory_order_relaxed);
-    while (current < kMaxConcurrentClients) {
+    std::size_t current = g_activeClients.load(std::memory_order_relaxed);
+    while (current < g_maxConcurrentClients) {
         if (g_activeClients.compare_exchange_weak(
                 current, current + 1,
                 std::memory_order_acq_rel,
@@ -837,8 +834,12 @@ bool WaitForTlsIo(SOCKET socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
 }
 
 bool SendAllBytes(SOCKET socket, const std::string& payload) {
+    constexpr uint64_t kTotalWriteDeadlineMs = 5000ULL;
+    const uint64_t deadline = MonotonicMilliseconds() + kTotalWriteDeadlineMs;
     size_t sent = 0;
     while (sent < payload.size()) {
+        const uint64_t now = MonotonicMilliseconds();
+        if (now >= deadline) return false;
         const size_t remaining = payload.size() - sent;
         const int chunk = static_cast<int>((std::min)(remaining, static_cast<size_t>(0x7fffffff)));
         int result = 0;
@@ -852,7 +853,10 @@ bool SendAllBytes(SOCKET socket, const std::string& payload) {
 #endif
         }
         if (g_activeTls != nullptr && result <= 0) {
-            if (WaitForTlsIo(socket, g_activeTls, result, 5000)) continue;
+            const uint64_t now = MonotonicMilliseconds();
+            if (now >= deadline) return false;
+            const uint32_t remainingMs = static_cast<uint32_t>(deadline - now);
+            if (WaitForTlsIo(socket, g_activeTls, result, remainingMs)) continue;
             return false;
         }
         if (result <= 0) return false;
@@ -953,8 +957,7 @@ void HandleClient(SOCKET clientSocket) {
 
     SSL* tlsSession = AcceptTlsConnection(clientSocket);
     if (tlsSession == nullptr) {
-        closesocket(clientSocket);
-        return;
+        return; // RunClientWorker owns and closes the accepted socket.
     }
     ActiveTlsSessionGuard tlsGuard(tlsSession);
 
@@ -963,8 +966,18 @@ void HandleClient(SOCKET clientSocket) {
         // timeout alone permits slow clients to hold a worker indefinitely by
         // sending one byte just before each timeout expires.
         std::string report;
-        (void)ReceiveSemicolonFrame(
+        const bool initialFrameComplete = ReceiveSemicolonFrame(
             clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
+        if (!initialFrameComplete) {
+            if (!report.empty()) {
+                extractedHwid = ExtractHWIDFromRawData(report);
+                LogViolation("INCOMPLETE_REQUEST",
+                    "Initial TLS protocol frame did not complete before its deadline or size limit (bytes=" +
+                        std::to_string(report.size()) + ")",
+                    extractedHwid);
+            }
+            return;
+        }
         bytesReceived = static_cast<int>(report.size());
         if (bytesReceived > 0) {
             // Null-terminate untuk keamanan
@@ -992,7 +1005,6 @@ void HandleClient(SOCKET clientSocket) {
                 // Kirim error response dan tutup koneksi
                 const char* errorResponse = "ERROR:INVALID_FORMAT;";
                 SendAllBytes(clientSocket, errorResponse);
-                closesocket(clientSocket);
                 return;
             }
             
@@ -1309,7 +1321,6 @@ void HandleClient(SOCKET clientSocket) {
         LogViolation("EXCEPTION", "Unknown exception occurred", extractedHwid);
     }
 
-    closesocket(clientSocket);
 }
 
 // Last-resort exception boundary for the thread entry point. If an allocation
@@ -1322,6 +1333,16 @@ void RunClientWorker(SOCKET clientSocket) noexcept {
         }
     } slotGuard;
 
+    struct ClientSocketOwner {
+        explicit ClientSocketOwner(SOCKET value) noexcept : socket(value) {}
+        ~ClientSocketOwner() noexcept {
+            if (socket != INVALID_SOCKET) closesocket(socket);
+        }
+        ClientSocketOwner(const ClientSocketOwner&) = delete;
+        ClientSocketOwner& operator=(const ClientSocketOwner&) = delete;
+        SOCKET socket;
+    } socketOwner(clientSocket);
+
     try {
         HandleClient(clientSocket);
     } catch (const std::exception& e) {
@@ -1329,13 +1350,11 @@ void RunClientWorker(SOCKET clientSocket) noexcept {
             std::cerr << "[EXCEPTION] Unhandled client worker exception: " << e.what() << std::endl;
         } catch (...) {
         }
-        closesocket(clientSocket);
     } catch (...) {
         try {
             std::cerr << "[EXCEPTION] Unknown exception escaped client worker" << std::endl;
         } catch (...) {
         }
-        closesocket(clientSocket);
     }
 }
 
@@ -1369,6 +1388,26 @@ int main() {
     } else {
         std::cout << "[CONFIG] YAML not found; using safe compiled defaults and environment overrides" << std::endl;
     }
+
+    const auto& connectionSettings = g_serverSettings.connections;
+    g_maxConcurrentClients = connectionSettings.maxConcurrentClients;
+    try {
+        g_connectionRateLimiter = std::make_unique<Oblivion::Security::IpRateLimiter>(
+            static_cast<double>(connectionSettings.perIpBurst),
+            static_cast<double>(connectionSettings.perIpRefillPerSecond),
+            connectionSettings.maxTrackedIps,
+            std::chrono::seconds(connectionSettings.ipIdleExpirationSeconds),
+            connectionSettings.ipCleanupInterval);
+    } catch (const std::exception& exception) {
+        std::cerr << "[FATAL] Cannot initialize connection limits: " << exception.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[CONNECTION CFG] maxConcurrent=" << g_maxConcurrentClients
+              << " perIpBurst=" << connectionSettings.perIpBurst
+              << " perIpRefill=" << connectionSettings.perIpRefillPerSecond << "/s"
+              << " trackedIps=" << connectionSettings.maxTrackedIps
+              << " idleExpiry=" << connectionSettings.ipIdleExpirationSeconds << "s"
+              << " cleanupEvery=" << connectionSettings.ipCleanupInterval << std::endl;
 
     std::string listenPort;
     std::string listenPortError;
@@ -1508,7 +1547,8 @@ int main() {
         // Enforce a bounded per-IP connection rate before allocating a worker
         // or performing an expensive TLS handshake.
         const std::string peerIp = GetPeerIpAddress(ClientSocket);
-        if (peerIp.empty() || !g_connectionRateLimiter.Allow(peerIp)) {
+        if (peerIp.empty() || !g_connectionRateLimiter ||
+            !g_connectionRateLimiter->Allow(peerIp)) {
             closesocket(ClientSocket);
             continue;
         }
@@ -1518,7 +1558,7 @@ int main() {
         // Reserve a slot atomically; load()+fetch_add() allowed concurrent
         // accepts to exceed the configured worker limit under connection floods.
         if (!TryAcquireClientSlot()) {
-            std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << kMaxConcurrentClients << "), koneksi baru ditolak" << std::endl;
+            std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << g_maxConcurrentClients << "), koneksi baru ditolak" << std::endl;
             // Do not emit a plaintext protocol response before TLS is established.
             closesocket(ClientSocket);
             continue;
