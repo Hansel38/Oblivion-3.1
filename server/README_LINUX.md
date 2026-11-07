@@ -171,7 +171,7 @@ The installer now refuses a fresh install if it cannot find a certificate/key pa
 
 For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
 
-The client verifies the pinned leaf SHA-256, validity period, server-auth purpose, and DNS/IP SAN. CA-issued certificates must also chain to a CA root trusted by the OpenSSL client trust store. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` when the runtime uses a non-default CA bundle. Explicitly pinned self-signed leaf certificates remain supported as private trust anchors, but this exception is limited to cryptographically self-signed leaf certificates whose exact fingerprint is pinned.
+The client verifies the pinned leaf SHA-256, validity period, server-auth purpose, and DNS/IP SAN. CA-issued certificates must also chain to a trusted root. On Windows, the client imports both the Current User and Local Machine `ROOT` certificate stores into OpenSSL's trust store; on other platforms it uses the OpenSSL default CA paths. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` when a custom CA bundle is required. Explicitly pinned self-signed leaf certificates remain supported as private trust anchors, but this exception is limited to cryptographically self-signed leaf certificates whose exact fingerprint is pinned.
 
 ### VPS listen address, TCP port, and client endpoint
 
