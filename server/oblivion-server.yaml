@@ -21,3 +21,13 @@ heartbeat:
   timeout_ms: 4000
   max_consecutive_misses: 3
   rtt_warn_ms: 1500
+
+connections:
+  # Batas worker per koneksi. Sesuaikan dengan RAM/CPU VPS.
+  max_concurrent_clients: 256
+  # Token bucket per IP untuk menahan koneksi berulang sebelum TLS.
+  per_ip_burst: 120
+  per_ip_refill_per_second: 2
+  max_tracked_ips: 65536
+  ip_idle_expiration_seconds: 600
+  ip_cleanup_interval: 256
