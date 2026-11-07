@@ -75,6 +75,9 @@
     <ClInclude Include="include\heartbeat_protocol.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="..\common\thread_safe_cache.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
