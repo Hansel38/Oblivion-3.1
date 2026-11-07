@@ -471,7 +471,7 @@ namespace Oblivion {
                         CP_UTF8, 0, modName.c_str(), -1,
                         utf8, static_cast<int>(sizeof(utf8) - 1), nullptr, nullptr);
                     if (converted == 0) {
-                        utf8[0] = '\\0';
+                        utf8[0] = '\0';
                     }
 
                     // Module names are untrusted diagnostic data. Build the message
