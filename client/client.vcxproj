@@ -176,6 +176,7 @@
     <ClInclude Include="..\common\module_whitelist_policy.h" />
     <ClInclude Include="..\common\relative_manifest_path.h" />
     <ClInclude Include="..\common\thread_safe_cache.h" />
+    <ClInclude Include="..\common\peb_layout_policy.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
