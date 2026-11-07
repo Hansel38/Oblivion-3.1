@@ -55,6 +55,8 @@ class WindowsVcpkgProjectConfigTests(unittest.TestCase):
         props = (ROOT / "common" / "OblivionVcpkg.props").read_text(encoding="utf-8")
         self.assertIn("OblivionVcpkgRepositoryRoot", props)
         self.assertIn("installed\\$(OblivionVcpkgTriplet)\\include\\openssl\\ssl.h", props)
+        for library in ("libssl.lib", "libcrypto.lib", "yaml-cpp.lib"):
+            self.assertIn(library, props)
         self.assertIn("Checked: $(OblivionVcpkgInstalledDir)", props)
 
     def test_setup_script_verifies_installed_headers_and_libraries(self):
