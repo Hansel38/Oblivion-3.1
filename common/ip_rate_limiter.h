@@ -52,7 +52,12 @@ public:
         if (entry == buckets_.end()) {
             // Keep memory bounded even when an attacker rotates source addresses.
             if (buckets_.size() >= maximumTrackedIps_) {
-                return false;
+                // Capacity pressure must not reject a legitimate new IP solely
+                // because expired entries have not reached the normal sweep cadence.
+                PruneExpiredLocked(now);
+                if (buckets_.size() >= maximumTrackedIps_) {
+                    return false;
+                }
             }
 
             Bucket fresh;
