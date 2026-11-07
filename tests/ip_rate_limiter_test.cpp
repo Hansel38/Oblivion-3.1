@@ -56,6 +56,23 @@ int main() {
     assert(bounded.Allow("198.51.100.2", start + seconds(6)));
     assert(bounded.TrackedIpCount() == 1);
 
+    // When the cache is full, reclaim expired entries immediately even if the
+    // global maintenance operation interval has not elapsed.
+    Limiter capacityPressure(1.0, 0.0, 1, seconds(5), 100);
+    assert(capacityPressure.Allow("198.51.100.10", start));
+    assert(capacityPressure.Allow("198.51.100.11", start + seconds(6)));
+    assert(capacityPressure.TrackedIpCount() == 1);
+
+    // Expired entries are pruned even while operations hit a known address.
+    Limiter busyKnownIp(1.0, 0.0, 2, seconds(5), 2);
+    assert(busyKnownIp.Allow("192.0.2.20", start));              // operation 1
+    assert(busyKnownIp.Allow("192.0.2.21", start));              // operation 2
+    assert(!busyKnownIp.Allow("192.0.2.21", start + seconds(6))); // operation 3
+    assert(!busyKnownIp.Allow("192.0.2.21", start + seconds(6))); // operation 4 prunes expired .20
+    assert(busyKnownIp.TrackedIpCount() == 1);
+    assert(busyKnownIp.Allow("192.0.2.22", start + seconds(6)));
+    assert(busyKnownIp.TrackedIpCount() == 2);
+
     std::cout << "ip_rate_limiter_test: PASS\n";
     return 0;
 }

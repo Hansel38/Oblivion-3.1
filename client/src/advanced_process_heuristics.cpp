@@ -4,15 +4,32 @@
 #include "digital_signature_validator.h"
 #include "../../common/windows_path_policy.h"
 #include "../../common/authenticode_verdict_policy.h"
+#include "../../common/thread_safe_cache.h"
 #include <tlhelp32.h>
 #include <vector>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
 #include <iostream>
-#include <map>
 #include <psapi.h>
 #include <winternl.h>
+
+namespace {
+class ScopedNativeHandle {
+public:
+    explicit ScopedNativeHandle(HANDLE handle = nullptr) noexcept : handle_(handle) {}
+    ~ScopedNativeHandle() noexcept {
+        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+    }
+    ScopedNativeHandle(const ScopedNativeHandle&) = delete;
+    ScopedNativeHandle& operator=(const ScopedNativeHandle&) = delete;
+    HANDLE get() const noexcept { return handle_; }
+private:
+    HANDLE handle_;
+};
+}
 
 // NtQuerySystemInformation for handle enumeration
 typedef NTSTATUS (NTAPI* NtQuerySystemInformationFn)(
@@ -77,7 +94,8 @@ namespace {
         bool trusted = false;
     };
 
-    using FileTrustCache = std::map<std::wstring, FileTrustCacheEntry>;
+    using FileTrustCache =
+        Oblivion::Security::ThreadSafeCache<std::wstring, FileTrustCacheEntry>;
     constexpr size_t kMaximumCachedFileTrustEntries = 4096;
     FileTrustCache g_signatureCache;
     FileTrustCache g_trustedFileCache;
@@ -149,15 +167,15 @@ namespace {
         const std::wstring& key,
         const FileTrustStamp& currentStamp,
         bool& trusted) {
-        const auto found = cache.find(key);
-        if (found == cache.end()) {
+        FileTrustCacheEntry cachedEntry;
+        if (!cache.TryGet(key, cachedEntry)) {
             return false;
         }
-        if (!SameFileTrustStamp(found->second.stamp, currentStamp)) {
-            cache.erase(found);
+        if (!SameFileTrustStamp(cachedEntry.stamp, currentStamp)) {
+            cache.Erase(key);
             return false;
         }
-        trusted = found->second.trusted;
+        trusted = cachedEntry.trusted;
         return true;
     }
 
@@ -170,13 +188,13 @@ namespace {
         FileTrustStamp currentStamp;
         if (!GetFileTrustStamp(filePath, currentStamp) ||
             !SameFileTrustStamp(initialStamp, currentStamp)) {
-            cache.erase(key);
+            cache.Erase(key);
             return false;
         }
-        if (cache.find(key) == cache.end() && cache.size() >= kMaximumCachedFileTrustEntries) {
-            cache.clear();
-        }
-        cache[key] = FileTrustCacheEntry{ currentStamp, trusted };
+        cache.Store(
+            key,
+            FileTrustCacheEntry{ currentStamp, trusted },
+            kMaximumCachedFileTrustEntries);
         return true;
     }
 
@@ -327,15 +345,15 @@ namespace {
             return L"";
         }
 
+        ScopedNativeHandle duplicateOwner(hDuplicate);
         std::vector<BYTE> buffer(4096);
         ULONG returnLength = 0;
         const NTSTATUS status = pNtQueryObject(
-            hDuplicate,
+            duplicateOwner.get(),
             OBLIVION_OBJECT_TYPE_INFORMATION_CLASS,
             buffer.data(),
             static_cast<ULONG>(buffer.size()),
             &returnLength);
-        CloseHandle(hDuplicate);
 
         if (status < 0) {
             return L"";
@@ -353,11 +371,11 @@ namespace {
     // Nama tipe dibaca lewat NtQueryObject dan hasilnya di-cache per nomor tipe,
     // sehingga biaya query hanya sekali per tipe objek (bukan per handle).
     bool IsProcessHandleType(DWORD ownerProcessId, HANDLE handleValue, BYTE objectTypeNumber) {
-        static std::map<BYTE, bool> typeCache;
+        static Oblivion::Security::ThreadSafeCache<BYTE, bool> typeCache;
 
-        auto cached = typeCache.find(objectTypeNumber);
-        if (cached != typeCache.end()) {
-            return cached->second;
+        bool cachedIsProcess = false;
+        if (typeCache.TryGet(objectTypeNumber, cachedIsProcess)) {
+            return cachedIsProcess;
         }
 
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerProcessId);
@@ -365,16 +383,16 @@ namespace {
             // Belum bisa dipastikan: jangan cache supaya dicoba lagi pada scan berikutnya.
             return false;
         }
+        ScopedNativeHandle ownerProcess(hOwnerProcess);
 
-        const std::wstring typeName = GetHandleTypeName(hOwnerProcess, handleValue);
-        CloseHandle(hOwnerProcess);
+        const std::wstring typeName = GetHandleTypeName(ownerProcess.get(), handleValue);
 
         if (typeName.empty()) {
             return false;
         }
 
         const bool isProcess = (_wcsicmp(typeName.c_str(), L"Process") == 0);
-        typeCache[objectTypeNumber] = isProcess;
+        typeCache.Store(objectTypeNumber, isProcess);
         return isProcess;
     }
 
@@ -1471,36 +1489,32 @@ namespace Oblivion {
                     // Verify: Try to duplicate the handle and check if it points to our game
                     HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.ProcessId);
                     if (hOwnerProcess != NULL) {
+                        ScopedNativeHandle ownerProcess(hOwnerProcess);
                         HANDLE hDuplicated = NULL;
-                        
-                        // Try to duplicate the handle
+
                         if (DuplicateHandle(
-                            hOwnerProcess,
-                            (HANDLE)(ULONG_PTR)handle.Handle,
+                            ownerProcess.get(),
+                            reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(handle.Handle)),
                             GetCurrentProcess(),
                             &hDuplicated,
                             0,
                             FALSE,
                             DUPLICATE_SAME_ACCESS)) {
+                            ScopedNativeHandle duplicatedOwner(hDuplicated);
 
-                            // Check if duplicated handle points to our game process
-                            DWORD targetPid = GetProcessId(hDuplicated);
+                            const DWORD targetPid = GetProcessId(duplicatedOwner.get());
                             if (targetPid == gameProcessId) {
-                                // CONFIRMED: This handle points to our game with dangerous access!
-                                suspiciousProcess = processName + L" (PID:" + std::to_wstring(handle.ProcessId) + 
-                                                   L", Access:0x" + std::to_wstring(handle.GrantedAccess) + L")";
+                                suspiciousProcess = processName + L" (PID:" + std::to_wstring(handle.ProcessId) +
+                                    L", Access:0x" + std::to_wstring(handle.GrantedAccess) + L")";
 #ifdef _DEBUG
-                                std::wstring debugMsg = L"[AdvHeuristics] DETECTED SUSPICIOUS HANDLE to game: " + suspiciousProcess + L"\n";
+                                std::wstring debugMsg =
+                                    L"[AdvHeuristics] DETECTED SUSPICIOUS HANDLE to game: " +
+                                    suspiciousProcess + L"\n";
                                 OutputDebugStringW(debugMsg.c_str());
 #endif
-                                CloseHandle(hDuplicated);
-                                CloseHandle(hOwnerProcess);
                                 return true;
                             }
-                            
-                            CloseHandle(hDuplicated);
                         }
-                        CloseHandle(hOwnerProcess);
                     }
                 }
             }

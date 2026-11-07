@@ -82,6 +82,7 @@ namespace Oblivion {
         SOCKET m_hbSocket = INVALID_SOCKET; // Socket untuk heartbeat
         SSL* m_hbTls = nullptr; // TLS session bound to the heartbeat socket
         uint64_t m_sessionNonce = 0; // Session nonce dari server
+        int m_hbReceiveTimeoutMs = 8500; // Derived from the server heartbeat policy
         std::string m_pendingHeartbeatData; // TCP bytes received after the check-in response
 
         // Antrian laporan pelanggaran yang gagal terkirim: disimpan di memori

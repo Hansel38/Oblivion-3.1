@@ -28,12 +28,22 @@ struct HeartbeatSettings {
     std::uint32_t rttWarnMs = 1500;
 };
 
+struct ConnectionSettings {
+    std::uint32_t maxConcurrentClients = 256;
+    std::uint32_t perIpBurst = 120;
+    std::uint32_t perIpRefillPerSecond = 2;
+    std::uint32_t maxTrackedIps = 65536;
+    std::uint32_t ipIdleExpirationSeconds = 600;
+    std::uint32_t ipCleanupInterval = 256;
+};
+
 struct ServerSettings {
     std::string bindAddress = "0.0.0.0";
     std::string listenPort = "54321";
     std::string tlsCertificateFile = "server-cert.pem";
     std::string tlsPrivateKeyFile = "server-key.pem";
     HeartbeatSettings heartbeat;
+    ConnectionSettings connections;
 };
 
 namespace Detail {
@@ -175,7 +185,7 @@ inline bool ParseServerYaml(
 
     try {
         const YAML::Node root = YAML::Load(text);
-        if (!Detail::HasOnlyKeys(root, {"version", "server", "tls", "heartbeat"},
+        if (!Detail::HasOnlyKeys(root, {"version", "server", "tls", "heartbeat", "connections"},
                                  "root", error)) {
             return false;
         }
@@ -275,6 +285,62 @@ inline bool ParseServerYaml(
                                   "heartbeat", error)) {
                 return false;
             }
+        }
+
+        const YAML::Node connections = root["connections"];
+        if (connections) {
+            if (!Detail::HasOnlyKeys(
+                    connections,
+                    {"max_concurrent_clients", "per_ip_burst",
+                     "per_ip_refill_per_second", "max_tracked_ips",
+                     "ip_idle_expiration_seconds", "ip_cleanup_interval"},
+                    "connections", error) ||
+                !Detail::ReadUint(connections, "max_concurrent_clients",
+                                  settings.connections.maxConcurrentClients,
+                                  "connections", error) ||
+                !Detail::ReadUint(connections, "per_ip_burst",
+                                  settings.connections.perIpBurst,
+                                  "connections", error) ||
+                !Detail::ReadUint(connections, "per_ip_refill_per_second",
+                                  settings.connections.perIpRefillPerSecond,
+                                  "connections", error) ||
+                !Detail::ReadUint(connections, "max_tracked_ips",
+                                  settings.connections.maxTrackedIps,
+                                  "connections", error) ||
+                !Detail::ReadUint(connections, "ip_idle_expiration_seconds",
+                                  settings.connections.ipIdleExpirationSeconds,
+                                  "connections", error) ||
+                !Detail::ReadUint(connections, "ip_cleanup_interval",
+                                  settings.connections.ipCleanupInterval,
+                                  "connections", error)) {
+                return false;
+            }
+        }
+
+        const auto& limits = settings.connections;
+        if (limits.maxConcurrentClients < 1 || limits.maxConcurrentClients > 1024) {
+            error = "connections.max_concurrent_clients must be in the range 1..1024";
+            return false;
+        }
+        if (limits.perIpBurst < 1 || limits.perIpBurst > 10000) {
+            error = "connections.per_ip_burst must be in the range 1..10000";
+            return false;
+        }
+        if (limits.perIpRefillPerSecond < 1 || limits.perIpRefillPerSecond > 1000) {
+            error = "connections.per_ip_refill_per_second must be in the range 1..1000";
+            return false;
+        }
+        if (limits.maxTrackedIps < 1 || limits.maxTrackedIps > 1000000) {
+            error = "connections.max_tracked_ips must be in the range 1..1000000";
+            return false;
+        }
+        if (limits.ipIdleExpirationSeconds < 30 || limits.ipIdleExpirationSeconds > 86400) {
+            error = "connections.ip_idle_expiration_seconds must be in the range 30..86400";
+            return false;
+        }
+        if (limits.ipCleanupInterval < 1 || limits.ipCleanupInterval > 65536) {
+            error = "connections.ip_cleanup_interval must be in the range 1..65536";
+            return false;
         }
 
         const auto& hb = settings.heartbeat;

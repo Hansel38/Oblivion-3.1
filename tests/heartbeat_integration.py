@@ -24,6 +24,9 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 54321
 TEST_SECRET = "oblivion-integration-secret-at-least-32-bytes"
+TEST_HEARTBEAT_INTERVAL_MS = 250
+TEST_HEARTBEAT_JITTER_MS = 20
+TEST_HEARTBEAT_TIMEOUT_MS = 1000
 MAX_FRAME_BYTES = 4096
 TLS_CONTEXT: ssl.SSLContext | None = None
 
@@ -86,6 +89,25 @@ def authenticate(sock: socket.socket, hwid: str) -> tuple[str, bytes]:
     session_nonce_text = second[len(prefix):]
     if not session_nonce_text.isdigit() or int(session_nonce_text) == 0:
         raise RuntimeError("server returned an invalid session nonce")
+    heartbeat_frame, buffered = recv_frame(sock, buffered)
+    heartbeat_fields = heartbeat_frame.split(":")
+    if len(heartbeat_fields) != 4 or heartbeat_fields[0] != "HEARTBEAT":
+        raise RuntimeError(f"missing heartbeat timing policy: {heartbeat_frame!r}")
+    try:
+        heartbeat_timing = tuple(int(value, 10) for value in heartbeat_fields[1:])
+    except ValueError as exc:
+        raise RuntimeError("heartbeat timing policy contains a non-numeric field") from exc
+    expected_timing = (
+        TEST_HEARTBEAT_INTERVAL_MS,
+        TEST_HEARTBEAT_JITTER_MS,
+        TEST_HEARTBEAT_TIMEOUT_MS,
+    )
+    if heartbeat_timing != expected_timing:
+        raise RuntimeError(
+            f"server advertised heartbeat timing {heartbeat_timing!r}, "
+            f"expected {expected_timing!r}"
+        )
+
     session_key = hmac.new(
         TEST_SECRET.encode("ascii"),
         f"{hwid}:{session_nonce_text}".encode("ascii"),
@@ -165,6 +187,25 @@ def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
         appended = current_log[len(previous_log):]
     if secret_marker.encode("ascii") in appended:
         raise RuntimeError("server logged the SECRET field from a malformed request")
+
+
+def verify_incomplete_initial_frame_is_rejected() -> None:
+    sock = connect_tls(timeout=3)
+    sock.settimeout(8)
+    hwid = os.urandom(32).hex()
+    try:
+        # Omit the final semicolon. The server must enforce its frame deadline
+        # and must not answer with INVALID_FORMAT for a request never completed.
+        sock.sendall(f"CHECKIN::{hwid}:".encode("ascii"))
+        response = recv_closed(sock, 512)
+        if response:
+            raise RuntimeError(
+                f"server replied to an incomplete initial frame: {response!r}"
+            )
+    except socket.timeout as exc:
+        raise RuntimeError("server kept an incomplete initial frame open past its deadline") from exc
+    finally:
+        sock.close()
 
 
 def verify_short_hwid_is_rejected() -> None:
@@ -328,7 +369,10 @@ def verify_tls_handshake_deadline() -> None:
 
 
 def verify_tls_client_pin_checks(
-    probe_binary: Path, server_certificate: Path, tls_directory: Path
+    probe_binary: Path,
+    server_certificate: Path,
+    server_ca_certificate: Path,
+    tls_directory: Path,
 ) -> None:
     certificate_der = subprocess.run(
         ["openssl", "x509", "-in", str(server_certificate), "-outform", "DER"],
@@ -341,16 +385,110 @@ def verify_tls_client_pin_checks(
         (HOST, wrong_pin, "reject", "wrong certificate pin"),
         ("wrong.invalid", certificate_pin, "reject", "hostname mismatch"),
     ]
+    trusted_probe_env = os.environ.copy()
+    trusted_probe_env["SSL_CERT_FILE"] = str(server_ca_certificate)
+    trusted_probe_env["SSL_CERT_DIR"] = str(tls_directory / "empty-system-ca-dir")
+    (tls_directory / "empty-system-ca-dir").mkdir(exist_ok=True)
+
     for expected_host, pin, expected_result, description in cases:
         result = subprocess.run(
             [str(probe_binary), HOST, expected_host, str(PORT), pin, expected_result],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, text=True, timeout=8, env=trusted_probe_env,
         )
         if result.returncode != 0:
             raise RuntimeError(
                 f"TLS client verification case failed ({description}): "
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
             )
+
+    # Private deployments may pin a self-signed leaf as the explicit trust anchor.
+    self_signed_key = tls_directory / "self-signed-valid.key"
+    self_signed_cert = tls_directory / "self-signed-valid.pem"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(self_signed_key), "-out", str(self_signed_cert),
+        "-subj", "/CN=127.0.0.1",
+        "-addext", "basicConstraints=critical,CA:FALSE",
+        "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+        "-addext", "extendedKeyUsage=serverAuth",
+        "-addext", "subjectAltName=IP:127.0.0.1",
+    ], check=True, capture_output=True, text=True)
+    self_signed_der = subprocess.run(
+        ["openssl", "x509", "-in", str(self_signed_cert), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    self_signed_pin = hashlib.sha256(self_signed_der).hexdigest()
+    self_signed_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    self_signed_context.load_cert_chain(
+        certfile=str(self_signed_cert), keyfile=str(self_signed_key)
+    )
+
+    self_signed_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self_signed_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self_signed_listener.bind((HOST, 0))
+    self_signed_listener.listen(2)
+    self_signed_port = self_signed_listener.getsockname()[1]
+    self_signed_errors: list[str] = []
+
+    def serve_self_signed() -> None:
+        try:
+            for _ in range(2):
+                connection, _ = self_signed_listener.accept()
+                with connection:
+                    try:
+                        with self_signed_context.wrap_socket(connection, server_side=True) as tls_socket:
+                            tls_socket.settimeout(2)
+                            try:
+                                tls_socket.recv(1)
+                            except (ssl.SSLError, OSError, socket.timeout):
+                                pass
+                    except (ssl.SSLError, OSError):
+                        pass
+        except OSError as exc:
+            self_signed_errors.append(str(exc))
+        finally:
+            self_signed_listener.close()
+
+    self_signed_thread = threading.Thread(target=serve_self_signed, daemon=True)
+    self_signed_thread.start()
+    try:
+        self_signed_env = os.environ.copy()
+        # Remove the temporary test CA: the leaf is accepted only by its exact pin.
+        self_signed_env["SSL_CERT_FILE"] = str(tls_directory / "empty-ca-file.pem")
+        self_signed_env["SSL_CERT_DIR"] = str(tls_directory / "empty-ca-dir")
+        (tls_directory / "empty-ca-file.pem").write_text("", encoding="ascii")
+        (tls_directory / "empty-ca-dir").mkdir(exist_ok=True)
+        result = subprocess.run(
+            [str(probe_binary), HOST, HOST, str(self_signed_port), self_signed_pin, "accept"],
+            capture_output=True, text=True, timeout=8, env=self_signed_env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "TLS client rejected a valid pinned self-signed leaf: "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+
+        wrong_self_signed_pin = (
+            ("0" if self_signed_pin[0] != "0" else "1") + self_signed_pin[1:]
+        )
+        wrong_pin_result = subprocess.run(
+            [str(probe_binary), HOST, HOST, str(self_signed_port),
+             wrong_self_signed_pin, "reject"],
+            capture_output=True, text=True, timeout=8, env=self_signed_env,
+        )
+        if wrong_pin_result.returncode != 0:
+            raise RuntimeError(
+                "TLS client accepted a self-signed leaf without the exact configured pin: "
+                f"exit={wrong_pin_result.returncode}, stdout={wrong_pin_result.stdout}, "
+                f"stderr={wrong_pin_result.stderr}"
+            )
+    finally:
+        self_signed_listener.close()
+        self_signed_thread.join(timeout=3)
+    if self_signed_thread.is_alive():
+        raise RuntimeError("self-signed TLS test server thread did not stop")
+    if self_signed_errors:
+        raise RuntimeError("self-signed TLS test server failed: " + "; ".join(self_signed_errors))
 
     # X509_check_host() otherwise accepts the legacy Subject CN when the
     # certificate has no subjectAltName. Require DNS SAN explicitly.
@@ -416,6 +554,117 @@ def verify_tls_client_pin_checks(
         raise RuntimeError("CN-only TLS test server thread did not stop")
     if server_errors:
         raise RuntimeError("CN-only TLS test server failed: " + "; ".join(server_errors))
+
+
+    # CA-issued peers must chain to a trusted root in SSL_CERT_FILE/SSL_CERT_DIR.
+    ca_key = tls_directory / "test-root-ca.key"
+    ca_cert = tls_directory / "test-root-ca.pem"
+    leaf_key = tls_directory / "ca-issued-leaf.key"
+    leaf_csr = tls_directory / "ca-issued-leaf.csr"
+    leaf_cert = tls_directory / "ca-issued-leaf.pem"
+    leaf_extensions = tls_directory / "ca-issued-leaf.ext"
+    rogue_ca_key = tls_directory / "rogue-root-ca.key"
+    rogue_ca_cert = tls_directory / "rogue-root-ca.pem"
+    empty_ca_directory = tls_directory / "empty-ca-directory"
+    empty_ca_directory.mkdir(exist_ok=True)
+
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(ca_key), "-out", str(ca_cert),
+        "-subj", "/CN=Oblivion Integration Test Root CA",
+        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
+    ], check=True, capture_output=True, text=True)
+    subprocess.run([
+        "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-keyout", str(leaf_key), "-out", str(leaf_csr), "-subj", "/CN=localhost",
+    ], check=True, capture_output=True, text=True)
+    leaf_extensions.write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\n"
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid,issuer\n",
+        encoding="ascii",
+    )
+    subprocess.run([
+        "openssl", "x509", "-req", "-in", str(leaf_csr),
+        "-CA", str(ca_cert), "-CAkey", str(ca_key), "-CAcreateserial",
+        "-days", "2", "-sha256", "-extfile", str(leaf_extensions),
+        "-out", str(leaf_cert),
+    ], check=True, capture_output=True, text=True)
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(rogue_ca_key), "-out", str(rogue_ca_cert),
+        "-subj", "/CN=Unrelated Integration Root CA",
+        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
+    ], check=True, capture_output=True, text=True)
+
+    leaf_der = subprocess.run(
+        ["openssl", "x509", "-in", str(leaf_cert), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    leaf_pin = hashlib.sha256(leaf_der).hexdigest()
+    ca_server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ca_server_context.load_cert_chain(certfile=str(leaf_cert), keyfile=str(leaf_key))
+
+    def run_ca_certificate_case(trust_root: Path, expected: str, description: str) -> None:
+        ca_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ca_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ca_listener.bind((HOST, 0))
+        ca_listener.listen(1)
+        ca_port = ca_listener.getsockname()[1]
+        ca_server_errors: list[str] = []
+
+        def serve_ca_certificate() -> None:
+            try:
+                connection, _ = ca_listener.accept()
+                with connection:
+                    try:
+                        with ca_server_context.wrap_socket(connection, server_side=True) as tls_socket:
+                            tls_socket.settimeout(2)
+                            try:
+                                tls_socket.recv(1)
+                            except (ssl.SSLError, OSError, socket.timeout):
+                                pass
+                    except (ssl.SSLError, OSError):
+                        pass
+            except OSError as exc:
+                ca_server_errors.append(str(exc))
+            finally:
+                ca_listener.close()
+
+        ca_thread = threading.Thread(target=serve_ca_certificate, daemon=True)
+        ca_thread.start()
+        try:
+            probe_env = os.environ.copy()
+            probe_env["SSL_CERT_FILE"] = str(trust_root)
+            probe_env["SSL_CERT_DIR"] = str(empty_ca_directory)
+            result = subprocess.run(
+                [str(probe_binary), HOST, HOST, str(ca_port), leaf_pin, expected],
+                capture_output=True, text=True, timeout=8, env=probe_env,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"CA chain verification failed ({description}): "
+                    f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+                )
+        finally:
+            ca_listener.close()
+            ca_thread.join(timeout=3)
+        if ca_thread.is_alive():
+            raise RuntimeError(f"CA test server thread did not stop ({description})")
+        if ca_server_errors:
+            raise RuntimeError(
+                f"CA test server failed ({description}): " + "; ".join(ca_server_errors)
+            )
+
+    run_ca_certificate_case(ca_cert, "accept", "leaf chains to configured trusted root")
+    run_ca_certificate_case(rogue_ca_cert, "reject", "leaf issuer is not in configured trust store")
 
 
 def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
@@ -535,8 +784,9 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     env["OBLIVION_SECRET"] = TEST_SECRET
     env["OBLIVION_TLS_CERT_FILE"] = str(server_cert)
     env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
-    env["OBLV_HB_INTERVAL_MS"] = "250"
-    env["OBLV_HB_TIMEOUT_MS"] = "1000"
+    env["OBLV_HB_INTERVAL_MS"] = str(TEST_HEARTBEAT_INTERVAL_MS)
+    env["OBLV_HB_JITTER_MS"] = str(TEST_HEARTBEAT_JITTER_MS)
+    env["OBLV_HB_TIMEOUT_MS"] = str(TEST_HEARTBEAT_TIMEOUT_MS)
     env["OBLV_HB_MAX_MISS"] = "2"
     env["OBLV_HB_RTT_WARN_MS"] = "60000"
 
@@ -577,8 +827,9 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             verify_trailing_data_is_rejected()
             verify_plaintext_protocol_is_rejected()
             verify_tls_handshake_deadline()
-            verify_tls_client_pin_checks(tls_probe_binary, server_cert, tls_directory)
+            verify_tls_client_pin_checks(tls_probe_binary, server_cert, ca_cert, tls_directory)
             verify_malformed_request_does_not_log_secret(server_binary)
+            verify_incomplete_initial_frame_is_rejected()
             verify_short_hwid_is_rejected()
             verify_missing_ban_list_is_rejected(ban_list_path)
             verify_violation_ack(server_binary)
@@ -623,6 +874,29 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             if unexpected:
                 raise RuntimeError(
                     "server accepted tampered status HMAC and continued sending frames"
+                )
+
+            # SIGTERM must stop accepting, wake the active heartbeat socket,
+            # wait for its worker to exit, and release server resources cleanly.
+            shutdown_client = connect_tls(timeout=3)
+            shutdown_client.settimeout(8)
+            sockets.append(shutdown_client)
+            shutdown_hwid = os.urandom(32).hex()
+            _, shutdown_buffer = authenticate(shutdown_client, shutdown_hwid)
+            _, shutdown_buffer = recv_ping(shutdown_client, shutdown_buffer)
+            process.send_signal(signal.SIGTERM)
+            shutdown_response = recv_closed(shutdown_client, 1)
+            if shutdown_response:
+                raise RuntimeError(
+                    f"server sent unexpected data during graceful shutdown: {shutdown_response!r}"
+                )
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("server did not finish graceful shutdown within 8 seconds") from exc
+            if process.returncode != 0:
+                raise RuntimeError(
+                    f"server returned {process.returncode} instead of clean exit code 0 on SIGTERM"
                 )
 
         finally:

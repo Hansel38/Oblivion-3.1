@@ -102,7 +102,7 @@ stop_server() {
     kill "$PID" 2>/dev/null
     
     # Wait for process to stop
-    for i in {1..10}; do
+    for i in {1..30}; do
         if ! ps -p "$PID" > /dev/null 2>&1; then
             break
         fi
@@ -111,7 +111,7 @@ stop_server() {
     
     # Force kill if still running
     if ps -p "$PID" > /dev/null 2>&1; then
-        echo -e "${YELLOW}[WARNING] Server did not stop gracefully, forcing shutdown...${NC}"
+        echo -e "${YELLOW}[WARNING] Server did not stop within 30 seconds, forcing shutdown...${NC}"
         kill -9 "$PID" 2>/dev/null
         sleep 1
     fi

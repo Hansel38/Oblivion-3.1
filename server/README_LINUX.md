@@ -1,10 +1,14 @@
 # Oblivion Server - Linux Build Guide
 
 > **Transport security:** this build requires TLS 1.2 or newer for every client connection.
-> Plaintext protocol frames are not accepted. The client verifies the certificate validity period,
-> server-auth certificate purpose, endpoint hostname/IP SAN, and a configured SHA-256 pin of
-> the leaf certificate before sending check-in/report data. Keep the private key secret, distribute
-> the certificate pin through a trusted deployment channel, and do not treat a writable local
+> Plaintext protocol frames are not accepted. The client requires OpenSSL peer-chain verification
+> during the TLS handshake, then verifies the leaf validity period, server-auth purpose, endpoint
+> hostname/IP SAN, and configured SHA-256 certificate pin before sending application data. A
+> cryptographically self-signed leaf is the only deferred trust exception and must match the exact
+> configured pin and all leaf identity checks. This client does not currently query OCSP/CRLs;
+> certificate/key compromise therefore requires removing the affected pin and distributing a
+> rebuilt client. Keep the private key secret, distribute the certificate pin through a trusted
+> deployment channel, and do not treat a writable local
 > oblivion.cfg as tamper-proof policy. The shared secret is still embedded/loaded by the client
 > and can be recovered by local reverse engineering; TLS protects it in transit, not at rest or
 > against a compromised client. Load-test and validate false-positive behavior with the actual
@@ -111,7 +115,16 @@ heartbeat:
   timeout_ms: 4000
   max_consecutive_misses: 3
   rtt_warn_ms: 1500
+connections:
+  max_concurrent_clients: 256
+  per_ip_burst: 120
+  per_ip_refill_per_second: 2
+  max_tracked_ips: 65536
+  ip_idle_expiration_seconds: 600
+  ip_cleanup_interval: 256
 ```
+
+The `connections` section controls the worker ceiling and per-IP token bucket without recompiling the server. Allowed ranges are 1–1024 concurrent clients, 1–10000 burst tokens, 1–1000 refill tokens/second, 1–1000000 tracked IPs, 30–86400 seconds idle expiration, and 1–65536 cleanup interval. Choose a worker ceiling appropriate for VPS memory and test shared NAT populations before tightening per-IP limits.
 
 Malformed YAML, unsupported keys, out-of-range values, and files larger than 64 KiB cause startup/configuration failure rather than silently using an unsafe value. Environment variables remain available to override supported fields. **Never put the shared secret or TLS private key contents in YAML**; keep `OBLIVION_SECRET` in the environment or the protected `secret.dat`, and keep the TLS private key as a separate file with mode `0600`.
 
@@ -161,6 +174,8 @@ The server fails to start if it cannot load a matching TLS certificate and priva
 The installer now refuses a fresh install if it cannot find a certificate/key pair. If the pair is beside the Makefile, run `make install` and it is copied beside the installed binary (private key mode 0600). To copy a pair from another location, use `make install TLS_CERT_FILE=/secure/path/server-cert.pem TLS_KEY_FILE=/secure/path/server-key.pem`. Existing installed cert/key files are preserved when no source pair is supplied. If the service uses external paths instead, configure both `OBLIVION_TLS_CERT_FILE` and `OBLIVION_TLS_KEY_FILE` in the service environment before installing and starting the server.
 
 For a DNS endpoint such as shield.example.com, the certificate Subject Alternative Name (SAN) must include that DNS name. For a fixed IP endpoint, the certificate needs an IP SAN for the configured IP address. The server prints the leaf-certificate SHA-256 fingerprint at startup.
+
+The client verifies the pinned leaf SHA-256, validity period, server-auth purpose, and DNS/IP SAN. CA-issued certificates must also chain to a trusted root. On Windows, the client imports both the Current User and Local Machine `ROOT` certificate stores into OpenSSL's trust store; on other platforms it uses the OpenSSL default CA paths. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` when a custom CA bundle is required. Explicitly pinned self-signed leaf certificates remain supported as private trust anchors, but this exception is limited to cryptographically self-signed leaf certificates whose exact fingerprint is pinned.
 
 ### VPS listen address, TCP port, and client endpoint
 

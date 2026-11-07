@@ -1,9 +1,13 @@
 #include "pch.h"
 #include "AntiDebug.h"
 #include "win_path_utils.h"
+#include "../../common/module_whitelist_policy.h"
 #include <vector>
 #include <cwctype>
 #include <algorithm>
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <windows.h>
 #include <winternl.h> // Untuk fungsi-fungsi NT yang tidak berdokumentasi
 
@@ -463,14 +467,31 @@ namespace Oblivion {
                                        (LPCWSTR)addr, &actual)) {
                     const std::wstring modName = Oblivion::WinPath::GetModulePath(actual);
                     char utf8[512] = {0};
-                    WideCharToMultiByte(CP_UTF8, 0, modName.c_str(), -1, utf8, sizeof(utf8)-1, NULL, NULL);
-                    char msg[768];
-                    sprintf_s(msg, sizeof(msg), "APIHook %s addr=%p module=%s (expected=%p)", name, addr, utf8, expected);
-                    LogAntiDebugEvent(std::string(msg));
+                    const int converted = WideCharToMultiByte(
+                        CP_UTF8, 0, modName.c_str(), -1,
+                        utf8, static_cast<int>(sizeof(utf8) - 1), nullptr, nullptr);
+                    if (converted == 0) {
+                        utf8[0] = '\0';
+                    }
+
+                    // Module names are untrusted diagnostic data. Build the message
+                    // as a stream rather than passing that data through printf-style
+                    // formatting, so '%' characters can never become format tokens.
+                    std::ostringstream message;
+                    message << "APIHook " << name
+                            << " addr=0x" << std::hex
+                            << reinterpret_cast<std::uintptr_t>(addr)
+                            << " module=" << utf8
+                            << " (expected=0x"
+                            << reinterpret_cast<std::uintptr_t>(expected) << ")";
+                    LogAntiDebugEvent(message.str());
                 } else {
-                    char msg[256];
-                    sprintf_s(msg, sizeof(msg), "APIHook %s addr=%p (module unknown)", name, addr);
-                    LogAntiDebugEvent(std::string(msg));
+                    std::ostringstream message;
+                    message << "APIHook " << name
+                            << " addr=0x" << std::hex
+                            << reinterpret_cast<std::uintptr_t>(addr)
+                            << " (module unknown)";
+                    LogAntiDebugEvent(message.str());
                 }
             };
 
@@ -636,11 +657,8 @@ static bool IsModuleWhitelisted(HMODULE hMod) {
     wchar_t* ctx = nullptr;
     wchar_t* token = wcstok_s(wl, L";", &ctx);
     while (token) {
-        while (*token == L' ' || *token == L'\t') ++token;
-        size_t len = wcslen(token);
-        while (len && (token[len-1] == L' ' || token[len-1] == L'\t')) { token[--len] = L'\0'; }
-        _wcslwr_s(token, len + 1);
-        if (len && fnameLower.find(token) != std::wstring::npos) {
+        const std::wstring whitelistEntry(token);
+        if (Oblivion::Security::IsExactModuleWhitelistMatch(fnameLower, whitelistEntry)) {
             return true;
         }
         token = wcstok_s(nullptr, L";", &ctx);

@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #endif
 #include <filesystem>
+#include <memory>
+#include <set>
 #include "../common/tls_transport.h"
 #include "../common/server_listen_port.h"
 #include "../common/server_yaml_config.h"
@@ -45,6 +47,7 @@
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
 #include "../common/heartbeat_auth.h"
+#include "../common/heartbeat_timing.h"
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -931,18 +934,55 @@ ParsedReport ParseProtocol(const std::string& report) {
 // Batas koneksi client yang diproses bersamaan. Satu thread per koneksi TANPA batas
 // bisa dihabiskan oleh flood koneksi (thread + handle menumpuk) sehingga anti-cheat
 // tidak bisa lagi melayani pemain sah (DoS).
-static const int kMaxConcurrentClients = 256;
-static std::atomic<int> g_activeClients{ 0 };
+static std::size_t g_maxConcurrentClients = 256;
+static std::atomic<std::size_t> g_activeClients{ 0 };
 static Oblivion::HeartbeatConfig g_heartbeatConfig;
+static std::unique_ptr<Oblivion::Security::IpRateLimiter> g_connectionRateLimiter;
 
-// Initial policy: 120 connection attempts in a burst, then 2 attempts/second
-// per source IP. The table is bounded and idle entries expire after 10 minutes.
-static Oblivion::Security::IpRateLimiter g_connectionRateLimiter(
-    120.0, 2.0, 65536, std::chrono::minutes(10), 256);
+static std::atomic<bool> g_stopRequested{ false };
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "The stop flag must be lock-free when accessed by a POSIX signal handler");
+static std::mutex g_activeClientSocketsMutex;
+static std::set<SocketType> g_activeClientSockets;
+
+static bool IsStopRequested() noexcept {
+    return g_stopRequested.load(std::memory_order_relaxed);
+}
+
+static void HandleTerminationSignal(int) noexcept {
+    g_stopRequested.store(true, std::memory_order_relaxed);
+}
+
+static bool RegisterActiveClientSocket(SocketType socket) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        return g_activeClientSockets.insert(socket).second;
+    } catch (...) {
+        return false;
+    }
+}
+
+static void UnregisterActiveClientSocket(SocketType socket) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        g_activeClientSockets.erase(socket);
+    } catch (...) {
+    }
+}
+
+static void ShutdownActiveClientSockets() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        for (const SocketType socket : g_activeClientSockets) {
+            (void)shutdown(socket, SHUT_RDWR);
+        }
+    } catch (...) {
+    }
+}
 
 static bool TryAcquireClientSlot() {
-    int current = g_activeClients.load(std::memory_order_relaxed);
-    while (current < kMaxConcurrentClients) {
+    std::size_t current = g_activeClients.load(std::memory_order_relaxed);
+    while (current < g_maxConcurrentClients) {
         if (g_activeClients.compare_exchange_weak(
                 current, current + 1,
                 std::memory_order_acq_rel,
@@ -991,12 +1031,21 @@ uint64_t MonotonicMilliseconds() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-void SleepHeartbeat(uint32_t milliseconds) {
+void SleepHeartbeat(
+    uint32_t milliseconds,
+    uint32_t jitterMs = 0,
+    uint64_t randomSeed = 0) {
+    uint32_t remainingMs =
+        Oblivion::Heartbeat::CalculateDelayMs(milliseconds, jitterMs, randomSeed);
+    while (remainingMs > 0 && !IsStopRequested()) {
+        const uint32_t sliceMs = (std::min)(remainingMs, 100U);
 #ifdef _WIN32
-    Sleep(milliseconds);
+        Sleep(sliceMs);
 #else
-    usleep(static_cast<useconds_t>(milliseconds) * 1000U);
+        usleep(static_cast<useconds_t>(sliceMs) * 1000U);
 #endif
+        remainingMs -= sliceMs;
+    }
 }
 
 static bool WaitForTlsIo(SocketType socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
@@ -1031,8 +1080,12 @@ static bool SetSocketNonBlocking(SocketType socket) {
 }
 
 bool SendAllBytes(SocketType socket, const std::string& payload) {
+    constexpr uint64_t kTotalWriteDeadlineMs = 5000ULL;
+    const uint64_t deadline = MonotonicMilliseconds() + kTotalWriteDeadlineMs;
     size_t sent = 0;
     while (sent < payload.size()) {
+        const uint64_t now = MonotonicMilliseconds();
+        if (now >= deadline) return false;
         const size_t remaining = payload.size() - sent;
         const int chunk = static_cast<int>((std::min)(remaining, static_cast<size_t>(0x7fffffff)));
         int result = 0;
@@ -1046,7 +1099,10 @@ bool SendAllBytes(SocketType socket, const std::string& payload) {
 #endif
         }
         if (g_activeTls != nullptr && result <= 0) {
-            if (WaitForTlsIo(socket, g_activeTls, result, 5000)) continue;
+            const uint64_t now = MonotonicMilliseconds();
+            if (now >= deadline) return false;
+            const uint32_t remainingMs = static_cast<uint32_t>(deadline - now);
+            if (WaitForTlsIo(socket, g_activeTls, result, remainingMs)) continue;
             return false;
         }
         if (result <= 0) return false;
@@ -1145,8 +1201,7 @@ void HandleClient(SocketType clientSocket) {
 
     SSL* tlsSession = AcceptTlsConnection(clientSocket);
     if (tlsSession == nullptr) {
-        closesocket_impl(clientSocket);
-        return;
+        return; // RunClientWorker owns and closes the accepted socket.
     }
     ActiveTlsSessionGuard tlsGuard(tlsSession);
 
@@ -1155,8 +1210,14 @@ void HandleClient(SocketType clientSocket) {
         // timeout alone permits slow clients to hold a worker indefinitely by
         // sending one byte just before each timeout expires.
         std::string report;
-        (void)ReceiveSemicolonFrame(
+        const bool initialFrameComplete = ReceiveSemicolonFrame(
             clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
+        if (!initialFrameComplete) {
+            // No complete request has been authenticated. Drop it without
+            // classifying it as a player violation or writing attacker-controlled
+            // connection noise into the persistent violation log.
+            return;
+        }
         bytesReceived = static_cast<ssize_t>(report.size());
         if (bytesReceived > 0) {
             
@@ -1179,7 +1240,6 @@ void HandleClient(SocketType clientSocket) {
                 
                 const char* errorResponse = "ERROR:INVALID_FORMAT;";
                 SendAllBytes(clientSocket, errorResponse);
-                closesocket_impl(clientSocket);
                 return;
             }
             
@@ -1221,12 +1281,15 @@ void HandleClient(SocketType clientSocket) {
                     std::cout << "[BAN] HWID [" << hwid << "] terdeteksi di ban list. Perintah KICK dikirim." << std::endl;
                     std::cout << "[INFO] Untuk unban, hapus HWID dari bans.txt dan restart client." << std::endl;
                 } else {
+                    Oblivion::HeartbeatConfig cfg = g_heartbeatConfig;
                     uint64_t sessionNonce = GenerateSecureNonce();
-                    std::string response = sessionNonce == 0 ? "ERROR:CRYPTO;" : ("OK;SESSION_NONCE:" + std::to_string(sessionNonce) + ";");
-                    SendAllBytes(clientSocket, response);
-                    std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
+                    std::string response = sessionNonce == 0
+                        ? "ERROR:CRYPTO;"
+                        : ("OK;SESSION_NONCE:" + std::to_string(sessionNonce) +
+                           ";HEARTBEAT:" + std::to_string(cfg.interval_ms) +
+                           ":" + std::to_string(cfg.jitter_ms) +
+                           ":" + std::to_string(cfg.timeout_ms) + ";");
 
-                    Oblivion::HeartbeatConfig cfg = g_heartbeatConfig; 
                     uint32_t seq = 1;
                     uint32_t consecutiveMiss = 0;
                     uint64_t rttSum = 0; uint32_t rttCount = 0; 
@@ -1236,10 +1299,18 @@ void HandleClient(SocketType clientSocket) {
                     // false = lapisan pengaman client dilaporkan tidak berjalan penuh.
                     bool protectionDegraded = false;
 
-                    std::string sessionKey = hmacSha256(SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
+                    std::string sessionKey;
+                    if (sessionNonce != 0) {
+                        sessionKey = hmacSha256(
+                            SERVER_SECRET, hwid + ":" + std::to_string(sessionNonce));
+                    }
                     if (sessionNonce == 0 || sessionKey.empty()) {
                         LogViolation("HB_INIT_FAILED", "Cryptographic session initialization failed", hwid);
+                        SendAllBytes(clientSocket, "ERROR:CRYPTO;");
+                    } else if (!SendAllBytes(clientSocket, response)) {
+                        LogViolation("HB_INIT_FAILED", "Unable to send authenticated check-in response", hwid);
                     } else {
+                        std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
                         std::cout << "[HEARTBEAT] Started for HWID [" << hwid << "]" << std::endl;
                         bool warningLogged = false;
                         std::string heartbeatBuffer;
@@ -1261,7 +1332,7 @@ void HandleClient(SocketType clientSocket) {
                             return true;
                         };
 
-                        while (true) {
+                        while (!IsStopRequested()) {
                             const uint64_t pingTimestamp = MonotonicMilliseconds();
                             const uint64_t pingNonce = GenerateSecureNonce();
                             if (pingNonce == 0) {
@@ -1276,9 +1347,10 @@ void HandleClient(SocketType clientSocket) {
                             }
 
                             if (!ReceiveSemicolonFrame(clientSocket, heartbeatBuffer, cfg.timeout_ms, 1024)) {
+                                if (IsStopRequested()) break;
                                 if (!registerMiss("Heartbeat PONG timeout or incomplete frame")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1288,7 +1360,7 @@ void HandleClient(SocketType clientSocket) {
                             if (response.rfind("PONG:", 0) != 0) {
                                 if (!registerMiss("Unexpected heartbeat response")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1299,7 +1371,7 @@ void HandleClient(SocketType clientSocket) {
                             if (colons.size() != 6) {
                                 if (!registerMiss("Malformed PONG field count")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1320,7 +1392,7 @@ void HandleClient(SocketType clientSocket) {
                             if (!fieldsValid) {
                                 if (!registerMiss("PONG fields, identity, sequence, or nonce validation failed")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1330,7 +1402,7 @@ void HandleClient(SocketType clientSocket) {
                             if (expectedHmac.empty() || !ConstantTimeEquals(expectedHmac, hmac)) {
                                 if (!registerMiss("PONG HMAC verification failed")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1366,7 +1438,7 @@ void HandleClient(SocketType clientSocket) {
                                 rttCount = 0;
                             }
                             ++seq;
-                            SleepHeartbeat(cfg.interval_ms);
+                            SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                         }
                     }
                 }
@@ -1410,7 +1482,6 @@ void HandleClient(SocketType clientSocket) {
         LogViolation("EXCEPTION", "Unknown exception occurred", extractedHwid);
     }
 
-    closesocket_impl(clientSocket);
 }
 
 // Last-resort exception boundary for the thread entry point. If an allocation
@@ -1423,6 +1494,28 @@ void RunClientWorker(SocketType clientSocket) noexcept {
         }
     } slotGuard;
 
+    struct ClientSocketOwner {
+        explicit ClientSocketOwner(SocketType value) noexcept : socket(value) {
+            if (!RegisterActiveClientSocket(socket)) {
+                closesocket_impl(socket);
+                socket = INVALID_SOCKET_VAL;
+            }
+        }
+        ~ClientSocketOwner() noexcept {
+            if (socket != INVALID_SOCKET_VAL) {
+                UnregisterActiveClientSocket(socket);
+                closesocket_impl(socket);
+            }
+        }
+        bool IsValid() const noexcept { return socket != INVALID_SOCKET_VAL; }
+        ClientSocketOwner(const ClientSocketOwner&) = delete;
+        ClientSocketOwner& operator=(const ClientSocketOwner&) = delete;
+        SocketType socket;
+    } socketOwner(clientSocket);
+    if (!socketOwner.IsValid()) {
+        return;
+    }
+
     try {
         HandleClient(clientSocket);
     } catch (const std::exception& e) {
@@ -1430,13 +1523,11 @@ void RunClientWorker(SocketType clientSocket) noexcept {
             std::cerr << "[EXCEPTION] Unhandled client worker exception: " << e.what() << std::endl;
         } catch (...) {
         }
-        closesocket_impl(clientSocket);
     } catch (...) {
         try {
             std::cerr << "[EXCEPTION] Unknown exception escaped client worker" << std::endl;
         } catch (...) {
         }
-        closesocket_impl(clientSocket);
     }
 }
 
@@ -1471,6 +1562,26 @@ int main() {
         std::cout << "[CONFIG] YAML not found; using safe compiled defaults and environment overrides" << std::endl;
     }
 
+    const auto& connectionSettings = g_serverSettings.connections;
+    g_maxConcurrentClients = connectionSettings.maxConcurrentClients;
+    try {
+        g_connectionRateLimiter = std::make_unique<Oblivion::Security::IpRateLimiter>(
+            static_cast<double>(connectionSettings.perIpBurst),
+            static_cast<double>(connectionSettings.perIpRefillPerSecond),
+            connectionSettings.maxTrackedIps,
+            std::chrono::seconds(connectionSettings.ipIdleExpirationSeconds),
+            connectionSettings.ipCleanupInterval);
+    } catch (const std::exception& exception) {
+        std::cerr << "[FATAL] Cannot initialize connection limits: " << exception.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[CONNECTION CFG] maxConcurrent=" << g_maxConcurrentClients
+              << " perIpBurst=" << connectionSettings.perIpBurst
+              << " perIpRefill=" << connectionSettings.perIpRefillPerSecond << "/s"
+              << " trackedIps=" << connectionSettings.maxTrackedIps
+              << " idleExpiry=" << connectionSettings.ipIdleExpirationSeconds << "s"
+              << " cleanupEvery=" << connectionSettings.ipCleanupInterval << std::endl;
+
     std::string listenPort;
     std::string listenPortError;
     if (!Oblivion::ServerConfig::ResolveListenPort(
@@ -1490,6 +1601,17 @@ int main() {
     // secara kasar) membuat kernel mengirim SIGPIPE -> aksi default adalah MEMATIKAN
     // proses server. Satu pemain cukup untuk mematikan anti-cheat bagi semua orang.
     signal(SIGPIPE, SIG_IGN);
+
+    struct sigaction stopAction {};
+    stopAction.sa_handler = HandleTerminationSignal;
+    sigemptyset(&stopAction.sa_mask);
+    stopAction.sa_flags = 0; // Do not restart select; the main loop polls the stop flag.
+    if (sigaction(SIGINT, &stopAction, nullptr) != 0 ||
+        sigaction(SIGTERM, &stopAction, nullptr) != 0) {
+        std::cerr << "[FATAL] Cannot register SIGINT/SIGTERM handlers: "
+                  << std::strerror(errno) << std::endl;
+        return 1;
+    }
 #endif
 
 #ifdef _WIN32
@@ -1607,17 +1729,36 @@ int main() {
               << "ms timeout=" << globalHbCfg.timeout_ms << "ms maxMiss=" << globalHbCfg.max_consecutive_miss
               << " rttWarn=" << globalHbCfg.rtt_warn_ms << "ms" << std::endl;
 
-    while (true) {
+    while (!IsStopRequested()) {
+        fd_set listenerSet;
+        FD_ZERO(&listenerSet);
+        FD_SET(ListenSocket, &listenerSet);
+        timeval acceptWait{};
+        acceptWait.tv_sec = 0;
+        acceptWait.tv_usec = 500000;
+        const int listenerReady = select(ListenSocket + 1, &listenerSet, nullptr, nullptr, &acceptWait);
+        if (listenerReady == 0) {
+            continue;
+        }
+        if (listenerReady < 0) {
+            if (IsStopRequested() || errno == EINTR) continue;
+            std::cerr << "[ERROR] Listener select failed: " << errno << std::endl;
+            continue;
+        }
+
         ClientSocket = accept(ListenSocket, NULL, NULL);
         if (ClientSocket == INVALID_SOCKET_VAL) {
-            std::cerr << "[ERROR] Accept gagal" << std::endl;
+            if (IsStopRequested()) break;
+            if (errno == EINTR) continue;
+            std::cerr << "[ERROR] Accept gagal: " << errno << std::endl;
             continue;
         }
 
         // Enforce a bounded per-IP connection rate before allocating a worker
         // or performing an expensive TLS handshake.
         const std::string peerIp = GetPeerIpAddress(ClientSocket);
-        if (peerIp.empty() || !g_connectionRateLimiter.Allow(peerIp)) {
+        if (peerIp.empty() || !g_connectionRateLimiter ||
+            !g_connectionRateLimiter->Allow(peerIp)) {
             closesocket_impl(ClientSocket);
             continue;
         }
@@ -1627,7 +1768,7 @@ int main() {
         // Reserve a slot atomically; load()+fetch_add() allowed concurrent
         // accepts to exceed the configured worker limit under connection floods.
         if (!TryAcquireClientSlot()) {
-            std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << kMaxConcurrentClients << "), koneksi baru ditolak" << std::endl;
+            std::cerr << "[WARN] Batas koneksi bersamaan tercapai (" << g_maxConcurrentClients << "), koneksi baru ditolak" << std::endl;
             // Do not emit a plaintext protocol response before TLS is established.
             closesocket_impl(ClientSocket);
             continue;
@@ -1658,11 +1799,24 @@ int main() {
         }
     }
 
-    closesocket_impl(ListenSocket);
+    std::cout << "[SHUTDOWN] Stop requested; closing listener and active client sockets." << std::endl;
+    if (ListenSocket != INVALID_SOCKET_VAL) {
+        closesocket_impl(ListenSocket);
+        ListenSocket = INVALID_SOCKET_VAL;
+    }
+    while (g_activeClients.load(std::memory_order_acquire) != 0) {
+        ShutdownActiveClientSockets();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (g_tlsServerContext != nullptr) {
+        SSL_CTX_free(g_tlsServerContext);
+        g_tlsServerContext = nullptr;
+    }
 #ifdef _WIN32
     WSACleanup();
 #endif
-
+    std::cout << "[SHUTDOWN] All client workers stopped; server shutdown complete." << std::endl;
     return 0;
 }
 

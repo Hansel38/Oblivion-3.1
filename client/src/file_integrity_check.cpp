@@ -2,6 +2,7 @@
 #include "file_integrity_check.h"
 #include "file_integrity_manifest.generated.h"
 #include "win_path_utils.h"
+#include "../../common/relative_manifest_path.h"
 #include <windows.h>
 #include <bcrypt.h> // Header untuk CNG API
 #include <fstream>
@@ -189,6 +190,30 @@ namespace Oblivion {
         }
         const std::wstring exeDir = executablePath.substr(0, lastSlash + 1);
 
+        // Validate every manifest path before joining it to the installation directory.
+        // The manifest is build-time policy, never an unrestricted filesystem path.
+        std::string invalidManifestPaths;
+        for (const auto& filePair : m_filesToCheck) {
+            if (!Oblivion::Security::IsSafeRelativeManifestPath(filePair.relativePath)) {
+                if (!invalidManifestPaths.empty()) invalidManifestPaths += ", ";
+                invalidManifestPaths += ToUtf8(filePair.relativePath);
+            }
+        }
+        if (!invalidManifestPaths.empty()) {
+            const std::string details =
+                "Manifest contains unsafe relative paths: " + invalidManifestPaths;
+            LogFileIntegrityIssue("FILE_MANIFEST_PATH_INVALID", details);
+            if (OBLIVION_ENFORCE_FILE_INTEGRITY) {
+                MessageBoxW(
+                    nullptr,
+                    L"The file-integrity manifest contains an unsafe path. The client will not inspect files outside its installation directory.",
+                    L"Oblivion Hack Shield - Configuration Error",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+                ExitProcess(ERROR_INVALID_NAME);
+                return;
+            }
+        }
+
         // Report missing/invalid hashes once per check, and fail closed only when
         // enforcement is explicitly enabled. Never misclassify this as player cheating.
         std::string missingHashFiles;
@@ -217,6 +242,10 @@ namespace Oblivion {
         }
 
         for (const auto& filePair : m_filesToCheck) {
+            if (!Oblivion::Security::IsSafeRelativeManifestPath(filePair.relativePath)) {
+                continue; // Rejected above; never build a filesystem path from this entry.
+            }
+
             // Hash placeholder (belum digenerate) TIDAK boleh dipakai untuk men-kick
             // pemain: lewati sambil mencatat supaya terlihat di log lokal.
             if (IsPlaceholderHash(filePair.expectedHash)) {
