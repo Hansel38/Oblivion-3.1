@@ -34,8 +34,9 @@ namespace Oblivion {
         // Metode 7: Validasi integritas fungsi kritis (anti-hook)
         bool CheckApiHookIntegrity();
 
-        // Metode 8: Baca indikator debugger dari PEB
-        bool CheckPEBFlags();
+        // Metode 8: Baca indikator debugger dari PEB dengan offset arsitektur yang benar
+        bool CheckPEBBeingDebugged();
+        bool CheckPEBNtGlobalFlag();
 
         // Metode 9: Integritas rantai SEH (x86) / heuristik x64
         bool CheckSEHChainIntegrity();
