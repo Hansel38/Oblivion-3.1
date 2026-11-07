@@ -78,6 +78,9 @@
     <ClInclude Include="..\common\thread_safe_cache.h">
       <Filter>Include</Filter>
     </ClInclude>
+    <ClInclude Include="..\common\peb_layout_policy.h">
+      <Filter>Include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
