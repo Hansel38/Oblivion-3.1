@@ -745,9 +745,8 @@ namespace Oblivion {
                 continue;
             }
 
-            // Kembalikan ke blocking mode: check-in & heartbeat memakai recv/send sederhana.
-            u_long blocking = 0;
-            ioctlsocket(candidate, FIONBIO, &blocking);
+            // Keep the socket nonblocking for the TLS handshake and subsequent
+            // SSL_read/SSL_write pumps. They enforce deadlines with select().
             connected = candidate;
             break;
         }
