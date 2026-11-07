@@ -113,8 +113,13 @@ inline SSL_CTX* CreateClientContext(std::string& error) {
     }
 
     SSL_CTX_set_options(context, SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
-    // Certificate identity is validated after the handshake. CA-issued peers must
-    // chain to a configured root; an exact-pinned self-signed leaf is also supported.
+    // Load the process-configured CA roots once into this context. Verification
+    // below reuses this exact store, including SSL_CERT_FILE/SSL_CERT_DIR overrides.
+    // A missing CA bundle does not disable explicitly pinned self-signed deployments;
+    // it simply means CA-issued peers cannot be validated.
+    (void)SSL_CTX_set_default_verify_paths(context);
+    // Certificate identity is validated after the handshake so the explicitly
+    // pinned self-signed leaf trust-anchor policy can be applied deliberately.
     SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
     SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_OFF);
     return context;
@@ -175,24 +180,28 @@ inline bool IsCryptographicallySelfSigned(X509* certificate) {
 // CA-issued certificates must validate to a root in the OpenSSL client trust store.
 // A pinned self-signed leaf remains supported as an explicit private-PKI trust anchor.
 inline bool VerifyPeerCertificateChain(
+    SSL* session,
     X509* certificate,
     STACK_OF(X509)* peerChain,
     std::string& error) {
     error.clear();
 
-    X509_STORE* store = X509_STORE_new();
+    SSL_CTX* context = session == nullptr ? nullptr : SSL_get_SSL_CTX(session);
+    X509_STORE* store = context == nullptr ? nullptr : SSL_CTX_get_cert_store(context);
     if (store == nullptr) {
-        error = "cannot allocate TLS certificate trust store";
+        error = "TLS client context has no certificate trust store";
         return false;
     }
 
-    const bool defaultTrustLoaded = X509_STORE_set_default_paths(store) == 1;
     X509_STORE_CTX* storeContext = X509_STORE_CTX_new();
+    if (storeContext == nullptr) {
+        error = "cannot allocate TLS certificate verification context";
+        return false;
+    }
+
     bool chainTrusted = false;
     long verificationError = X509_V_ERR_UNSPECIFIED;
-
-    if (defaultTrustLoaded && storeContext != nullptr &&
-        X509_STORE_CTX_init(storeContext, store, certificate, peerChain) == 1) {
+    if (X509_STORE_CTX_init(storeContext, store, certificate, peerChain) == 1) {
         if (X509_STORE_CTX_set_purpose(storeContext, X509_PURPOSE_SSL_SERVER) == 1 &&
             X509_verify_cert(storeContext) == 1) {
             chainTrusted = true;
@@ -200,11 +209,7 @@ inline bool VerifyPeerCertificateChain(
             verificationError = X509_STORE_CTX_get_error(storeContext);
         }
     }
-
-    if (storeContext != nullptr) {
-        X509_STORE_CTX_free(storeContext);
-    }
-    X509_STORE_free(store);
+    X509_STORE_CTX_free(storeContext);
 
     if (chainTrusted) {
         return true;
@@ -217,8 +222,6 @@ inline bool VerifyPeerCertificateChain(
     if (verificationError != X509_V_ERR_UNSPECIFIED) {
         error += ": ";
         error += X509_verify_cert_error_string(verificationError);
-    } else if (!defaultTrustLoaded) {
-        error += ": OpenSSL default CA trust paths are unavailable";
     }
     return false;
 }
@@ -283,7 +286,7 @@ inline bool VerifyPeerCertificate(
     }
 
     if (!VerifyPeerCertificateChain(
-            certificate, SSL_get_peer_cert_chain(session), error)) {
+            session, certificate, SSL_get_peer_cert_chain(session), error)) {
         goto cleanup;
     }
 
