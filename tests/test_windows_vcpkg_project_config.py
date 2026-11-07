@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Verify shared vcpkg configuration for the Windows Visual Studio projects."""
+
+from pathlib import Path
+import unittest
+import xml.etree.ElementTree as ET
+
+ROOT = Path(__file__).resolve().parents[1]
+NS = {"msb": "http://schemas.microsoft.com/developer/msbuild/2003"}
+
+
+class WindowsVcpkgProjectConfigTests(unittest.TestCase):
+    def test_shared_vcpkg_props_exists_and_checks_dependencies(self):
+        props_path = ROOT / "common" / "OblivionVcpkg.props"
+        self.assertTrue(props_path.is_file())
+        root = ET.parse(props_path).getroot()
+        names = {element.tag.rsplit("}", 1)[-1] for element in root.iter()}
+
+        self.assertIn("OblivionVcpkgRoot", names)
+        self.assertIn("OblivionVcpkgInstalledDir", names)
+        self.assertIn("Target", names)
+        self.assertIn("Error", names)
+
+        content = props_path.read_text(encoding="utf-8")
+        self.assertIn(r"openssl\ssl.h", content)
+        self.assertIn("libssl.lib", content)
+        self.assertIn("libcrypto.lib", content)
+        self.assertIn("yaml-cpp.lib", content)
+        self.assertIn("setup_windows_dependencies.ps1", content)
+
+    def test_client_and_server_import_shared_dependency_props(self):
+        for relative in ("client/client.vcxproj", "server/server.vcxproj"):
+            project_path = ROOT / relative
+            project = ET.parse(project_path).getroot()
+            imports = [node.attrib.get("Project", "") for node in project.findall("msb:Import", NS)]
+
+            self.assertTrue(
+                any(path.endswith(r"common\OblivionVcpkg.props") for path in imports),
+                f"{relative} does not import shared vcpkg properties",
+            )
+
+            content = project_path.read_text(encoding="utf-8-sig")
+            self.assertIn(r"$(OblivionVcpkgInstalledDir)\include", content)
+            self.assertIn(r"$(OblivionVcpkgInstalledDir)\lib", content)
+            self.assertNotIn(r"$(VCPKG_ROOT)\installed\$(OblivionVcpkgTriplet)", content)
+
+    def test_setup_script_installs_matching_x86_and_x64_triplets(self):
+        script_path = ROOT / "tools" / "setup_windows_dependencies.ps1"
+        self.assertTrue(script_path.is_file())
+        content = script_path.read_text(encoding="utf-8")
+
+        for required in (
+            "x64-windows-static-md",
+            "x86-windows-static-md",
+            "openssl:$triplet",
+            "yaml-cpp:$triplet",
+            "SetEnvironmentVariable",
+        ):
+            self.assertIn(required, content)
+
+
+if __name__ == "__main__":
+    unittest.main()
