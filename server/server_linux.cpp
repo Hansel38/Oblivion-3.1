@@ -22,6 +22,7 @@
 #endif
 #include <filesystem>
 #include <memory>
+#include <set>
 #include "../common/tls_transport.h"
 #include "../common/server_listen_port.h"
 #include "../common/server_yaml_config.h"
@@ -938,6 +939,47 @@ static std::atomic<std::size_t> g_activeClients{ 0 };
 static Oblivion::HeartbeatConfig g_heartbeatConfig;
 static std::unique_ptr<Oblivion::Security::IpRateLimiter> g_connectionRateLimiter;
 
+static std::atomic<bool> g_stopRequested{ false };
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "The stop flag must be lock-free when accessed by a POSIX signal handler");
+static std::mutex g_activeClientSocketsMutex;
+static std::set<SocketType> g_activeClientSockets;
+
+static bool IsStopRequested() noexcept {
+    return g_stopRequested.load(std::memory_order_relaxed);
+}
+
+static void HandleTerminationSignal(int) noexcept {
+    g_stopRequested.store(true, std::memory_order_relaxed);
+}
+
+static bool RegisterActiveClientSocket(SocketType socket) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        return g_activeClientSockets.insert(socket).second;
+    } catch (...) {
+        return false;
+    }
+}
+
+static void UnregisterActiveClientSocket(SocketType socket) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        g_activeClientSockets.erase(socket);
+    } catch (...) {
+    }
+}
+
+static void ShutdownActiveClientSockets() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_activeClientSocketsMutex);
+        for (const SocketType socket : g_activeClientSockets) {
+            (void)shutdown(socket, SHUT_RDWR);
+        }
+    } catch (...) {
+    }
+}
+
 static bool TryAcquireClientSlot() {
     std::size_t current = g_activeClients.load(std::memory_order_relaxed);
     while (current < g_maxConcurrentClients) {
@@ -993,13 +1035,17 @@ void SleepHeartbeat(
     uint32_t milliseconds,
     uint32_t jitterMs = 0,
     uint64_t randomSeed = 0) {
-    const uint32_t delayMs =
+    uint32_t remainingMs =
         Oblivion::Heartbeat::CalculateDelayMs(milliseconds, jitterMs, randomSeed);
+    while (remainingMs > 0 && !IsStopRequested()) {
+        const uint32_t sliceMs = (std::min)(remainingMs, 100U);
 #ifdef _WIN32
-    Sleep(delayMs);
+        Sleep(sliceMs);
 #else
-    usleep(static_cast<useconds_t>(delayMs) * 1000U);
+        usleep(static_cast<useconds_t>(sliceMs) * 1000U);
 #endif
+        remainingMs -= sliceMs;
+    }
 }
 
 static bool WaitForTlsIo(SocketType socket, SSL* tls, int sslResult, uint32_t timeoutMs) {
@@ -1167,13 +1213,9 @@ void HandleClient(SocketType clientSocket) {
         const bool initialFrameComplete = ReceiveSemicolonFrame(
             clientSocket, report, 5000, static_cast<size_t>(BUFFER_LEN - 1));
         if (!initialFrameComplete) {
-            if (!report.empty()) {
-                extractedHwid = ExtractHWIDFromRawData(report);
-                LogViolation("INCOMPLETE_REQUEST",
-                    "Initial TLS protocol frame did not complete before its deadline or size limit (bytes=" +
-                        std::to_string(report.size()) + ")",
-                    extractedHwid);
-            }
+            // No complete request has been authenticated. Drop it without
+            // classifying it as a player violation or writing attacker-controlled
+            // connection noise into the persistent violation log.
             return;
         }
         bytesReceived = static_cast<ssize_t>(report.size());
@@ -1290,7 +1332,7 @@ void HandleClient(SocketType clientSocket) {
                             return true;
                         };
 
-                        while (true) {
+                        while (!IsStopRequested()) {
                             const uint64_t pingTimestamp = MonotonicMilliseconds();
                             const uint64_t pingNonce = GenerateSecureNonce();
                             if (pingNonce == 0) {
@@ -1305,6 +1347,7 @@ void HandleClient(SocketType clientSocket) {
                             }
 
                             if (!ReceiveSemicolonFrame(clientSocket, heartbeatBuffer, cfg.timeout_ms, 1024)) {
+                                if (IsStopRequested()) break;
                                 if (!registerMiss("Heartbeat PONG timeout or incomplete frame")) break;
                                 ++seq;
                                 SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
@@ -1452,14 +1495,26 @@ void RunClientWorker(SocketType clientSocket) noexcept {
     } slotGuard;
 
     struct ClientSocketOwner {
-        explicit ClientSocketOwner(SocketType value) noexcept : socket(value) {}
-        ~ClientSocketOwner() noexcept {
-            if (socket != INVALID_SOCKET_VAL) closesocket_impl(socket);
+        explicit ClientSocketOwner(SocketType value) noexcept : socket(value) {
+            if (!RegisterActiveClientSocket(socket)) {
+                closesocket_impl(socket);
+                socket = INVALID_SOCKET_VAL;
+            }
         }
+        ~ClientSocketOwner() noexcept {
+            if (socket != INVALID_SOCKET_VAL) {
+                UnregisterActiveClientSocket(socket);
+                closesocket_impl(socket);
+            }
+        }
+        bool IsValid() const noexcept { return socket != INVALID_SOCKET_VAL; }
         ClientSocketOwner(const ClientSocketOwner&) = delete;
         ClientSocketOwner& operator=(const ClientSocketOwner&) = delete;
         SocketType socket;
     } socketOwner(clientSocket);
+    if (!socketOwner.IsValid()) {
+        return;
+    }
 
     try {
         HandleClient(clientSocket);
@@ -1546,6 +1601,17 @@ int main() {
     // secara kasar) membuat kernel mengirim SIGPIPE -> aksi default adalah MEMATIKAN
     // proses server. Satu pemain cukup untuk mematikan anti-cheat bagi semua orang.
     signal(SIGPIPE, SIG_IGN);
+
+    struct sigaction stopAction {};
+    stopAction.sa_handler = HandleTerminationSignal;
+    sigemptyset(&stopAction.sa_mask);
+    stopAction.sa_flags = 0; // Do not restart select; the main loop polls the stop flag.
+    if (sigaction(SIGINT, &stopAction, nullptr) != 0 ||
+        sigaction(SIGTERM, &stopAction, nullptr) != 0) {
+        std::cerr << "[FATAL] Cannot register SIGINT/SIGTERM handlers: "
+                  << std::strerror(errno) << std::endl;
+        return 1;
+    }
 #endif
 
 #ifdef _WIN32
@@ -1663,10 +1729,28 @@ int main() {
               << "ms timeout=" << globalHbCfg.timeout_ms << "ms maxMiss=" << globalHbCfg.max_consecutive_miss
               << " rttWarn=" << globalHbCfg.rtt_warn_ms << "ms" << std::endl;
 
-    while (true) {
+    while (!IsStopRequested()) {
+        fd_set listenerSet;
+        FD_ZERO(&listenerSet);
+        FD_SET(ListenSocket, &listenerSet);
+        timeval acceptWait{};
+        acceptWait.tv_sec = 0;
+        acceptWait.tv_usec = 500000;
+        const int listenerReady = select(ListenSocket + 1, &listenerSet, nullptr, nullptr, &acceptWait);
+        if (listenerReady == 0) {
+            continue;
+        }
+        if (listenerReady < 0) {
+            if (IsStopRequested() || errno == EINTR) continue;
+            std::cerr << "[ERROR] Listener select failed: " << errno << std::endl;
+            continue;
+        }
+
         ClientSocket = accept(ListenSocket, NULL, NULL);
         if (ClientSocket == INVALID_SOCKET_VAL) {
-            std::cerr << "[ERROR] Accept gagal" << std::endl;
+            if (IsStopRequested()) break;
+            if (errno == EINTR) continue;
+            std::cerr << "[ERROR] Accept gagal: " << errno << std::endl;
             continue;
         }
 
@@ -1715,11 +1799,24 @@ int main() {
         }
     }
 
-    closesocket_impl(ListenSocket);
+    std::cout << "[SHUTDOWN] Stop requested; closing listener and active client sockets." << std::endl;
+    if (ListenSocket != INVALID_SOCKET_VAL) {
+        closesocket_impl(ListenSocket);
+        ListenSocket = INVALID_SOCKET_VAL;
+    }
+    while (g_activeClients.load(std::memory_order_acquire) != 0) {
+        ShutdownActiveClientSockets();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (g_tlsServerContext != nullptr) {
+        SSL_CTX_free(g_tlsServerContext);
+        g_tlsServerContext = nullptr;
+    }
 #ifdef _WIN32
     WSACleanup();
 #endif
-
+    std::cout << "[SHUTDOWN] All client workers stopped; server shutdown complete." << std::endl;
     return 0;
 }
 
