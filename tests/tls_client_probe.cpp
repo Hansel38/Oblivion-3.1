@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
     if ((SSL_CTX_get_verify_mode(context) & SSL_VERIFY_PEER) == 0 ||
         SSL_CTX_get_verify_callback(context) !=
             Oblivion::Tls::VerifyPeerCertificateDuringHandshake) {
-        std::cerr << "TLS client context does not enforce peer verification during handshake\\n";
+        std::cerr << "TLS client context does not enforce peer verification during handshake\n";
         SSL_CTX_free(context);
         CloseSocket(socketFd);
 #ifdef _WIN32
