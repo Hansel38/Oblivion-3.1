@@ -8,7 +8,7 @@
     <OblivionVcpkgInstalledDir>$(OblivionVcpkgRoot)\installed\$(OblivionVcpkgTriplet)</OblivionVcpkgInstalledDir>
     <!-- Visual Studio can inherit a VCPKG_ROOT that only has x64 installed.
          Prefer the repo-local tree when it contains this exact target triplet. -->
-    <OblivionVcpkgRoot Condition="!Exists('$(OblivionVcpkgInstalledDir)\include\openssl\ssl.h') and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\include\openssl\ssl.h')">$(OblivionVcpkgRepositoryRoot)</OblivionVcpkgRoot>
+    <OblivionVcpkgRoot Condition="(!Exists('$(OblivionVcpkgInstalledDir)\include\openssl\ssl.h') or !Exists('$(OblivionVcpkgInstalledDir)\lib\libssl.lib') or !Exists('$(OblivionVcpkgInstalledDir)\lib\libcrypto.lib') or !Exists('$(OblivionVcpkgInstalledDir)\lib\yaml-cpp.lib')) and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\include\openssl\ssl.h') and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\lib\libssl.lib') and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\lib\libcrypto.lib') and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\lib\yaml-cpp.lib')">$(OblivionVcpkgRepositoryRoot)</OblivionVcpkgRoot>
     <OblivionVcpkgInstalledDir>$(OblivionVcpkgRoot)\installed\$(OblivionVcpkgTriplet)</OblivionVcpkgInstalledDir>
   </PropertyGroup>
 
