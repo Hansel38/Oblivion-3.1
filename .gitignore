@@ -19,6 +19,7 @@
 *.vcxproj.FileListAbsolute.txt
 
 # Generated build output
+.tools/vcpkg/
 **/Debug/**
 **/Release/**
 **/x64/**
