@@ -10,10 +10,11 @@ int main() {
         std::cerr << "empty DR7 was incorrectly classified as an active breakpoint\n";
         return 1;
     }
-    if (HasEnabledHardwareBreakpoints(0x10) ||
-        HasEnabledHardwareBreakpoints(0x100) ||
-        HasEnabledHardwareBreakpoints(0x400)) {
-        std::cerr << "DR7 control bits were incorrectly treated as enable bits\n";
+    if (HasEnabledHardwareBreakpoints(0x100) ||
+        HasEnabledHardwareBreakpoints(0x200) ||
+        HasEnabledHardwareBreakpoints(0x2000) ||
+        HasEnabledHardwareBreakpoints(0x10000)) {
+        std::cerr << "DR7 control fields were incorrectly treated as enable bits\n";
         return 2;
     }
     for (std::uint64_t enableBit = 0x01; enableBit <= 0x80; enableBit <<= 1) {
