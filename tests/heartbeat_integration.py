@@ -668,6 +668,29 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
                     "server accepted tampered status HMAC and continued sending frames"
                 )
 
+            # SIGTERM must stop accepting, wake the active heartbeat socket,
+            # wait for its worker to exit, and release server resources cleanly.
+            shutdown_client = connect_tls(timeout=3)
+            shutdown_client.settimeout(8)
+            sockets.append(shutdown_client)
+            shutdown_hwid = os.urandom(32).hex()
+            _, shutdown_buffer = authenticate(shutdown_client, shutdown_hwid)
+            _, shutdown_buffer = recv_ping(shutdown_client, shutdown_buffer)
+            process.send_signal(signal.SIGTERM)
+            shutdown_response = recv_closed(shutdown_client, 1)
+            if shutdown_response:
+                raise RuntimeError(
+                    f"server sent unexpected data during graceful shutdown: {shutdown_response!r}"
+                )
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("server did not finish graceful shutdown within 8 seconds") from exc
+            if process.returncode != 0:
+                raise RuntimeError(
+                    f"server returned {process.returncode} instead of clean exit code 0 on SIGTERM"
+                )
+
         finally:
             for sock in sockets:
                 try:
