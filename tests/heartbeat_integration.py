@@ -369,7 +369,10 @@ def verify_tls_handshake_deadline() -> None:
 
 
 def verify_tls_client_pin_checks(
-    probe_binary: Path, server_certificate: Path, tls_directory: Path
+    probe_binary: Path,
+    server_certificate: Path,
+    server_ca_certificate: Path,
+    tls_directory: Path,
 ) -> None:
     certificate_der = subprocess.run(
         ["openssl", "x509", "-in", str(server_certificate), "-outform", "DER"],
@@ -382,16 +385,94 @@ def verify_tls_client_pin_checks(
         (HOST, wrong_pin, "reject", "wrong certificate pin"),
         ("wrong.invalid", certificate_pin, "reject", "hostname mismatch"),
     ]
+    trusted_probe_env = os.environ.copy()
+    trusted_probe_env["SSL_CERT_FILE"] = str(server_ca_certificate)
+    trusted_probe_env["SSL_CERT_DIR"] = str(tls_directory / "empty-system-ca-dir")
+    (tls_directory / "empty-system-ca-dir").mkdir(exist_ok=True)
+
     for expected_host, pin, expected_result, description in cases:
         result = subprocess.run(
             [str(probe_binary), HOST, expected_host, str(PORT), pin, expected_result],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, text=True, timeout=8, env=trusted_probe_env,
         )
         if result.returncode != 0:
             raise RuntimeError(
                 f"TLS client verification case failed ({description}): "
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
             )
+
+    # Private deployments may pin a self-signed leaf as the explicit trust anchor.
+    self_signed_key = tls_directory / "self-signed-valid.key"
+    self_signed_cert = tls_directory / "self-signed-valid.pem"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(self_signed_key), "-out", str(self_signed_cert),
+        "-subj", "/CN=127.0.0.1",
+        "-addext", "basicConstraints=critical,CA:FALSE",
+        "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+        "-addext", "extendedKeyUsage=serverAuth",
+        "-addext", "subjectAltName=IP:127.0.0.1",
+    ], check=True, capture_output=True, text=True)
+    self_signed_der = subprocess.run(
+        ["openssl", "x509", "-in", str(self_signed_cert), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    self_signed_pin = hashlib.sha256(self_signed_der).hexdigest()
+    self_signed_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    self_signed_context.load_cert_chain(
+        certfile=str(self_signed_cert), keyfile=str(self_signed_key)
+    )
+
+    self_signed_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self_signed_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self_signed_listener.bind((HOST, 0))
+    self_signed_listener.listen(1)
+    self_signed_port = self_signed_listener.getsockname()[1]
+    self_signed_errors: list[str] = []
+
+    def serve_self_signed() -> None:
+        try:
+            connection, _ = self_signed_listener.accept()
+            with connection:
+                try:
+                    with self_signed_context.wrap_socket(connection, server_side=True) as tls_socket:
+                        tls_socket.settimeout(2)
+                        try:
+                            tls_socket.recv(1)
+                        except (ssl.SSLError, OSError, socket.timeout):
+                            pass
+                except (ssl.SSLError, OSError):
+                    pass
+        except OSError as exc:
+            self_signed_errors.append(str(exc))
+        finally:
+            self_signed_listener.close()
+
+    self_signed_thread = threading.Thread(target=serve_self_signed, daemon=True)
+    self_signed_thread.start()
+    try:
+        self_signed_env = os.environ.copy()
+        # Remove the temporary test CA: the leaf is accepted only by its exact pin.
+        self_signed_env["SSL_CERT_FILE"] = str(tls_directory / "empty-ca-file.pem")
+        self_signed_env["SSL_CERT_DIR"] = str(tls_directory / "empty-ca-dir")
+        (tls_directory / "empty-ca-file.pem").write_text("", encoding="ascii")
+        (tls_directory / "empty-ca-dir").mkdir(exist_ok=True)
+        result = subprocess.run(
+            [str(probe_binary), HOST, HOST, str(self_signed_port), self_signed_pin, "accept"],
+            capture_output=True, text=True, timeout=8, env=self_signed_env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "TLS client rejected a valid pinned self-signed leaf: "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+    finally:
+        self_signed_listener.close()
+        self_signed_thread.join(timeout=3)
+    if self_signed_thread.is_alive():
+        raise RuntimeError("self-signed TLS test server thread did not stop")
+    if self_signed_errors:
+        raise RuntimeError("self-signed TLS test server failed: " + "; ".join(self_signed_errors))
 
     # X509_check_host() otherwise accepts the legacy Subject CN when the
     # certificate has no subjectAltName. Require DNS SAN explicitly.
@@ -730,7 +811,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             verify_trailing_data_is_rejected()
             verify_plaintext_protocol_is_rejected()
             verify_tls_handshake_deadline()
-            verify_tls_client_pin_checks(tls_probe_binary, server_cert, tls_directory)
+            verify_tls_client_pin_checks(tls_probe_binary, server_cert, ca_cert, tls_directory)
             verify_malformed_request_does_not_log_secret(server_binary)
             verify_incomplete_initial_frame_is_rejected()
             verify_short_hwid_is_rejected()
