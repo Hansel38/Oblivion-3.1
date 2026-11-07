@@ -14,6 +14,23 @@
 #include <psapi.h>
 #include <winternl.h>
 
+namespace {
+class ScopedNativeHandle {
+public:
+    explicit ScopedNativeHandle(HANDLE handle = nullptr) noexcept : handle_(handle) {}
+    ~ScopedNativeHandle() noexcept {
+        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+    }
+    ScopedNativeHandle(const ScopedNativeHandle&) = delete;
+    ScopedNativeHandle& operator=(const ScopedNativeHandle&) = delete;
+    HANDLE get() const noexcept { return handle_; }
+private:
+    HANDLE handle_;
+};
+}
+
 // NtQuerySystemInformation for handle enumeration
 typedef NTSTATUS (NTAPI* NtQuerySystemInformationFn)(
     ULONG SystemInformationClass,
@@ -327,15 +344,15 @@ namespace {
             return L"";
         }
 
+        ScopedNativeHandle duplicateOwner(hDuplicate);
         std::vector<BYTE> buffer(4096);
         ULONG returnLength = 0;
         const NTSTATUS status = pNtQueryObject(
-            hDuplicate,
+            duplicateOwner.get(),
             OBLIVION_OBJECT_TYPE_INFORMATION_CLASS,
             buffer.data(),
             static_cast<ULONG>(buffer.size()),
             &returnLength);
-        CloseHandle(hDuplicate);
 
         if (status < 0) {
             return L"";
@@ -365,9 +382,9 @@ namespace {
             // Belum bisa dipastikan: jangan cache supaya dicoba lagi pada scan berikutnya.
             return false;
         }
+        ScopedNativeHandle ownerProcess(hOwnerProcess);
 
-        const std::wstring typeName = GetHandleTypeName(hOwnerProcess, handleValue);
-        CloseHandle(hOwnerProcess);
+        const std::wstring typeName = GetHandleTypeName(ownerProcess.get(), handleValue);
 
         if (typeName.empty()) {
             return false;
@@ -1471,36 +1488,32 @@ namespace Oblivion {
                     // Verify: Try to duplicate the handle and check if it points to our game
                     HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.ProcessId);
                     if (hOwnerProcess != NULL) {
+                        ScopedNativeHandle ownerProcess(hOwnerProcess);
                         HANDLE hDuplicated = NULL;
-                        
-                        // Try to duplicate the handle
+
                         if (DuplicateHandle(
-                            hOwnerProcess,
-                            (HANDLE)(ULONG_PTR)handle.Handle,
+                            ownerProcess.get(),
+                            reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(handle.Handle)),
                             GetCurrentProcess(),
                             &hDuplicated,
                             0,
                             FALSE,
                             DUPLICATE_SAME_ACCESS)) {
+                            ScopedNativeHandle duplicatedOwner(hDuplicated);
 
-                            // Check if duplicated handle points to our game process
-                            DWORD targetPid = GetProcessId(hDuplicated);
+                            const DWORD targetPid = GetProcessId(duplicatedOwner.get());
                             if (targetPid == gameProcessId) {
-                                // CONFIRMED: This handle points to our game with dangerous access!
-                                suspiciousProcess = processName + L" (PID:" + std::to_wstring(handle.ProcessId) + 
-                                                   L", Access:0x" + std::to_wstring(handle.GrantedAccess) + L")";
+                                suspiciousProcess = processName + L" (PID:" + std::to_wstring(handle.ProcessId) +
+                                    L", Access:0x" + std::to_wstring(handle.GrantedAccess) + L")";
 #ifdef _DEBUG
-                                std::wstring debugMsg = L"[AdvHeuristics] DETECTED SUSPICIOUS HANDLE to game: " + suspiciousProcess + L"\n";
+                                std::wstring debugMsg =
+                                    L"[AdvHeuristics] DETECTED SUSPICIOUS HANDLE to game: " +
+                                    suspiciousProcess + L"\n";
                                 OutputDebugStringW(debugMsg.c_str());
 #endif
-                                CloseHandle(hDuplicated);
-                                CloseHandle(hOwnerProcess);
                                 return true;
                             }
-                            
-                            CloseHandle(hDuplicated);
                         }
-                        CloseHandle(hOwnerProcess);
                     }
                 }
             }
