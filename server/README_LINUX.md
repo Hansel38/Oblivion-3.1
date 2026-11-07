@@ -31,15 +31,17 @@ sudo apt-get install -y build-essential libssl-dev libyaml-cpp-dev
 
 ### Windows client/server TLS dependency
 
-The Windows Visual Studio projects link OpenSSL and yaml-cpp through vcpkg. Install both packages using the same triplet used by the project, then set the VCPKG_ROOT environment variable before opening/building the solution:
+The Windows Visual Studio projects use OpenSSL and yaml-cpp from vcpkg. The include and library directories are resolved from `VCPKG_ROOT`; when that variable is not set, the projects use the repository-local `.tools\vcpkg` directory. Missing packages now stop the build with an actionable dependency error instead of an opaque C1083 include failure.
+
+From the repository root, run the dependency bootstrap script in PowerShell:
 
 ~~~powershell
-git clone https://github.com/microsoft/vcpkg C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg.exe install openssl:x64-windows-static-md yaml-cpp:x64-windows-static-md
-$env:VCPKG_ROOT = 'C:\vcpkg'
-msbuild Oblivion.sln /m /p:Configuration=Release /p:Platform=x64
+powershell -ExecutionPolicy Bypass -File tools\setup_windows_dependencies.ps1
 ~~~
+
+By default, the script installs both x64 and x86 packages (`openssl` and `yaml-cpp`) using the exact static-md triplets required by the projects. It creates the vcpkg checkout under `.tools\vcpkg` unless `VCPKG_ROOT` or the `-VcpkgRoot` parameter selects another location. Close and reopen Visual Studio after the script completes so MSBuild and IntelliSense receive the updated environment and include directories.
+
+To install only one architecture, use `-Architecture x64` or `-Architecture x86`. Then build the solution using the matching platform (x64 or x86).
 
 The current CI builds Release x86 and x64 and installs the OpenSSL and yaml-cpp triplets automatically. Production clients must also be provisioned with the matching certificate pin described below; successfully compiling TLS support does not establish trust by itself.
 ## Build Instructions
