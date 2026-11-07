@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <!-- Prefer the configured vcpkg root; otherwise use the repository-local setup. -->
-    <OblivionVcpkgRoot Condition="'$(VCPKG_ROOT)' != ''">$(VCPKG_ROOT)</OblivionVcpkgRoot>
+    <!-- Keep an explicit MSBuild override highest priority; otherwise use VCPKG_ROOT. -->
+    <OblivionVcpkgRoot Condition="'$(OblivionVcpkgRoot)' == '' and '$(VCPKG_ROOT)' != ''">$(VCPKG_ROOT)</OblivionVcpkgRoot>
     <OblivionVcpkgRoot Condition="'$(OblivionVcpkgRoot)' == ''">$(MSBuildThisFileDirectory)..\.tools\vcpkg</OblivionVcpkgRoot>
+    <OblivionVcpkgRepositoryRoot>$(MSBuildThisFileDirectory)..\.tools\vcpkg</OblivionVcpkgRepositoryRoot>
+    <OblivionVcpkgInstalledDir>$(OblivionVcpkgRoot)\installed\$(OblivionVcpkgTriplet)</OblivionVcpkgInstalledDir>
+    <!-- Visual Studio can inherit a VCPKG_ROOT that only has x64 installed.
+         Prefer the repo-local tree when it contains this exact target triplet. -->
+    <OblivionVcpkgRoot Condition="!Exists('$(OblivionVcpkgInstalledDir)\include\openssl\ssl.h') and Exists('$(OblivionVcpkgRepositoryRoot)\installed\$(OblivionVcpkgTriplet)\include\openssl\ssl.h')">$(OblivionVcpkgRepositoryRoot)</OblivionVcpkgRoot>
     <OblivionVcpkgInstalledDir>$(OblivionVcpkgRoot)\installed\$(OblivionVcpkgTriplet)</OblivionVcpkgInstalledDir>
   </PropertyGroup>
 
@@ -11,10 +16,10 @@
     <Error Condition="'$(OblivionVcpkgTriplet)' == ''"
            Text="Oblivion dependency configuration does not recognize platform '$(Platform)'. Supported platforms are x64 and Win32." />
     <Error Condition="!Exists('$(OblivionVcpkgInstalledDir)\include\openssl\ssl.h')"
-           Text="OpenSSL headers were not found for $(Platform). Run powershell -ExecutionPolicy Bypass -File tools\setup_windows_dependencies.ps1 from the repository root, then reload Visual Studio." />
+           Text="OpenSSL headers for $(Platform) ($(OblivionVcpkgTriplet)) were not found. Checked: $(OblivionVcpkgInstalledDir)\include\openssl\ssl.h. Run powershell -NoProfile -ExecutionPolicy Bypass -File tools\setup_windows_dependencies.ps1 -Architecture both from the repository root." />
     <Error Condition="!Exists('$(OblivionVcpkgInstalledDir)\lib\libssl.lib') or !Exists('$(OblivionVcpkgInstalledDir)\lib\libcrypto.lib')"
-           Text="OpenSSL libraries were not found for $(Platform). Run tools\setup_windows_dependencies.ps1 from the repository root." />
+           Text="OpenSSL libraries for $(Platform) ($(OblivionVcpkgTriplet)) were not found under $(OblivionVcpkgInstalledDir)\lib. Run tools\setup_windows_dependencies.ps1 -Architecture both from the repository root." />
     <Error Condition="!Exists('$(OblivionVcpkgInstalledDir)\lib\yaml-cpp.lib')"
-           Text="yaml-cpp was not found for $(Platform). Run tools\setup_windows_dependencies.ps1 from the repository root." />
+           Text="yaml-cpp for $(Platform) ($(OblivionVcpkgTriplet)) was not found under $(OblivionVcpkgInstalledDir)\lib. Run tools\setup_windows_dependencies.ps1 -Architecture both from the repository root." />
   </Target>
 </Project>
