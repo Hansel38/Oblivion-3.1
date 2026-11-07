@@ -1,10 +1,14 @@
 # Oblivion Server - Linux Build Guide
 
 > **Transport security:** this build requires TLS 1.2 or newer for every client connection.
-> Plaintext protocol frames are not accepted. The client verifies the certificate validity period,
-> server-auth certificate purpose, endpoint hostname/IP SAN, and a configured SHA-256 pin of
-> the leaf certificate before sending check-in/report data. Keep the private key secret, distribute
-> the certificate pin through a trusted deployment channel, and do not treat a writable local
+> Plaintext protocol frames are not accepted. The client requires OpenSSL peer-chain verification
+> during the TLS handshake, then verifies the leaf validity period, server-auth purpose, endpoint
+> hostname/IP SAN, and configured SHA-256 certificate pin before sending application data. A
+> cryptographically self-signed leaf is the only deferred trust exception and must match the exact
+> configured pin and all leaf identity checks. This client does not currently query OCSP/CRLs;
+> certificate/key compromise therefore requires removing the affected pin and distributing a
+> rebuilt client. Keep the private key secret, distribute the certificate pin through a trusted
+> deployment channel, and do not treat a writable local
 > oblivion.cfg as tamper-proof policy. The shared secret is still embedded/loaded by the client
 > and can be recovered by local reverse engineering; TLS protects it in transit, not at rest or
 > against a compromised client. Load-test and validate false-positive behavior with the actual
