@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "AntiDebug.h"
 #include "win_path_utils.h"
+#include "../../common/module_whitelist_policy.h"
 #include <vector>
 #include <cwctype>
 #include <algorithm>
@@ -636,11 +637,8 @@ static bool IsModuleWhitelisted(HMODULE hMod) {
     wchar_t* ctx = nullptr;
     wchar_t* token = wcstok_s(wl, L";", &ctx);
     while (token) {
-        while (*token == L' ' || *token == L'\t') ++token;
-        size_t len = wcslen(token);
-        while (len && (token[len-1] == L' ' || token[len-1] == L'\t')) { token[--len] = L'\0'; }
-        _wcslwr_s(token, len + 1);
-        if (len && fnameLower.find(token) != std::wstring::npos) {
+        const std::wstring whitelistEntry(token);
+        if (Oblivion::Security::IsExactModuleWhitelistMatch(fnameLower, whitelistEntry)) {
             return true;
         }
         token = wcstok_s(nullptr, L";", &ctx);
