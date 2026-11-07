@@ -111,7 +111,16 @@ heartbeat:
   timeout_ms: 4000
   max_consecutive_misses: 3
   rtt_warn_ms: 1500
+connections:
+  max_concurrent_clients: 256
+  per_ip_burst: 120
+  per_ip_refill_per_second: 2
+  max_tracked_ips: 65536
+  ip_idle_expiration_seconds: 600
+  ip_cleanup_interval: 256
 ```
+
+The `connections` section controls the worker ceiling and per-IP token bucket without recompiling the server. Allowed ranges are 1–1024 concurrent clients, 1–10000 burst tokens, 1–1000 refill tokens/second, 1–1000000 tracked IPs, 30–86400 seconds idle expiration, and 1–65536 cleanup interval. Choose a worker ceiling appropriate for VPS memory and test shared NAT populations before tightening per-IP limits.
 
 Malformed YAML, unsupported keys, out-of-range values, and files larger than 64 KiB cause startup/configuration failure rather than silently using an unsafe value. Environment variables remain available to override supported fields. **Never put the shared secret or TLS private key contents in YAML**; keep `OBLIVION_SECRET` in the environment or the protected `secret.dat`, and keep the TLS private key as a separate file with mode `0600`.
 
