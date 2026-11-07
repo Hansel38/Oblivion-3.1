@@ -2,6 +2,8 @@
 #include "AntiDebug.h"
 #include "win_path_utils.h"
 #include "../../common/module_whitelist_policy.h"
+#include "../../common/peb_layout_policy.h"
+#include <cstring>
 #include <vector>
 #include <cwctype>
 #include <algorithm>
@@ -25,6 +27,41 @@ typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(
     IN ULONG ProcessInformationLength,
     OUT PULONG ReturnLength OPTIONAL
     );
+
+struct PROCESS_BASIC_INFORMATION_LOCAL {
+    PVOID Reserved1;
+    PVOID PebBaseAddress;
+    PVOID Reserved2[2];
+    ULONG_PTR UniqueProcessId;
+    PVOID Reserved3;
+};
+
+static PVOID QueryCurrentPebBaseAddress() noexcept {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr) {
+        return nullptr;
+    }
+
+    const auto queryInformationProcess =
+        reinterpret_cast<pNtQueryInformationProcess>(
+            GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    if (queryInformationProcess == nullptr) {
+        return nullptr;
+    }
+
+    PROCESS_BASIC_INFORMATION_LOCAL information{};
+    const NTSTATUS status = queryInformationProcess(
+        GetCurrentProcess(),
+        ProcessBasicInformation,
+        &information,
+        static_cast<ULONG>(sizeof(information)),
+        nullptr);
+    if (status < 0 || information.PebBaseAddress == nullptr) {
+        return nullptr;
+    }
+
+    return information.PebBaseAddress;
+}
 
 // VEH probe handler and flag (file-scope)
 static volatile LONG gVehCalled = 0;
@@ -214,7 +251,10 @@ namespace Oblivion {
         record("INT3Trap", CheckInt3Trap(), true);
         record("HWBreakpoints", CheckHardwareBreakpoints(), true);
         record("KernelDebugger", CheckKernelDebugger(), true);
-        record("PEBFlags", CheckPEBFlags(), true);
+        record("PEBBeingDebugged", CheckPEBBeingDebugged(), true);
+        // NtGlobalFlag reflects debug-heap/process-creation settings and can also
+        // be configured independently of an attached debugger; count it as weak evidence.
+        record("PEBNtGlobalFlag", CheckPEBNtGlobalFlag(), false);
         record("TimingAnomalies", CheckTimingAnomalies(), false);
         record("ApiHookIntegrity", CheckApiHookIntegrity(), false);
         record("SEHChainIntegrity", CheckSEHChainIntegrity(), false);
@@ -501,48 +541,42 @@ namespace Oblivion {
         return suspicious;
     }
 
-    bool AntiDebug::CheckPEBFlags() {
-        // Baca BeingDebugged dan NtGlobalFlag dari PEB via NtQueryInformationProcess
-        typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
-        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-        if (!hNtdll) return false;
-        auto NtQueryInfoProc = (pNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
-        if (!NtQueryInfoProc) return false;
+    bool AntiDebug::CheckPEBBeingDebugged() {
+        const BYTE* peb = static_cast<const BYTE*>(QueryCurrentPebBaseAddress());
+        if (peb == nullptr) {
+            return false;
+        }
 
-        // Ambil ProcessBasicInformation untuk mendapatkan PEB
-        struct PROCESS_BASIC_INFORMATION_LOCAL {
-            PVOID Reserved1;
-            PVOID PebBaseAddress;
-            PVOID Reserved2[2];
-            ULONG UniqueProcessId;
-            PVOID Reserved3;
-        } pbi = {};
-
-        NTSTATUS st = NtQueryInfoProc(GetCurrentProcess(), ProcessBasicInformation, &pbi, sizeof(pbi), nullptr);
-        if (st != 0x00000000 || !pbi.PebBaseAddress) return false;
-
-        // Struktur PEB minimal untuk membaca BeingDebugged dan NtGlobalFlag
-        struct PEB_MIN {
-            BYTE Reserved1[2];
-            BYTE BeingDebugged;
-            BYTE Reserved2[1];
-            PVOID Reserved3[2];
-            PVOID Ldr;
-            PVOID ProcessParameters;
-            BYTE Reserved4[104];
-            ULONG NtGlobalFlag;
-        };
-
-        auto peb = (PEB_MIN*)pbi.PebBaseAddress;
         __try {
-            bool dbg = peb->BeingDebugged != 0;
-            // NtGlobalFlag sering memiliki 0x70 jika di bawah debugger (FLG_HEAP_ENABLE_TAIL_CHECK | FLG_HEAP_ENABLE_FREE_CHECK)
-            bool ngf = (peb->NtGlobalFlag & 0x70) != 0;
-            return dbg || ngf;
+            return peb[Oblivion::Windows::kPebBeingDebuggedOffset] != 0;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             return false;
         }
+    }
+
+    bool AntiDebug::CheckPEBNtGlobalFlag() {
+        const BYTE* peb = static_cast<const BYTE*>(QueryCurrentPebBaseAddress());
+        constexpr std::size_t ntGlobalFlagOffset =
+            Oblivion::Windows::PebNtGlobalFlagOffset(sizeof(void*));
+        static_assert(ntGlobalFlagOffset != 0,
+                      "Oblivion supports only 32-bit and 64-bit PEB layouts");
+        if (peb == nullptr) {
+            return false;
+        }
+
+        ULONG ntGlobalFlag = 0;
+        __try {
+            std::memcpy(
+                &ntGlobalFlag,
+                peb + ntGlobalFlagOffset,
+                sizeof(ntGlobalFlag));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+
+        return Oblivion::Windows::HasPebNtGlobalFlagDebugIndicators(ntGlobalFlag);
     }
 
     bool AntiDebug::CheckSEHChainIntegrity() {
