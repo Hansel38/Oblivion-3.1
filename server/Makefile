@@ -21,6 +21,7 @@ DEPS := $(OBJECTS:.o=.d)
 all: $(TARGET)
 
 TEST_TARGET := $(BUILD_DIR)/heartbeat_auth_test
+HEARTBEAT_TIMING_TEST_TARGET := $(BUILD_DIR)/heartbeat_timing_test
 HWID_TEST_TARGET := $(BUILD_DIR)/hwid_identifier_validation_test
 TLS_PROBE_TARGET := $(BUILD_DIR)/tls_client_probe
 
@@ -31,8 +32,9 @@ SERVER_YAML_TEST_TARGET := $(BUILD_DIR)/server_yaml_config_test
 CLIENT_YAML_TEST_TARGET := $(BUILD_DIR)/client_yaml_config_test
 IP_RATE_LIMITER_TEST_TARGET := $(BUILD_DIR)/ip_rate_limiter_test
 
-test: $(TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET) $(IP_RATE_LIMITER_TEST_TARGET)
+test: $(TEST_TARGET) $(HEARTBEAT_TIMING_TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET) $(IP_RATE_LIMITER_TEST_TARGET)
 	./$(TEST_TARGET)
+	./$(HEARTBEAT_TIMING_TEST_TARGET)
 	./$(HWID_TEST_TARGET)
 	./$(PATH_POLICY_TEST_TARGET)
 	./$(AUTHENTICODE_POLICY_TEST_TARGET)
@@ -55,6 +57,9 @@ integration-test: $(TARGET) $(TLS_PROBE_TARGET)
 
 $(TEST_TARGET): ../tests/heartbeat_auth_test.cpp ../common/heartbeat_auth.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
+
+$(HEARTBEAT_TIMING_TEST_TARGET): ../tests/heartbeat_timing_test.cpp ../common/heartbeat_timing.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(HWID_TEST_TARGET): ../tests/hwid_identifier_validation_test.cpp ../client/include/hwid_identifier_validation.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../client/include -o $@ $<
