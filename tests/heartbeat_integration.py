@@ -459,6 +459,117 @@ def verify_tls_client_pin_checks(
         raise RuntimeError("CN-only TLS test server failed: " + "; ".join(server_errors))
 
 
+    # CA-issued peers must chain to a trusted root in SSL_CERT_FILE/SSL_CERT_DIR.
+    ca_key = tls_directory / "test-root-ca.key"
+    ca_cert = tls_directory / "test-root-ca.pem"
+    leaf_key = tls_directory / "ca-issued-leaf.key"
+    leaf_csr = tls_directory / "ca-issued-leaf.csr"
+    leaf_cert = tls_directory / "ca-issued-leaf.pem"
+    leaf_extensions = tls_directory / "ca-issued-leaf.ext"
+    rogue_ca_key = tls_directory / "rogue-root-ca.key"
+    rogue_ca_cert = tls_directory / "rogue-root-ca.pem"
+    empty_ca_directory = tls_directory / "empty-ca-directory"
+    empty_ca_directory.mkdir(exist_ok=True)
+
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(ca_key), "-out", str(ca_cert),
+        "-subj", "/CN=Oblivion Integration Test Root CA",
+        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
+    ], check=True, capture_output=True, text=True)
+    subprocess.run([
+        "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-keyout", str(leaf_key), "-out", str(leaf_csr), "-subj", "/CN=localhost",
+    ], check=True, capture_output=True, text=True)
+    leaf_extensions.write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\n"
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid,issuer\n",
+        encoding="ascii",
+    )
+    subprocess.run([
+        "openssl", "x509", "-req", "-in", str(leaf_csr),
+        "-CA", str(ca_cert), "-CAkey", str(ca_key), "-CAcreateserial",
+        "-days", "2", "-sha256", "-extfile", str(leaf_extensions),
+        "-out", str(leaf_cert),
+    ], check=True, capture_output=True, text=True)
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
+        "-days", "2", "-keyout", str(rogue_ca_key), "-out", str(rogue_ca_cert),
+        "-subj", "/CN=Unrelated Integration Root CA",
+        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
+    ], check=True, capture_output=True, text=True)
+
+    leaf_der = subprocess.run(
+        ["openssl", "x509", "-in", str(leaf_cert), "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    leaf_pin = hashlib.sha256(leaf_der).hexdigest()
+    ca_server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ca_server_context.load_cert_chain(certfile=str(leaf_cert), keyfile=str(leaf_key))
+
+    def run_ca_certificate_case(trust_root: Path, expected: str, description: str) -> None:
+        ca_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ca_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ca_listener.bind((HOST, 0))
+        ca_listener.listen(1)
+        ca_port = ca_listener.getsockname()[1]
+        ca_server_errors: list[str] = []
+
+        def serve_ca_certificate() -> None:
+            try:
+                connection, _ = ca_listener.accept()
+                with connection:
+                    try:
+                        with ca_server_context.wrap_socket(connection, server_side=True) as tls_socket:
+                            tls_socket.settimeout(2)
+                            try:
+                                tls_socket.recv(1)
+                            except (ssl.SSLError, OSError, socket.timeout):
+                                pass
+                    except (ssl.SSLError, OSError):
+                        pass
+            except OSError as exc:
+                ca_server_errors.append(str(exc))
+            finally:
+                ca_listener.close()
+
+        ca_thread = threading.Thread(target=serve_ca_certificate, daemon=True)
+        ca_thread.start()
+        try:
+            probe_env = os.environ.copy()
+            probe_env["SSL_CERT_FILE"] = str(trust_root)
+            probe_env["SSL_CERT_DIR"] = str(empty_ca_directory)
+            result = subprocess.run(
+                [str(probe_binary), HOST, HOST, str(ca_port), leaf_pin, expected],
+                capture_output=True, text=True, timeout=8, env=probe_env,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"CA chain verification failed ({description}): "
+                    f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+                )
+        finally:
+            ca_listener.close()
+            ca_thread.join(timeout=3)
+        if ca_thread.is_alive():
+            raise RuntimeError(f"CA test server thread did not stop ({description})")
+        if ca_server_errors:
+            raise RuntimeError(
+                f"CA test server failed ({description}): " + "; ".join(ca_server_errors)
+            )
+
+    run_ca_certificate_case(ca_cert, "accept", "leaf chains to configured trusted root")
+    run_ca_certificate_case(rogue_ca_cert, "reject", "leaf issuer is not in configured trust store")
+
+
 def verify_missing_tls_certificate_is_rejected(server_binary: Path) -> None:
     # Startup must fail before listening if no server certificate/key can be loaded.
     with tempfile.TemporaryDirectory(prefix="oblivion-no-tls-cert-") as directory:
