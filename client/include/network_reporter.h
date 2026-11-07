@@ -8,8 +8,12 @@
 #include <atomic>
 #include <thread>
 #include <winsock2.h>
-#include <openssl/ssl.h>
 #include "heartbeat_protocol.h"
+
+// Keep the public client header independent of OpenSSL headers. The concrete
+// TLS implementation is included by network_reporter.cpp through tls_transport.h.
+typedef struct ssl_ctx_st SSL_CTX;
+typedef struct ssl_st SSL;
 
 namespace Oblivion {
     class NetworkReporter {
