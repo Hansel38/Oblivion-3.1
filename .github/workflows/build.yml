@@ -40,7 +40,9 @@ jobs:
 
   windows-solution:
     name: Windows client and server build
-    runs-on: windows-latest
+    # The solution targets VS2022/v143; windows-latest currently resolves to
+    # a newer VS image and does not guarantee the required VS2022 instance.
+    runs-on: windows-2022
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
