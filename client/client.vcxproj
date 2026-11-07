@@ -172,6 +172,8 @@
     <ClInclude Include="include\overlay_scanner.h" />
     <ClInclude Include="include\self_integrity_guard.h" />
     <ClInclude Include="include\process_watcher.h" />
+    <ClInclude Include="..\common\module_whitelist_policy.h" />
+    <ClInclude Include="..\common\relative_manifest_path.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
