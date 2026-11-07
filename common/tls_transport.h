@@ -458,7 +458,7 @@ inline bool PerformHandshake(
         const int sslError = SSL_get_error(session, result);
         if (!WaitForHandshakeIo(socketDescriptor, sslError, deadline)) {
             error = (std::chrono::steady_clock::now() >= deadline)
-                ? "TLS handshake exceeded its 5-second deadline"
+                ? "TLS handshake exceeded its deadline"
                 : "TLS handshake failed";
             return false;
         }
