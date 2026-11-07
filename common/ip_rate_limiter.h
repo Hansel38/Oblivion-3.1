@@ -42,16 +42,14 @@ public:
 
         std::lock_guard<std::mutex> lock(mutex_);
         ++operations_;
+        // Run pruning on the global operation cadence, not only on new IPs.
+        // Continuous traffic from known addresses must not starve expiry cleanup.
+        if ((operations_ % cleanupInterval_) == 0) {
+            PruneExpiredLocked(now);
+        }
 
         auto entry = buckets_.find(ipAddress);
         if (entry == buckets_.end()) {
-            // Full-table misses are rejected cheaply. Do not scan the entire
-            // map on every new source address, which would amplify IP-rotation
-            // floods into repeated O(N) cleanup work.
-            if ((operations_ % cleanupInterval_) == 0) {
-                PruneExpiredLocked(now);
-            }
-
             // Keep memory bounded even when an attacker rotates source addresses.
             if (buckets_.size() >= maximumTrackedIps_) {
                 return false;
