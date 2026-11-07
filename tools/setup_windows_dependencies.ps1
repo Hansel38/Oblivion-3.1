@@ -35,18 +35,21 @@ $bootstrapScript = Join-Path $VcpkgRoot "bootstrap-vcpkg.bat"
 
 if (-not (Test-Path -LiteralPath $vcpkgExecutable -PathType Leaf)) {
     if (Test-Path -LiteralPath $VcpkgRoot) {
-        $existingItems = @(Get-ChildItem -LiteralPath $VcpkgRoot -Force)
-        if ($existingItems.Count -gt 0) {
-            throw "VcpkgRoot exists but is not a vcpkg checkout: $VcpkgRoot"
+        if (-not (Test-Path -LiteralPath $bootstrapScript -PathType Leaf)) {
+            $existingItems = @(Get-ChildItem -LiteralPath $VcpkgRoot -Force)
+            if ($existingItems.Count -gt 0) {
+                throw "VcpkgRoot exists but is not a vcpkg checkout: $VcpkgRoot"
+            }
+            Remove-Item -LiteralPath $VcpkgRoot -Force
         }
-        Remove-Item -LiteralPath $VcpkgRoot -Force
     }
-
-    $parentDirectory = Split-Path -Parent $VcpkgRoot
-    New-Item -ItemType Directory -Force -Path $parentDirectory | Out-Null
-    Invoke-NativeCommand -FilePath "git" -Arguments @(
-        "clone", "--depth", "1", "https://github.com/microsoft/vcpkg", $VcpkgRoot
-    )
+    else {
+        $parentDirectory = Split-Path -Parent $VcpkgRoot
+        New-Item -ItemType Directory -Force -Path $parentDirectory | Out-Null
+        Invoke-NativeCommand -FilePath "git" -Arguments @(
+            "clone", "--depth", "1", "https://github.com/microsoft/vcpkg", $VcpkgRoot
+        )
+    }
 }
 
 if (-not (Test-Path -LiteralPath $bootstrapScript -PathType Leaf)) {
