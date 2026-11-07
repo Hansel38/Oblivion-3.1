@@ -109,7 +109,7 @@ inline void AddWindowsRootStoreToOpenSsl(X509_STORE* store, DWORD location) {
     HCERTSTORE windowsStore = CertOpenStore(
         CERT_STORE_PROV_SYSTEM_W,
         0,
-        nullptr,
+        HCRYPTPROV_LEGACY{},
         location | CERT_STORE_READONLY_FLAG,
         L"ROOT");
     if (windowsStore == nullptr) {
