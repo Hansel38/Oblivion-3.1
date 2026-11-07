@@ -166,6 +166,18 @@ int main(int argc, char** argv) {
         return 3;
     }
 
+    if ((SSL_CTX_get_verify_mode(context) & SSL_VERIFY_PEER) == 0 ||
+        SSL_CTX_get_verify_callback(context) !=
+            Oblivion::Tls::VerifyPeerCertificateDuringHandshake) {
+        std::cerr << "TLS client context does not enforce peer verification during handshake\\n";
+        SSL_CTX_free(context);
+        CloseSocket(socketFd);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 3;
+    }
+
     SSL* session = Oblivion::Tls::Connect(
         context, socketFd, expectedHost, pins, error);
     const bool accepted = session != nullptr;
