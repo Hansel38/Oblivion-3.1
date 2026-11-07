@@ -48,7 +48,7 @@ class WindowsVcpkgProjectConfigTests(unittest.TestCase):
         for relative in ("client/client.vcxproj", "server/server.vcxproj"):
             content = (ROOT / relative).read_text(encoding="utf-8-sig")
             self.assertIn(
-                r"<OblivionVcpkgTriplet Condition=\"'$(Platform)'=='Win32'\">x86-windows-static-md</OblivionVcpkgTriplet>",
+                """<OblivionVcpkgTriplet Condition="'$(Platform)'=='Win32'">x86-windows-static-md</OblivionVcpkgTriplet>""",
                 content,
             )
 
