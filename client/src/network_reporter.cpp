@@ -48,6 +48,7 @@ namespace {
     constexpr size_t kMinSharedSecretLength = 32;
     constexpr size_t kMaxSharedSecretLength = 128;
     constexpr size_t kMaxReportDetailsBytes = 2048;
+    constexpr uint32_t kHeartbeatReceiveSafetyMarginMs = 1500;
 
     struct NetworkConfiguration {
         std::vector<EndpointSpec> endpoints;
@@ -800,8 +801,8 @@ namespace Oblivion {
             return false;
         }
 
-        // Server mengirim KICK; atau ERROR; sebagai satu token, sedangkan
-        // check-in yang berhasil mengirim OK;SESSION_NONCE:<n>;.
+        // Server mengirim KICK/ERROR sebagai satu token. Check-in sukses
+        // mengirim nonce sesi dan kebijakan timing heartbeat dalam stream TLS.
         std::string response;
         if (!ReceiveSemicolonCount(s, response, 1, 1024, m_handshakeTimeoutMs, tls)) {
             errorOut = "timeout menunggu respons check-in";
@@ -833,14 +834,19 @@ namespace Oblivion {
             return false;
         }
 
-        if (!ReceiveSemicolonCount(s, response, 2, 1024, m_handshakeTimeoutMs, tls)) {
-            errorOut = "respons OK tidak menyertakan SESSION_NONCE lengkap";
+        if (!ReceiveSemicolonCount(s, response, 3, 1024, m_handshakeTimeoutMs, tls)) {
+            errorOut = "respons OK tidak menyertakan SESSION_NONCE dan HEARTBEAT lengkap";
             return false;
         }
 
         const size_t secondSemi = response.find(';', firstSemi + 1);
         if (secondSemi == std::string::npos) {
             errorOut = "SESSION_NONCE tidak lengkap";
+            return false;
+        }
+        const size_t thirdSemi = response.find(';', secondSemi + 1);
+        if (thirdSemi == std::string::npos) {
+            errorOut = "kebijakan HEARTBEAT tidak lengkap";
             return false;
         }
 
@@ -850,16 +856,60 @@ namespace Oblivion {
             errorOut = "field SESSION_NONCE tidak ditemukan";
             return false;
         }
-
         uint64_t nonce = 0;
         if (!ParseUnsigned64(nonceField.substr(noncePrefix.size()), nonce) || nonce == 0) {
             errorOut = "SESSION_NONCE tidak valid";
             return false;
         }
 
+        const std::string heartbeatField =
+            response.substr(secondSemi + 1, thirdSemi - secondSemi - 1);
+        const std::string heartbeatPrefix = "HEARTBEAT:";
+        if (heartbeatField.rfind(heartbeatPrefix, 0) != 0) {
+            errorOut = "field HEARTBEAT tidak ditemukan";
+            return false;
+        }
+        const size_t intervalSeparator = heartbeatField.find(':', heartbeatPrefix.size());
+        const size_t jitterSeparator = intervalSeparator == std::string::npos
+            ? std::string::npos
+            : heartbeatField.find(':', intervalSeparator + 1);
+        if (intervalSeparator == std::string::npos ||
+            jitterSeparator == std::string::npos ||
+            heartbeatField.find(':', jitterSeparator + 1) != std::string::npos) {
+            errorOut = "format HEARTBEAT tidak valid";
+            return false;
+        }
+
+        uint64_t intervalMs = 0;
+        uint64_t jitterMs = 0;
+        uint64_t timeoutMs = 0;
+        if (!ParseUnsigned64(
+                heartbeatField.substr(heartbeatPrefix.size(),
+                                      intervalSeparator - heartbeatPrefix.size()),
+                intervalMs) ||
+            !ParseUnsigned64(
+                heartbeatField.substr(intervalSeparator + 1,
+                                      jitterSeparator - intervalSeparator - 1),
+                jitterMs) ||
+            !ParseUnsigned64(heartbeatField.substr(jitterSeparator + 1), timeoutMs) ||
+            intervalMs < 250 || intervalMs > 60000 ||
+            jitterMs >= intervalMs || jitterMs > 30000 ||
+            timeoutMs < 250 || timeoutMs > 60000) {
+            errorOut = "parameter HEARTBEAT berada di luar batas yang diizinkan";
+            return false;
+        }
+
+        const uint64_t receiveTimeoutMs =
+            intervalMs + jitterMs + timeoutMs + kHeartbeatReceiveSafetyMarginMs;
+        if (receiveTimeoutMs > static_cast<uint64_t>((std::numeric_limits<int>::max)())) {
+            errorOut = "timeout HEARTBEAT melampaui batas integer client";
+            return false;
+        }
+
         m_sessionNonce = nonce;
+        m_hbReceiveTimeoutMs = static_cast<int>(receiveTimeoutMs);
         // Server may have already sent the first PING in the same TCP packet.
-        m_pendingHeartbeatData = response.substr(secondSemi + 1);
+        m_pendingHeartbeatData = response.substr(thirdSemi + 1);
         return true;
     }
 
@@ -1080,29 +1130,8 @@ namespace Oblivion {
                 return;
             }
 
-            Oblivion::HeartbeatConfig cfg;
-            auto readEnvUint = [](const char* name, uint32_t defaultValue) {
-                char value[64] = {};
-                const DWORD length = GetEnvironmentVariableA(name, value, static_cast<DWORD>(sizeof(value)));
-                if (length == 0 || length >= sizeof(value)) {
-                    return defaultValue;
-                }
-                try {
-                    size_t consumed = 0;
-                    const unsigned long parsed = std::stoul(value, &consumed, 10);
-                    return consumed == length ? static_cast<uint32_t>(parsed) : defaultValue;
-                } catch (...) {
-                    return defaultValue;
-                }
-            };
-
-            cfg.interval_ms = readEnvUint("OBLV_HB_INTERVAL_MS", cfg.interval_ms);
-            cfg.timeout_ms = readEnvUint("OBLV_HB_TIMEOUT_MS", cfg.timeout_ms);
-            cfg.interval_ms = (std::max)(500U, (std::min)(cfg.interval_ms, 30000U));
-            cfg.timeout_ms = (std::max)(500U, (std::min)(cfg.timeout_ms, 30000U));
-            const uint64_t receiveTimeout64 =
-                static_cast<uint64_t>(cfg.interval_ms) + cfg.timeout_ms + 1500ULL;
-            const int receiveTimeoutMs = static_cast<int>((std::min<uint64_t>)(receiveTimeout64, 60000ULL));
+            // The TLS-protected check-in response advertises effective server timing.
+            const int receiveTimeoutMs = m_hbReceiveTimeoutMs;
 
             uint32_t lastSequence = 0;
             auto failHeartbeat = [this](const std::string& reason) {
