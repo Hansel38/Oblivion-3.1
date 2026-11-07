@@ -24,6 +24,9 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 54321
 TEST_SECRET = "oblivion-integration-secret-at-least-32-bytes"
+TEST_HEARTBEAT_INTERVAL_MS = 250
+TEST_HEARTBEAT_JITTER_MS = 20
+TEST_HEARTBEAT_TIMEOUT_MS = 1000
 MAX_FRAME_BYTES = 4096
 TLS_CONTEXT: ssl.SSLContext | None = None
 
@@ -86,6 +89,25 @@ def authenticate(sock: socket.socket, hwid: str) -> tuple[str, bytes]:
     session_nonce_text = second[len(prefix):]
     if not session_nonce_text.isdigit() or int(session_nonce_text) == 0:
         raise RuntimeError("server returned an invalid session nonce")
+    heartbeat_frame, buffered = recv_frame(sock, buffered)
+    heartbeat_fields = heartbeat_frame.split(":")
+    if len(heartbeat_fields) != 4 or heartbeat_fields[0] != "HEARTBEAT":
+        raise RuntimeError(f"missing heartbeat timing policy: {heartbeat_frame!r}")
+    try:
+        heartbeat_timing = tuple(int(value, 10) for value in heartbeat_fields[1:])
+    except ValueError as exc:
+        raise RuntimeError("heartbeat timing policy contains a non-numeric field") from exc
+    expected_timing = (
+        TEST_HEARTBEAT_INTERVAL_MS,
+        TEST_HEARTBEAT_JITTER_MS,
+        TEST_HEARTBEAT_TIMEOUT_MS,
+    )
+    if heartbeat_timing != expected_timing:
+        raise RuntimeError(
+            f"server advertised heartbeat timing {heartbeat_timing!r}, "
+            f"expected {expected_timing!r}"
+        )
+
     session_key = hmac.new(
         TEST_SECRET.encode("ascii"),
         f"{hwid}:{session_nonce_text}".encode("ascii"),
@@ -535,8 +557,9 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
     env["OBLIVION_SECRET"] = TEST_SECRET
     env["OBLIVION_TLS_CERT_FILE"] = str(server_cert)
     env["OBLIVION_TLS_KEY_FILE"] = str(server_key)
-    env["OBLV_HB_INTERVAL_MS"] = "250"
-    env["OBLV_HB_TIMEOUT_MS"] = "1000"
+    env["OBLV_HB_INTERVAL_MS"] = str(TEST_HEARTBEAT_INTERVAL_MS)
+    env["OBLV_HB_JITTER_MS"] = str(TEST_HEARTBEAT_JITTER_MS)
+    env["OBLV_HB_TIMEOUT_MS"] = str(TEST_HEARTBEAT_TIMEOUT_MS)
     env["OBLV_HB_MAX_MISS"] = "2"
     env["OBLV_HB_RTT_WARN_MS"] = "60000"
 
