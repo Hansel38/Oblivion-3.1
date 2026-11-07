@@ -23,6 +23,7 @@
 #include "secret_obf.h"
 #include "include/heartbeat_protocol.h"
 #include "../common/heartbeat_auth.h"
+#include "../common/heartbeat_timing.h"
 #include <bcrypt.h>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -807,11 +808,16 @@ uint64_t MonotonicMilliseconds() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-void SleepHeartbeat(uint32_t milliseconds) {
+void SleepHeartbeat(
+    uint32_t milliseconds,
+    uint32_t jitterMs = 0,
+    uint64_t randomSeed = 0) {
+    const uint32_t delayMs =
+        Oblivion::Heartbeat::CalculateDelayMs(milliseconds, jitterMs, randomSeed);
 #ifdef _WIN32
-    Sleep(milliseconds);
+    Sleep(delayMs);
 #else
-    usleep(static_cast<useconds_t>(milliseconds) * 1000U);
+    usleep(static_cast<useconds_t>(delayMs) * 1000U);
 #endif
 }
 
@@ -1034,13 +1040,18 @@ void HandleClient(SOCKET clientSocket) {
                 } else {
                     // HWID tidak di-ban, kirim OK dan mulai heartbeat ping
                     // HWID tidak di-ban, kirim OK dan session nonce dalam satu pesan
+                    Oblivion::HeartbeatConfig cfg = g_heartbeatConfig;
                     uint64_t sessionNonce = GenerateSecureNonce();
-                    std::string response = sessionNonce == 0 ? "ERROR:CRYPTO;" : ("OK;SESSION_NONCE:" + std::to_string(sessionNonce) + ";");
+                    std::string response = sessionNonce == 0
+                        ? "ERROR:CRYPTO;"
+                        : ("OK;SESSION_NONCE:" + std::to_string(sessionNonce) +
+                           ";HEARTBEAT:" + std::to_string(cfg.interval_ms) +
+                           ":" + std::to_string(cfg.jitter_ms) +
+                           ":" + std::to_string(cfg.timeout_ms) + ";");
                     SendAllBytes(clientSocket, response);
                     std::cout << "[OK] HWID [" << hwid << "] diizinkan. Memulai heartbeat ping." << std::endl;
 
                     // Basic ping scheduler over the same socket (line-based)
-                    Oblivion::HeartbeatConfig cfg = g_heartbeatConfig; 
                     uint32_t seq = 1;
                     uint32_t consecutiveMiss = 0;
                     uint64_t rttSum = 0; uint32_t rttCount = 0; 
@@ -1149,7 +1160,7 @@ void HandleClient(SOCKET clientSocket) {
                             if (!ReceiveSemicolonFrame(clientSocket, heartbeatBuffer, cfg.timeout_ms, 1024)) {
                                 if (!registerMiss("Heartbeat PONG timeout or incomplete frame")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1159,7 +1170,7 @@ void HandleClient(SOCKET clientSocket) {
                             if (response.rfind("PONG:", 0) != 0) {
                                 if (!registerMiss("Unexpected heartbeat response")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1170,7 +1181,7 @@ void HandleClient(SOCKET clientSocket) {
                             if (colons.size() != 6) {
                                 if (!registerMiss("Malformed PONG field count")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1191,7 +1202,7 @@ void HandleClient(SOCKET clientSocket) {
                             if (!fieldsValid) {
                                 if (!registerMiss("PONG fields, identity, sequence, or nonce validation failed")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1201,7 +1212,7 @@ void HandleClient(SOCKET clientSocket) {
                             if (expectedHmac.empty() || !ConstantTimeEquals(expectedHmac, hmac)) {
                                 if (!registerMiss("PONG HMAC verification failed")) break;
                                 ++seq;
-                                SleepHeartbeat(cfg.interval_ms);
+                                SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                                 continue;
                             }
 
@@ -1237,7 +1248,7 @@ void HandleClient(SOCKET clientSocket) {
                                 rttCount = 0;
                             }
                             ++seq;
-                            SleepHeartbeat(cfg.interval_ms);
+                            SleepHeartbeat(cfg.interval_ms, cfg.jitter_ms, pingNonce);
                         }
                     }
                 }
