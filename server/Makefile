@@ -31,8 +31,10 @@ LISTEN_PORT_TEST_TARGET := $(BUILD_DIR)/server_listen_port_test
 SERVER_YAML_TEST_TARGET := $(BUILD_DIR)/server_yaml_config_test
 CLIENT_YAML_TEST_TARGET := $(BUILD_DIR)/client_yaml_config_test
 IP_RATE_LIMITER_TEST_TARGET := $(BUILD_DIR)/ip_rate_limiter_test
+MODULE_WHITELIST_TEST_TARGET := $(BUILD_DIR)/module_whitelist_policy_test
+MANIFEST_PATH_TEST_TARGET := $(BUILD_DIR)/relative_manifest_path_test
 
-test: $(TEST_TARGET) $(HEARTBEAT_TIMING_TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET) $(IP_RATE_LIMITER_TEST_TARGET)
+test: $(TEST_TARGET) $(HEARTBEAT_TIMING_TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_POLICY_TEST_TARGET) $(AUTHENTICODE_POLICY_TEST_TARGET) $(LISTEN_PORT_TEST_TARGET) $(SERVER_YAML_TEST_TARGET) $(CLIENT_YAML_TEST_TARGET) $(IP_RATE_LIMITER_TEST_TARGET) $(MODULE_WHITELIST_TEST_TARGET) $(MANIFEST_PATH_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(HEARTBEAT_TIMING_TEST_TARGET)
 	./$(HWID_TEST_TARGET)
@@ -42,6 +44,8 @@ test: $(TEST_TARGET) $(HEARTBEAT_TIMING_TEST_TARGET) $(HWID_TEST_TARGET) $(PATH_
 	./$(SERVER_YAML_TEST_TARGET)
 	./$(CLIENT_YAML_TEST_TARGET)
 	./$(IP_RATE_LIMITER_TEST_TARGET)
+	./$(MODULE_WHITELIST_TEST_TARGET)
+	./$(MANIFEST_PATH_TEST_TARGET)
 	python3 ../tests/test_integrity_manifest_generator.py
 	python3 ../tests/test_production_network_config.py
 	python3 ../tests/test_production_readiness.py
@@ -80,6 +84,12 @@ $(CLIENT_YAML_TEST_TARGET): ../tests/client_yaml_config_test.cpp ../common/clien
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $< $(LDLIBS)
 
 $(IP_RATE_LIMITER_TEST_TARGET): ../tests/ip_rate_limiter_test.cpp ../common/ip_rate_limiter.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
+
+$(MODULE_WHITELIST_TEST_TARGET): ../tests/module_whitelist_policy_test.cpp ../common/module_whitelist_policy.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
+
+$(MANIFEST_PATH_TEST_TARGET): ../tests/relative_manifest_path_test.cpp ../common/relative_manifest_path.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I../common -o $@ $<
 
 $(TLS_PROBE_TARGET): ../tests/tls_client_probe.cpp ../common/tls_transport.h | $(BUILD_DIR)
