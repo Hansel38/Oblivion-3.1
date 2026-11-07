@@ -426,23 +426,24 @@ def verify_tls_client_pin_checks(
     self_signed_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     self_signed_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self_signed_listener.bind((HOST, 0))
-    self_signed_listener.listen(1)
+    self_signed_listener.listen(2)
     self_signed_port = self_signed_listener.getsockname()[1]
     self_signed_errors: list[str] = []
 
     def serve_self_signed() -> None:
         try:
-            connection, _ = self_signed_listener.accept()
-            with connection:
-                try:
-                    with self_signed_context.wrap_socket(connection, server_side=True) as tls_socket:
-                        tls_socket.settimeout(2)
-                        try:
-                            tls_socket.recv(1)
-                        except (ssl.SSLError, OSError, socket.timeout):
-                            pass
-                except (ssl.SSLError, OSError):
-                    pass
+            for _ in range(2):
+                connection, _ = self_signed_listener.accept()
+                with connection:
+                    try:
+                        with self_signed_context.wrap_socket(connection, server_side=True) as tls_socket:
+                            tls_socket.settimeout(2)
+                            try:
+                                tls_socket.recv(1)
+                            except (ssl.SSLError, OSError, socket.timeout):
+                                pass
+                    except (ssl.SSLError, OSError):
+                        pass
         except OSError as exc:
             self_signed_errors.append(str(exc))
         finally:
@@ -465,6 +466,21 @@ def verify_tls_client_pin_checks(
             raise RuntimeError(
                 "TLS client rejected a valid pinned self-signed leaf: "
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+
+        wrong_self_signed_pin = (
+            ("0" if self_signed_pin[0] != "0" else "1") + self_signed_pin[1:]
+        )
+        wrong_pin_result = subprocess.run(
+            [str(probe_binary), HOST, HOST, str(self_signed_port),
+             wrong_self_signed_pin, "reject"],
+            capture_output=True, text=True, timeout=8, env=self_signed_env,
+        )
+        if wrong_pin_result.returncode != 0:
+            raise RuntimeError(
+                "TLS client accepted a self-signed leaf without the exact configured pin: "
+                f"exit={wrong_pin_result.returncode}, stdout={wrong_pin_result.stdout}, "
+                f"stderr={wrong_pin_result.stderr}"
             )
     finally:
         self_signed_listener.close()
