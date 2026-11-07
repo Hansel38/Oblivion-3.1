@@ -44,6 +44,15 @@ class WindowsVcpkgProjectConfigTests(unittest.TestCase):
             self.assertIn(r"$(OblivionVcpkgInstalledDir)\lib", content)
             self.assertNotIn(r"$(VCPKG_ROOT)\installed\$(OblivionVcpkgTriplet)", content)
 
+    def test_public_network_reporter_header_forward_declares_tls_types(self):
+        header = (ROOT / "client" / "include" / "network_reporter.h").read_text(encoding="utf-8")
+        self.assertNotIn("#include <openssl/ssl.h>", header)
+        self.assertIn("typedef struct ssl_ctx_st SSL_CTX;", header)
+        self.assertIn("typedef struct ssl_st SSL;", header)
+
+        tls_transport = (ROOT / "common" / "tls_transport.h").read_text(encoding="utf-8")
+        self.assertIn("#include <openssl/ssl.h>", tls_transport)
+
     def test_setup_script_installs_matching_x86_and_x64_triplets(self):
         script_path = ROOT / "tools" / "setup_windows_dependencies.ps1"
         self.assertTrue(script_path.is_file())
