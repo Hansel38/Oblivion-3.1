@@ -137,6 +137,42 @@ inline void AddWindowsRootStoreToOpenSsl(X509_STORE* store, DWORD location) {
 }
 #endif
 
+inline bool IsCryptographicallySelfSigned(X509* certificate) {
+    if (certificate == nullptr ||
+        X509_NAME_cmp(X509_get_issuer_name(certificate),
+                      X509_get_subject_name(certificate)) != 0) {
+        return false;
+    }
+
+    EVP_PKEY* publicKey = X509_get_pubkey(certificate);
+    if (publicKey == nullptr) {
+        return false;
+    }
+    const bool selfSigned = X509_verify(certificate, publicKey) == 1;
+    EVP_PKEY_free(publicKey);
+    return selfSigned;
+}
+
+// OpenSSL performs trust-chain validation during the TLS handshake. The only
+// deferred trust case is a genuinely self-signed depth-zero leaf; Connect()
+// still requires its exact SHA-256 pin, validity, serverAuth purpose and SAN
+// before returning a usable session. Every other verification error is fatal.
+inline int VerifyPeerCertificateDuringHandshake(
+    int preverified,
+    X509_STORE_CTX* storeContext) {
+    if (preverified == 1) {
+        return 1;
+    }
+    if (storeContext == nullptr ||
+        X509_STORE_CTX_get_error_depth(storeContext) != 0 ||
+        X509_STORE_CTX_get_error(storeContext) != X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
+        return 0;
+    }
+
+    return IsCryptographicallySelfSigned(
+        X509_STORE_CTX_get_current_cert(storeContext)) ? 1 : 0;
+}
+
 inline SSL_CTX* CreateClientContext(std::string& error) {
     error.clear();
     SSL_CTX* context = SSL_CTX_new(TLS_client_method());
@@ -162,9 +198,18 @@ inline SSL_CTX* CreateClientContext(std::string& error) {
     AddWindowsRootStoreToOpenSsl(trustStore, CERT_SYSTEM_STORE_CURRENT_USER);
     AddWindowsRootStoreToOpenSsl(trustStore, CERT_SYSTEM_STORE_LOCAL_MACHINE);
 #endif
-    // Certificate identity is validated after the handshake so the explicitly
-    // pinned self-signed leaf trust-anchor policy can be applied deliberately.
-    SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
+    X509_VERIFY_PARAM* verifyParameters = SSL_CTX_get0_param(context);
+    if (verifyParameters == nullptr ||
+        X509_VERIFY_PARAM_set_purpose(verifyParameters, X509_PURPOSE_SSL_SERVER) != 1) {
+        error = "failed to configure TLS server-certificate verification purpose";
+        SSL_CTX_free(context);
+        return nullptr;
+    }
+
+    // Require OpenSSL's normal chain verification at handshake time. The callback
+    // permits only the narrow pinned-self-signed candidate case described above.
+    SSL_CTX_set_verify(
+        context, SSL_VERIFY_PEER, VerifyPeerCertificateDuringHandshake);
     SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_OFF);
     return context;
 }
@@ -203,22 +248,6 @@ inline SSL_CTX* CreateServerContext(
     }
     SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_OFF);
     return context;
-}
-
-inline bool IsCryptographicallySelfSigned(X509* certificate) {
-    if (certificate == nullptr ||
-        X509_NAME_cmp(X509_get_issuer_name(certificate),
-                      X509_get_subject_name(certificate)) != 0) {
-        return false;
-    }
-
-    EVP_PKEY* publicKey = X509_get_pubkey(certificate);
-    if (publicKey == nullptr) {
-        return false;
-    }
-    const bool selfSigned = X509_verify(certificate, publicKey) == 1;
-    EVP_PKEY_free(publicKey);
-    return selfSigned;
 }
 
 // CA-issued certificates must validate to a root in the OpenSSL client trust store.
@@ -417,16 +446,44 @@ inline SSL* Connect(
         return nullptr;
     }
 
-    const bool looksLikeIp =
-        expectedHost.find(':') != std::string::npos ||
-        (!expectedHost.empty() &&
-         std::all_of(expectedHost.begin(), expectedHost.end(), [](unsigned char c) {
-             return (c >= '0' && c <= '9') || c == '.';
-         }));
-    if (!looksLikeIp && SSL_set_tlsext_host_name(session, expectedHost.c_str()) != 1) {
-        error = "failed to set TLS SNI hostname";
+    if (expectedHost.empty()) {
+        error = "TLS expected host is empty";
         SSL_free(session);
         return nullptr;
+    }
+
+    const bool looksLikeIp =
+        expectedHost.find(':') != std::string::npos ||
+        std::all_of(expectedHost.begin(), expectedHost.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || c == '.';
+        });
+
+    X509_VERIFY_PARAM* verifyParameters = SSL_get0_param(session);
+    if (verifyParameters == nullptr) {
+        error = "cannot access TLS peer verification parameters";
+        SSL_free(session);
+        return nullptr;
+    }
+
+    if (looksLikeIp) {
+        if (X509_VERIFY_PARAM_set1_ip_asc(
+                verifyParameters, expectedHost.c_str()) != 1) {
+            error = "failed to configure TLS IP address verification";
+            SSL_free(session);
+            return nullptr;
+        }
+    } else {
+        X509_VERIFY_PARAM_set_hostflags(
+            verifyParameters,
+            X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS |
+                X509_CHECK_FLAG_NEVER_CHECK_SUBJECT);
+        if (X509_VERIFY_PARAM_set1_host(
+                verifyParameters, expectedHost.c_str(), expectedHost.size()) != 1 ||
+            SSL_set_tlsext_host_name(session, expectedHost.c_str()) != 1) {
+            error = "failed to configure TLS hostname verification/SNI";
+            SSL_free(session);
+            return nullptr;
+        }
     }
 
     if (!PerformHandshake(session, socketDescriptor, false, error)) {
