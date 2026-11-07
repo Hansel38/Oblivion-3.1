@@ -97,6 +97,87 @@ static DWORD WINAPI CaptureCurrentThreadDebugRegisters(void* parameter) noexcept
     return 0;
 }
 
+#if defined(_M_IX86)
+// Check memory metadata before touching an SEH record. VirtualQuery does not
+// dereference the supplied address, and the subsequent read is still guarded
+// by SEH to cover races with unmapping or protection changes.
+static bool QueryCommittedMemory(
+    const void* address,
+    SIZE_T length,
+    DWORD* protection) noexcept {
+    if (address == nullptr || length == 0 || protection == nullptr) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION information{};
+    if (VirtualQuery(address, &information, sizeof(information)) != sizeof(information) ||
+        information.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const auto regionStart =
+        reinterpret_cast<std::uintptr_t>(information.BaseAddress);
+    const auto addressValue = reinterpret_cast<std::uintptr_t>(address);
+    if (addressValue < regionStart) {
+        return false;
+    }
+
+    const std::uintptr_t offset = addressValue - regionStart;
+    if (offset > information.RegionSize ||
+        length > information.RegionSize - static_cast<SIZE_T>(offset)) {
+        return false;
+    }
+
+    *protection = information.Protect & 0xFF;
+    return true;
+}
+
+static bool IsReadableProcessMemory(const void* address, SIZE_T length) noexcept {
+    DWORD protection = 0;
+    if (!QueryCommittedMemory(address, length, &protection)) {
+        return false;
+    }
+
+    return protection == PAGE_READONLY ||
+           protection == PAGE_READWRITE ||
+           protection == PAGE_WRITECOPY ||
+           protection == PAGE_EXECUTE_READ ||
+           protection == PAGE_EXECUTE_READWRITE ||
+           protection == PAGE_EXECUTE_WRITECOPY;
+}
+
+static bool IsExecutableProcessMemory(const void* address) noexcept {
+    DWORD protection = 0;
+    if (!QueryCommittedMemory(address, 1, &protection)) {
+        return false;
+    }
+
+    return protection == PAGE_EXECUTE ||
+           protection == PAGE_EXECUTE_READ ||
+           protection == PAGE_EXECUTE_READWRITE ||
+           protection == PAGE_EXECUTE_WRITECOPY;
+}
+
+static bool ReadSehRegistrationRecordSafely(
+    const void* address,
+    PVOID* next,
+    PVOID* handler) noexcept {
+    if (address == nullptr || next == nullptr || handler == nullptr) {
+        return false;
+    }
+
+    __try {
+        const auto* fields = static_cast<const PVOID*>(address);
+        *next = fields[0];
+        *handler = fields[1];
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+#endif
+
 // VEH probe handler and flag (file-scope)
 static volatile LONG gVehCalled = 0;
 static LONG CALLBACK VehProbeHandler(PEXCEPTION_POINTERS p) {
@@ -640,7 +721,7 @@ namespace Oblivion {
 
     bool AntiDebug::CheckSEHChainIntegrity() {
         // Catatan: Pada x86, rantai SEH berada di FS:[0]. Pada x64, SEH tidak menggunakan linked list yang sama.
-        // Implementasi: x86 → validasi panjang rantai dan modul handler; x64 → heuristik lemah (return false).
+        // Implementasi x86 memvalidasi setiap node sebelum dibaca; x64 memakai heuristik lain.
 #if defined(_M_IX86)
         struct EXCEPTION_REGISTRATION_RECORD {
             EXCEPTION_REGISTRATION_RECORD* Next;
@@ -654,48 +735,79 @@ namespace Oblivion {
         }
 
         int depth = 0;
-        const int maxDepth = 64; // kedalaman wajar; terlalu dalam bisa indikasi hooking aneh
-        while (p && p != (EXCEPTION_REGISTRATION_RECORD*)0xFFFFFFFF && depth < maxDepth) {
-            // Validasi handler berada dalam modul proses (ntdll/kernel32/our module)
+        const int maxDepth = 64;
+        while (p && p != reinterpret_cast<EXCEPTION_REGISTRATION_RECORD*>(0xFFFFFFFF) &&
+               depth < maxDepth) {
+            if (!IsReadableProcessMemory(p, sizeof(*p))) {
+                if (ShouldLogAntiDebug()) {
+                    LogAntiDebugEvent("SEH chain contains an unreadable registration record");
+                }
+                return true;
+            }
+
+            PVOID nextRecord = nullptr;
+            PVOID handlerAddress = nullptr;
+            if (!ReadSehRegistrationRecordSafely(p, &nextRecord, &handlerAddress) ||
+                handlerAddress == nullptr ||
+                !IsExecutableProcessMemory(handlerAddress)) {
+                if (ShouldLogAntiDebug()) {
+                    LogAntiDebugEvent("SEH chain contains an invalid handler record");
+                }
+                return true;
+            }
+
             HMODULE hMod = nullptr;
-            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                   (LPCSTR)p->Handler, &hMod)) {
-                // Jika handler berada di modul yang tidak dikenal, anggap mencurigakan
+            if (GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCSTR>(handlerAddress),
+                    &hMod)) {
                 const std::wstring modName = Oblivion::WinPath::GetModulePath(hMod);
-                bool allowed = (wcsstr(modName.c_str(), L"ntdll.dll") != nullptr) ||
-                               (wcsstr(modName.c_str(), L"kernel32.dll") != nullptr);
+                bool allowed =
+                    (wcsstr(modName.c_str(), L"ntdll.dll") != nullptr) ||
+                    (wcsstr(modName.c_str(), L"kernel32.dll") != nullptr);
+
                 HMODULE hSelf = nullptr;
-                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                       (LPCWSTR)&IsAddressInModule, &hSelf)) {
+                if (GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCWSTR>(&IsAddressInModule),
+                        &hSelf)) {
                     if (hSelf && hMod == hSelf) {
                         allowed = true;
                     }
                 }
-                // Cek modul kita (client dll) jika diketahui nama
-                // Jika tidak termasuk yang diizinkan, flag
+
                 if (!allowed) {
                     if (ShouldLogAntiDebug()) {
                         std::string msg = "SEH suspicious module: ";
                         char utf8[512] = {0};
-                        WideCharToMultiByte(CP_UTF8, 0, modName.c_str(), -1, utf8, sizeof(utf8)-1, NULL, NULL);
-                        msg += utf8;
+                        const int converted = WideCharToMultiByte(
+                            CP_UTF8, 0, modName.c_str(), -1,
+                            utf8, static_cast<int>(sizeof(utf8) - 1),
+                            nullptr, nullptr);
+                        if (converted > 0) {
+                            msg += utf8;
+                        }
                         LogAntiDebugEvent(msg);
                     }
-                    return true; // integritas SEH mencurigakan
+                    return true;
                 }
             }
 
-            p = p->Next;
+            p = static_cast<EXCEPTION_REGISTRATION_RECORD*>(nextRecord);
             ++depth;
         }
 
         if (depth >= maxDepth) {
-            if (ShouldLogAntiDebug()) LogAntiDebugEvent("SEH chain too deep");
-            return true; // rantai terlalu dalam → indikasi manipulasi
+            if (ShouldLogAntiDebug()) {
+                LogAntiDebugEvent("SEH chain too deep");
+            }
+            return true;
         }
         return false;
 #else
-        // Pada x64, tidak ada linked-list SEH tradisional; skip dengan aman
+        // Pada x64, tidak ada linked-list SEH tradisional; skip dengan aman.
         return false;
 #endif
     }
