@@ -189,6 +189,25 @@ def verify_malformed_request_does_not_log_secret(server_binary: Path) -> None:
         raise RuntimeError("server logged the SECRET field from a malformed request")
 
 
+def verify_incomplete_initial_frame_is_rejected() -> None:
+    sock = connect_tls(timeout=3)
+    sock.settimeout(8)
+    hwid = os.urandom(32).hex()
+    try:
+        # Omit the final semicolon. The server must enforce its frame deadline
+        # and must not answer with INVALID_FORMAT for a request never completed.
+        sock.sendall(f"CHECKIN::{hwid}:".encode("ascii"))
+        response = recv_closed(sock, 512)
+        if response:
+            raise RuntimeError(
+                f"server replied to an incomplete initial frame: {response!r}"
+            )
+    except socket.timeout as exc:
+        raise RuntimeError("server kept an incomplete initial frame open past its deadline") from exc
+    finally:
+        sock.close()
+
+
 def verify_short_hwid_is_rejected() -> None:
     sock = connect_tls(timeout=3)
     sock.settimeout(3)
@@ -602,6 +621,7 @@ def run_integration(server_binary: Path, tls_probe_binary: Path) -> None:
             verify_tls_handshake_deadline()
             verify_tls_client_pin_checks(tls_probe_binary, server_cert, tls_directory)
             verify_malformed_request_does_not_log_secret(server_binary)
+            verify_incomplete_initial_frame_is_rejected()
             verify_short_hwid_is_rejected()
             verify_missing_ban_list_is_rejected(ban_list_path)
             verify_violation_ack(server_binary)
