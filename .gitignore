@@ -45,3 +45,7 @@ secret.dat
 
 # Runtime client configuration kept beside the game executable
 oblivion.yaml
+
+
+# Repository-local Windows dependency installation
+.tools/vcpkg/
